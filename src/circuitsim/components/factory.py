@@ -12,6 +12,7 @@ from circuitsim.components.ground import Ground
 from circuitsim.components.inductor import Inductor
 from circuitsim.components.led import LED
 from circuitsim.components.lightbulb import Lightbulb
+from circuitsim.components.logic_gate import GATE_COMPONENT_TYPES, GATE_OPERATIONS, LogicGate
 from circuitsim.components.meters import Ammeter, Voltmeter
 from circuitsim.components.resistor import Resistor
 from circuitsim.components.sources import (
@@ -34,6 +35,7 @@ KNOWN_COMPONENT_TYPES: tuple[str, ...] = (
     "led",
     "voltmeter",
     "ammeter",
+    *GATE_COMPONENT_TYPES,
 )
 
 
@@ -64,4 +66,10 @@ def create_default_component_model(component_id: str, name: str) -> Component:
         return Voltmeter(name, n0, n1)
     if component_id == "ammeter":
         return Ammeter(name, n0, n1)
+    if component_id.startswith("gate_"):
+        op = component_id.removeprefix("gate_")
+        if op in GATE_OPERATIONS:
+            if op == "not":
+                return LogicGate(name, op, f"{name}_in", f"{name}_out")
+            return LogicGate(name, op, (f"{name}_a", f"{name}_b"), f"{name}_out")
     raise ValueError(f"Unknown component_id {component_id!r}.")

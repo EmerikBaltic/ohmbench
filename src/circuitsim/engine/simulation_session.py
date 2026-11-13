@@ -30,6 +30,7 @@ if TYPE_CHECKING:
 from circuitsim.components.base import Component
 from circuitsim.components.led import LED
 from circuitsim.components.lightbulb import Lightbulb
+from circuitsim.components.logic_gate import LogicGate
 from circuitsim.components.meters import Ammeter, Voltmeter
 from circuitsim.components.resistor import Resistor
 from circuitsim.components.sources import (
@@ -46,6 +47,7 @@ from circuitsim.engine.errors import (
     NoGroundError,
     SingularMatrixError,
     VoltageSourceLoopError,
+    ZeroDelayLoopError,
 )
 from circuitsim.engine.netlist import Circuit
 from circuitsim.engine.solver import MNASolver
@@ -210,6 +212,7 @@ class ComponentTelemetry:
     is_over_current: bool = False
     led_color: str = ""
     loading_error_message: str | None = None
+    logic_level: str = ""
 
 
 class DiagnosticMessage(str):
@@ -271,6 +274,8 @@ def format_component_canvas_text(comp: Component) -> str:
         if comp.burned_out:
             return "BURNED OUT"
         return f"{comp.rated_power:g}W / {comp.rated_voltage:g}V"
+    if isinstance(comp, LogicGate):
+        return "H" if comp.output_level else "L"
     if isinstance(comp, (Voltmeter, Ammeter)):
         return comp.format_reading()
     # Capacitor / Inductor fallback via attribute check to avoid circular import
@@ -442,6 +447,17 @@ class SimulationSession:
                 ),
                 component_names=tuple(exc.sources),
             )
+        if isinstance(exc, ZeroDelayLoopError):
+            gate_str = " -> ".join(exc.gates) if exc.gates else "gates"
+            return ProblemDiagnostic(
+                code="zero_delay_loop",
+                severity="error",
+                message=(
+                    f"Zero-delay logic feedback loop ({gate_str}): combinational cycle has zero total propagation delay; "
+                    "set a non-zero propagation delay (t_pd > 0) on at least one gate in the loop"
+                ),
+                component_names=tuple(exc.gates),
+            )
         if isinstance(exc, SingularMatrixError):
             return ProblemDiagnostic(
                 code="singular_matrix",
@@ -469,21 +485,36 @@ class SimulationSession:
             self._latched_warnings[key] = w
 
         diags: list[ProblemDiagnostic] = []
+        _wire_highlight_codes = {
+            "ammeter_in_parallel",
+            "floating_gate_input",
+            "indeterminate_logic_input",
+            "output_contention",
+            "output_shorted_to_supply",
+        }
+        _error_severity_codes = {
+            "floating_gate_input",
+            "output_contention",
+            "output_shorted_to_supply",
+        }
         for w in self._latched_warnings.values():
             w_wire_ids: list[str] = []
-            if self._connectivity is not None and w.code == "ammeter_in_parallel":
+            if self._connectivity is not None and w.code in _wire_highlight_codes:
                 comp_nodes: set[str] = set()
                 for cname in w.component_names:
                     for c in self.circuit.components:
                         if c.name == cname:
-                            comp_nodes.update(c.nodes)
+                            if w.code in ("output_contention", "output_shorted_to_supply") and isinstance(c, LogicGate):
+                                comp_nodes.add(c.output_node)
+                            else:
+                                comp_nodes.update(c.nodes)
                 for wid, wnode in self._connectivity.wire_to_node.items():
                     if wnode in comp_nodes:
                         w_wire_ids.append(wid)
             diags.append(
                 ProblemDiagnostic(
                     code=w.code,
-                    severity="warning",
+                    severity="error" if w.code in _error_severity_codes else "warning",
                     message=w.message,
                     component_names=w.component_names,
                     wire_ids=tuple(w_wire_ids),
@@ -713,6 +744,8 @@ class SimulationSession:
         comp = self.circuit.get_component(comp_name)
         if param_key == "is_ideal":
             comp.is_ideal = bool(raw_value)
+        elif param_key == "family" and isinstance(comp, LogicGate):
+            comp.set_family_preset(str(raw_value))
         elif hasattr(comp, param_key):
             try:
                 comp.set_parameter_value(param_key, raw_value)  # type: ignore[arg-type]
@@ -763,6 +796,11 @@ class SimulationSession:
             loading_err = (
                 comp.loading_error_message if isinstance(comp, Voltmeter) else None
             )
+            gate_lvl = (
+                ("H" if comp.output_level else "L")
+                if isinstance(comp, LogicGate)
+                else ""
+            )
 
             comp_map[comp.name] = ComponentTelemetry(
                 name=comp.name,
@@ -779,6 +817,7 @@ class SimulationSession:
                 is_over_current=is_over_cur,
                 led_color=led_col,
                 loading_error_message=loading_err,
+                logic_level=gate_lvl,
             )
 
         return SimulationFrame(

@@ -10,6 +10,14 @@ from circuitsim.components.ground import Ground
 from circuitsim.components.inductor import Inductor
 from circuitsim.components.led import LED, LED_COLOUR_PRESETS
 from circuitsim.components.lightbulb import Lightbulb
+from circuitsim.components.logic_gate import (
+    GATE_COMPONENT_TYPES,
+    GATE_OPERATIONS,
+    LOGIC_FAMILY_PRESETS,
+    LogicGate,
+    evaluate_gate_boolean,
+    normalize_logic_family,
+)
 from circuitsim.components.meters import Ammeter, MeterMode, Voltmeter
 from circuitsim.components.resistor import Resistor
 from circuitsim.components.sources import (
@@ -28,16 +36,22 @@ __all__ = [
     "ComponentParameter",
     "DCCurrentSource",
     "DCVoltageSource",
+    "GATE_COMPONENT_TYPES",
+    "GATE_OPERATIONS",
     "Ground",
     "Inductor",
     "KNOWN_COMPONENT_TYPES",
     "LED",
     "LED_COLOUR_PRESETS",
+    "LOGIC_FAMILY_PRESETS",
     "Lightbulb",
+    "LogicGate",
     "MeterMode",
     "Resistor",
     "Switch",
     "Voltmeter",
     "WaveformType",
     "create_default_component_model",
+    "evaluate_gate_boolean",
+    "normalize_logic_family",
 ]

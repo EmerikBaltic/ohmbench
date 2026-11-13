@@ -7,6 +7,7 @@ from circuitsim.engine.errors import (
     NoGroundError,
     SingularMatrixError,
     VoltageSourceLoopError,
+    ZeroDelayLoopError,
 )
 from circuitsim.engine.netlist import Circuit
 from circuitsim.engine.simulation_session import (
@@ -47,5 +48,6 @@ __all__ = [
     "TransientResult",
     "TransportControlsViewState",
     "VoltageSourceLoopError",
+    "ZeroDelayLoopError",
     "compute_transport_controls_state",
 ]

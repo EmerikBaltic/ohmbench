@@ -11,15 +11,17 @@ from circuitsim.components.ground import Ground
 from circuitsim.components.inductor import Inductor
 from circuitsim.components.led import LED
 from circuitsim.components.lightbulb import Lightbulb
+from circuitsim.components.logic_gate import LogicGate
 from circuitsim.components.meters import Ammeter, Voltmeter
 from circuitsim.components.resistor import Resistor
-from circuitsim.components.sources import ACVoltageSource, DCVoltageSource
+from circuitsim.components.sources import ACVoltageSource, DCCurrentSource, DCVoltageSource
 from circuitsim.components.switch import Switch
 from circuitsim.engine.errors import (
     CircuitWarning,
     FloatingNodeError,
     NoGroundError,
     VoltageSourceLoopError,
+    ZeroDelayLoopError,
 )
 
 
@@ -184,6 +186,16 @@ class Circuit:
                     continue
                 if isinstance(comp, Ammeter) and getattr(comp, "is_ideal", False):
                     continue
+                if isinstance(comp, LogicGate):
+                    for in_node in comp.input_nodes:
+                        ii = node_to_idx.get(in_node)
+                        if ii is not None:
+                            mat[ii, ii] += comp.g_in
+                    io = node_to_idx.get(comp.output_node)
+                    if io is not None:
+                        mat[io, io] += comp.g_out
+                    continue
+
                 g = 0.0
                 if isinstance(comp, (Resistor, Switch, Lightbulb, Voltmeter, Ammeter, LED)):
                     g = comp.conductance
@@ -289,8 +301,25 @@ class Circuit:
 
         terminal_degree: dict[str, int] = defaultdict(int)
         adjacency: dict[str, set[str]] = defaultdict(set)
+        gates: list[LogicGate] = []
 
         for comp in non_ground_comps:
+            if isinstance(comp, LogicGate):
+                gates.append(comp)
+                # Every gate terminal returns internally to implicit GND ("0"), so
+                # unloaded outputs or high-Z inputs stay solvable (pin-level checks handle
+                # undriven gate inputs explicitly via `floating_gate_input` warnings).
+                for in_node in comp.input_nodes:
+                    c_in = canonical(in_node)
+                    terminal_degree[in_node] += 2
+                    adjacency[c_in].add(CANONICAL_GND)
+                    adjacency[CANONICAL_GND].add(c_in)
+                c_out = canonical(comp.output_node)
+                terminal_degree[comp.output_node] += 2
+                adjacency[c_out].add(CANONICAL_GND)
+                adjacency[CANONICAL_GND].add(c_out)
+                continue
+
             if len(comp.nodes) < 2:
                 continue
             n_a, n_b = comp.nodes[0], comp.nodes[1]
@@ -364,4 +393,226 @@ class Circuit:
                         )
                     )
 
+        # 5. Digital logic gate topology checks (undriven inputs, contention,
+        #    shorted outputs, and zero-delay combinational feedback loops).
+        if gates:
+            self._validate_logic_gates(
+                non_ground_comps=non_ground_comps,
+                gates=gates,
+                canonical=canonical,
+                canonical_gnd=CANONICAL_GND,
+                warnings=warnings,
+            )
+
         return warnings
+
+    def _validate_logic_gates(
+        self,
+        *,
+        non_ground_comps: list[Component],
+        gates: list[LogicGate],
+        canonical: object,
+        canonical_gnd: str,
+        warnings: list[CircuitWarning],
+    ) -> None:
+        """Check logic gate input drivers, output contention/shorts, and zero-delay loops."""
+        # Build external conductive graph (without gate r_in to GND) to detect floating inputs
+        # and build passive signal-propagation graph (without GND/ideal sources) for cycle checks.
+        external_adj: dict[str, set[str]] = defaultdict(set)
+        passive_signal_adj: dict[str, set[str]] = defaultdict(set)
+        driven_seeds: set[str] = {canonical_gnd}
+        wire_short_dsu = _DisjointSet()
+
+        for comp in non_ground_comps:
+            if isinstance(comp, LogicGate):
+                driven_seeds.add(canonical(comp.output_node))
+                continue
+            if len(comp.nodes) < 2:
+                continue
+            c_a = canonical(comp.nodes[0])
+            c_b = canonical(comp.nodes[1])
+
+            if isinstance(comp, (DCVoltageSource, ACVoltageSource)):
+                driven_seeds.add(c_a)
+                driven_seeds.add(c_b)
+                external_adj[c_a].add(c_b)
+                external_adj[c_b].add(c_a)
+                continue
+
+            if isinstance(comp, DCCurrentSource):
+                driven_seeds.add(c_a)
+                driven_seeds.add(c_b)
+                external_adj[c_a].add(c_b)
+                external_adj[c_b].add(c_a)
+                continue
+
+            if isinstance(comp, Voltmeter):
+                # 10 MΩ measurement probe is high-Z and not a valid logic driver path.
+                continue
+
+            if isinstance(comp, Switch) and not comp.closed:
+                # An open switch acts as ~1 GΩ isolation, leaving un-pulled inputs floating.
+                continue
+
+            if isinstance(comp, Ammeter) and getattr(comp, "is_ideal", False):
+                wire_short_dsu.union(c_a, c_b)
+
+            external_adj[c_a].add(c_b)
+            external_adj[c_b].add(c_a)
+            if c_a != canonical_gnd and c_b != canonical_gnd:
+                passive_signal_adj[c_a].add(c_b)
+                passive_signal_adj[c_b].add(c_a)
+
+        # Compute all nodes reachable from at least one external signal/power driver.
+        driven_nodes: set[str] = set(driven_seeds)
+        d_queue: deque[str] = deque(driven_seeds)
+        while d_queue:
+            curr = d_queue.popleft()
+            for nb in external_adj.get(curr, ()):
+                if nb not in driven_nodes:
+                    driven_nodes.add(nb)
+                    d_queue.append(nb)
+
+        for gate in gates:
+            for pin_name, in_node in zip(gate.input_pin_names, gate.input_nodes):
+                if canonical(in_node) not in driven_nodes:
+                    warnings.append(
+                        CircuitWarning(
+                            code="floating_gate_input",
+                            message=(
+                                f"Floating input on {gate.name}.{pin_name} (node {in_node}): "
+                                "no driver or pull resistor connected; Tie input to High/Low or wire to a driver"
+                            ),
+                            component_names=(gate.name,),
+                        )
+                    )
+
+        # Output contention check: >= 2 gates driving the same net (or tied via ideal ammeters).
+        gnd_short_root = wire_short_dsu.find(canonical_gnd)
+        drivers_by_net: dict[str, list[LogicGate]] = defaultdict(list)
+        for gate in gates:
+            out_c = canonical(gate.output_node)
+            out_root = wire_short_dsu.find(out_c)
+            if out_root != gnd_short_root:
+                drivers_by_net[out_root].append(gate)
+
+        for drivers in drivers_by_net.values():
+            if len(drivers) >= 2:
+                g_names = tuple(g.name for g in drivers)
+                v_high = max(g.v_oh for g in drivers)
+                v_low = min(g.v_ol for g in drivers)
+                r_pair = drivers[0].r_out + drivers[1].r_out
+                i_worst = (v_high - v_low) / r_pair if r_pair > 0.0 else 0.0
+                warnings.append(
+                    CircuitWarning(
+                        code="output_contention",
+                        message=(
+                            f"Logic output contention on net {drivers[0].output_node}: "
+                            f"gates {', '.join(g_names)} drive the same node "
+                            f"(opposing-level current up to {i_worst * 1e3:.1f} mA)"
+                        ),
+                        component_names=g_names,
+                    )
+                )
+
+        # Check outputs shorted directly (or via ideal ammeter) to ground or an ideal voltage source.
+        ideal_supply_roots: dict[str, list[str]] = defaultdict(list)
+        for comp in non_ground_comps:
+            if isinstance(comp, (DCVoltageSource, ACVoltageSource)) and comp.r_internal == 0.0:
+                for term in comp.nodes[:2]:
+                    root = wire_short_dsu.find(canonical(term))
+                    if root != gnd_short_root and comp.name not in ideal_supply_roots[root]:
+                        ideal_supply_roots[root].append(comp.name)
+
+        for gate in gates:
+            out_root = wire_short_dsu.find(canonical(gate.output_node))
+            if out_root == gnd_short_root:
+                i_short = max(abs(gate.v_oh), abs(gate.v_ol)) / gate.r_out
+                warnings.append(
+                    CircuitWarning(
+                        code="output_shorted_to_supply",
+                        message=(
+                            f"Gate {gate.name} output is shorted to Ground: "
+                            f"clamped at 0 V (up to {i_short * 1e3:.1f} mA short current)"
+                        ),
+                        component_names=(gate.name,),
+                    )
+                )
+                continue
+
+            direct_srcs = ideal_supply_roots.get(out_root, [])
+            if direct_srcs:
+                src_list = ", ".join(direct_srcs)
+                warnings.append(
+                    CircuitWarning(
+                        code="output_shorted_to_supply",
+                        message=(
+                            f"Gate {gate.name} output is shorted to voltage source ({src_list}): "
+                            "output pin cannot change node potential; add series resistance or disconnect source"
+                        ),
+                        component_names=(gate.name, *direct_srcs),
+                    )
+                )
+
+        # Build directed zero-delay gate dependency graph to reject combinational cycles with 0 delay.
+        inputs_by_node: dict[str, list[LogicGate]] = defaultdict(list)
+        for gate in gates:
+            if gate.t_pd != 0.0:
+                continue
+            for in_node in gate.input_nodes:
+                c_in = canonical(in_node)
+                if c_in != canonical_gnd:
+                    inputs_by_node[c_in].append(gate)
+
+        zero_gates = [g for g in gates if g.t_pd == 0.0]
+        if not zero_gates:
+            return
+
+        zero_gate_adj: dict[str, list[LogicGate]] = defaultdict(list)
+        for src_gate in zero_gates:
+            out_c = canonical(src_gate.output_node)
+            if out_c == canonical_gnd:
+                continue
+            reached_nodes: set[str] = {out_c}
+            p_queue: deque[str] = deque([out_c])
+            while p_queue:
+                curr = p_queue.popleft()
+                for dst_gate in inputs_by_node.get(curr, ()):
+                    if dst_gate not in zero_gate_adj[src_gate.name]:
+                        zero_gate_adj[src_gate.name].append(dst_gate)
+                for nb in passive_signal_adj.get(curr, ()):
+                    if nb not in reached_nodes:
+                        reached_nodes.add(nb)
+                        p_queue.append(nb)
+
+        # DFS cycle detection on zero-delay gate subgraph.
+        state: dict[str, int] = {}  # 0=unvisited, 1=visiting, 2=done
+        stack: list[str] = []
+
+        def find_cycle(g_name: str) -> tuple[str, ...] | None:
+            state[g_name] = 1
+            stack.append(g_name)
+            for nxt in zero_gate_adj.get(g_name, ()):
+                nxt_state = state.get(nxt.name, 0)
+                if nxt_state == 1:
+                    idx = stack.index(nxt.name)
+                    return tuple(stack[idx:])
+                if nxt_state == 0:
+                    cyc = find_cycle(nxt.name)
+                    if cyc is not None:
+                        return cyc
+            stack.pop()
+            state[g_name] = 2
+            return None
+
+        for g in zero_gates:
+            if state.get(g.name, 0) == 0:
+                cycle = find_cycle(g.name)
+                if cycle is not None:
+                    raise ZeroDelayLoopError(
+                        gates=cycle,
+                        message=(
+                            "Zero-delay combinational feedback loop detected across "
+                            f"{' -> '.join(cycle)}: set non-zero propagation delay t_pd > 0"
+                        ),
+                    )

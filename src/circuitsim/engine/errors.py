@@ -37,6 +37,24 @@ class SingularMatrixError(CircuitError):
     """Raised when the MNA matrix is singular and cannot be solved."""
 
 
+class ZeroDelayLoopError(CircuitError):
+    """Raised when logic gates form a cycle whose total propagation delay is zero."""
+
+    def __init__(
+        self,
+        gates: tuple[str, ...] = (),
+        message: str | None = None,
+    ) -> None:
+        self.gates = gates
+        super().__init__(
+            message
+            or (
+                "Zero-delay combinational feedback loop involving gate(s): "
+                + (", ".join(gates) if gates else "unknown")
+            )
+        )
+
+
 @dataclass(frozen=True)
 class CircuitWarning:
     """Non-fatal circuit diagnostic warning (e.g. parallel ammeter, inductive kickback)."""

@@ -571,3 +571,41 @@ To keep voltmeter loading error under $0.1\%$ with a $10\text{ M}\Omega$ meter, 
    $$\text{Reduction} = \frac{1.000 - 0.9677}{1.000} \times 100\% = \frac{R_m}{R_{lamp} + R_m} \times 100\% = \frac{0.050}{1.550} \times 100\% \approx 3.23\%$$
    The ammeter introduces a $3.23\%$ error. Using an ammeter with $R_m = 1\text{ m}\Omega$ (or an Ideal 0 V branch) reduces this burden error to under $0.07\%$.
 
+---
+
+## Digital Logic Gates Inside an Analog MNA Simulator
+
+When you connect a logic gate to resistors, capacitors, or LEDs, the simulator still has to solve Kirchhoff's laws at every node voltage in Volts and every branch current in Amperes. Instead of switching the global matrix size or toggling switches on every digital edge (which would force expensive LU re-factorizations and Trapezoidal ringing), Ohmbench represents each gate pin using a linear fixed-conductance Norton/Thévenin equivalent:
+
+- **Input pins (`R_in = 10 MΩ` to GND)**: Each input stamps a constant conductance $G_{in} = 1 / R_{in} = 10^{-7}\,\text{S}$ to ground `"0"`. It draws near-zero sub-microamp current from upstream drivers while keeping floating nodes finite in the MNA equations.
+- **Output pin (`R_out = 100 Ω` + smoothed source `v_drive(t)`)**: The output stamps a constant conductance $G_{out} = 1 / R_{out} = 0.01\,\text{S}$ to ground `"0"` and pushes an equivalent current $I_{drive}(t) = G_{out} \cdot v_{drive}(t)$ into the right-hand side vector $b(t)$. Because the conductance matrix $A$ never changes when a gate flips between Low ($V_{OL}$) and High ($V_{OH}$), the solver computes the LU factorization once and reuses `lu_solve` on every digital transition.
+- **Thresholds, hysteresis, and timing**: Inputs use Schmitt-style noise thresholds ($V_{IL}$, $V_{IH}$): voltages $\le V_{IL}$ sense `0`, voltages $\ge V_{IH}$ sense `1`, and voltages inside $(V_{IL}, V_{IH})$ hold the previous bit while triggering an `indeterminate_logic_input` warning if they stay mid-band too long. State changes detected at time $t$ enter a causal FIFO delay queue for propagation delay $t_{pd}$ (clamped $\ge dt$), then ramp linearly over $\max(t_{edge}, 2\,dt)$ so Trapezoidal RC loads integrate smoothly without ringing.
+- **Zero-delay loops vs. physical oscillators**: Combinational feedback loops whose total delay equals zero have no physical state variable (infinite toggle rate) and raise `ZeroDelayLoopError` before simulation. With $t_{pd} > 0$, an odd chain of $N$ inverters forms a ring oscillator whose period obeys:
+  $$T \approx 2 N t_{pd}$$
+
+---
+
+### Worked Exercises (Logic Gates & Contention)
+
+#### Exercise 1: Output Contention Current Between Two CMOS Gates
+**Question**: Two `5V_CMOS` NOT gates (`R_out = 100 Ω`, `V_OL = 0.05 V`, `V_OH = 4.95 V`) accidentally have their outputs wired to the same node `bus`. Gate `U1` drives HIGH while gate `U2` drives LOW. Find the resulting voltage `V(bus)` and the short-circuit contention current `I` flowing from `U1` into `U2`.
+
+**Solution**:
+1. By KCL at node `bus` (since $U_1$ looks like $4.95\text{ V}$ behind $100\,\Omega$ and $U_2$ looks like $0.05\text{ V}$ behind $100\,\Omega$):
+   $$V_{bus} = \frac{V_{OH} / R_{out1} + V_{OL} / R_{out2}}{1/R_{out1} + 1/R_{out2}} = \frac{4.95\text{ V} + 0.05\text{ V}}{2} = 2.50\text{ V}$$
+2. Contention current delivered by $U_1$ into $U_2$:
+   $$I = \frac{V_{OH} - V_{OL}}{R_{out1} + R_{out2}} = \frac{4.95\text{ V} - 0.05\text{ V}}{100\,\Omega + 100\,\Omega} = \frac{4.90\text{ V}}{200\,\Omega} = 24.5\text{ mA}$$
+   Both real CMOS transistors would heat rapidly; the simulator flags `output_contention` and reports $24.5\text{ mA}$.
+
+---
+
+#### Exercise 2: Ring Oscillator Period and 50% Edge Crossing
+**Question**: A 5-stage inverter ring (`N = 5`) uses gates with propagation delay $t_{pd} = 15\text{ ns}$ and negligible edge transition time. What is the fundamental oscillation frequency $f$ and period $T$?
+
+**Solution**:
+1. A pulse must invert through all 5 stages ($5 t_{pd}$) for one half-cycle, and around again ($5 t_{pd}$) to restore the original polarity:
+   $$T = 2 N t_{pd} = 2 \times 5 \times 15\text{ ns} = 150\text{ ns}$$
+2. Oscillation frequency:
+   $$f = \frac{1}{T} = \frac{1}{150 \times 10^{-9}\text{ s}} \approx 6.67\text{ MHz}$$
+
+

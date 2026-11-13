@@ -13,6 +13,7 @@ from circuitsim.components.ground import Ground
 from circuitsim.components.inductor import Inductor
 from circuitsim.components.led import LED
 from circuitsim.components.lightbulb import Lightbulb
+from circuitsim.components.logic_gate import LogicGate
 from circuitsim.components.meters import Ammeter, Voltmeter
 from circuitsim.components.resistor import Resistor
 from circuitsim.components.sources import (
@@ -135,6 +136,8 @@ class MNASolver:
         self._matrix_a: np.ndarray | None = None
         self._lu_piv: tuple[np.ndarray, np.ndarray] | None = None
         self._topology_warnings: list[CircuitWarning] = []
+        self._logic_t0_initialized: bool = False
+        self._t0_node_voltages: dict[str, float] = {}
 
     def invalidate_cache(self) -> None:
         """Force the solver to rebuild and re-factorize the MNA matrix on next solve."""
@@ -147,6 +150,8 @@ class MNASolver:
         self.sim_time = 0.0
         self._transient_step_index = 0
         self._be_steps_remaining = 1
+        self._logic_t0_initialized = False
+        self._t0_node_voltages = {}
         self.circuit.reset_state()
         self.invalidate_cache()
 
@@ -202,6 +207,11 @@ class MNASolver:
                 tau_c = r_th * comp.capacitance
                 if math.isfinite(tau_c) and tau_c > 1e-9:
                     candidates.append(tau_c / 50.0)
+            elif isinstance(comp, LogicGate):
+                if comp.t_pd > 0.0:
+                    candidates.append(comp.t_pd / 10.0)
+                if comp.t_edge > 0.0:
+                    candidates.append(comp.t_edge / 2.0)
 
         if inductances and capacitances:
             min_l = min(inductances)
@@ -249,6 +259,8 @@ class MNASolver:
                     sig.append(comp.conductance)
             elif isinstance(comp, Inductor):
                 sig.append(comp.dc_conductance)
+            elif isinstance(comp, LogicGate):
+                sig.extend((comp.g_in, comp.g_out))
             elif isinstance(comp, (DCVoltageSource, ACVoltageSource)):
                 sig.append(comp.r_internal)
         return tuple(sig)
@@ -276,6 +288,8 @@ class MNASolver:
             elif isinstance(comp, Inductor):
                 g_l, _ = comp.companion_model(dt, method_str)
                 sig.append(g_l)
+            elif isinstance(comp, LogicGate):
+                sig.extend((comp.g_in, comp.g_out))
             elif isinstance(comp, (DCVoltageSource, ACVoltageSource)):
                 sig.append(comp.r_internal)
         return tuple(sig)
@@ -330,6 +344,14 @@ class MNASolver:
                     self._stamp_conductance(
                         matrix_a, comp.nodes[0], comp.nodes[1], g_eq
                     )
+            elif isinstance(comp, LogicGate):
+                for in_node in comp.input_nodes:
+                    idx_in = self._node_to_idx.get(in_node)
+                    if idx_in is not None:
+                        matrix_a[idx_in, idx_in] += comp.g_in
+                idx_out = self._node_to_idx.get(comp.output_node)
+                if idx_out is not None:
+                    matrix_a[idx_out, idx_out] += comp.g_out
             elif isinstance(comp, Inductor):
                 if mode == "dc":
                     self._stamp_conductance(
@@ -340,6 +362,14 @@ class MNASolver:
                     self._stamp_conductance(
                         matrix_a, comp.nodes[0], comp.nodes[1], g_eq
                     )
+            elif isinstance(comp, LogicGate):
+                for in_node in comp.input_nodes:
+                    idx_in = self._node_to_idx.get(in_node)
+                    if idx_in is not None:
+                        matrix_a[idx_in, idx_in] += comp.g_in
+                idx_out = self._node_to_idx.get(comp.output_node)
+                if idx_out is not None:
+                    matrix_a[idx_out, idx_out] += comp.g_out
 
         # 3. Stamp voltage sources (KCL incidence + branch KVL equation).
         for comp in voltage_sources:
@@ -414,6 +444,10 @@ class MNASolver:
                     rhs_b[idx_a] += i_eq
                 if idx_k is not None:
                     rhs_b[idx_k] -= i_eq
+            elif isinstance(comp, LogicGate):
+                idx_out = self._node_to_idx.get(comp.output_node)
+                if idx_out is not None:
+                    rhs_b[idx_out] += comp.g_out * comp.drive_voltage
 
         return rhs_b
 
@@ -474,8 +508,306 @@ class MNASolver:
                     rhs_b[idx_a] -= i_hist
                 if idx_b is not None:
                     rhs_b[idx_b] += i_hist
+            elif isinstance(comp, LogicGate):
+                idx_out = self._node_to_idx.get(comp.output_node)
+                if idx_out is not None:
+                    rhs_b[idx_out] += comp.g_out * comp.drive_voltage
 
         return rhs_b
+
+    def _logic_gates(self) -> list[LogicGate]:
+        return [c for c in self.circuit.components if isinstance(c, LogicGate)]
+
+    def _collect_gate_runtime_warnings(
+        self,
+        node_voltages: dict[str, float],
+        *,
+        dt: float,
+        base_warnings: list[CircuitWarning],
+    ) -> list[CircuitWarning]:
+        """Augment/refine logic-gate topology warnings with solved voltages and currents."""
+        gates = self._logic_gates()
+        if not gates:
+            return base_warnings
+
+        warnings = list(base_warnings)
+        gates_by_name = {g.name: g for g in gates}
+
+        # Refine output contention and supply-short warnings with live current values.
+        refined: list[CircuitWarning] = []
+        for w in warnings:
+            if w.code == "output_contention" and w.component_names:
+                drivers = [gates_by_name[n] for n in w.component_names if n in gates_by_name]
+                if len(drivers) >= 2:
+                    v_out = node_voltages.get(drivers[0].output_node, 0.0)
+                    max_drive = max(g.drive_voltage for g in drivers)
+                    min_drive = min(g.drive_voltage for g in drivers)
+                    i_peak = max(
+                        abs((g.drive_voltage - v_out) * g.g_out) for g in drivers
+                    )
+                    if max_drive - min_drive > 0.5:
+                        refined.append(
+                            CircuitWarning(
+                                code="output_contention",
+                                message=(
+                                    f"Logic output contention on net {drivers[0].output_node}: "
+                                    f"gates {', '.join(w.component_names)} drive opposing levels "
+                                    f"(measured contention current {i_peak * 1e3:.1f} mA)"
+                                ),
+                                component_names=w.component_names,
+                            )
+                        )
+                        continue
+            elif w.code == "output_shorted_to_supply" and w.component_names:
+                g0 = gates_by_name.get(w.component_names[0])
+                if g0 is not None:
+                    v_out = node_voltages.get(g0.output_node, 0.0)
+                    i_short = abs((g0.drive_voltage - v_out) * g0.g_out)
+                    target = (
+                        f"voltage source ({', '.join(w.component_names[1:])})"
+                        if len(w.component_names) > 1
+                        else "Ground"
+                    )
+                    refined.append(
+                        CircuitWarning(
+                            code="output_shorted_to_supply",
+                            message=(
+                                f"Gate {g0.name} output is shorted to {target}: "
+                                f"clamped at {v_out:.2f} V ({i_short * 1e3:.1f} mA short current)"
+                            ),
+                            component_names=w.component_names,
+                        )
+                    )
+                    continue
+            refined.append(w)
+
+        # Detect inputs lingering strictly inside (V_IL, V_IH).
+        for gate in gates:
+            bad_pins = gate.indeterminate_pins(node_voltages, dt=dt)
+            for pin_name, v_pin in bad_pins:
+                refined.append(
+                    CircuitWarning(
+                        code="indeterminate_logic_input",
+                        message=(
+                            f"Indeterminate logic input on {gate.name}.{pin_name}: "
+                            f"measured {v_pin:.2f} V is strictly between V_IL ({gate.v_il:g} V) "
+                            f"and V_IH ({gate.v_ih:g} V) for {gate.family}"
+                        ),
+                        component_names=(gate.name,),
+                    )
+                )
+
+        return refined
+
+    def _relax_logic_gates_dc(self) -> tuple[np.ndarray, dict[str, float]]:
+        """Run Gauss-Seidel relaxation over `LogicGate`s using the cached DC LU matrix.
+
+        Combinational DAGs and bistable latches converge monotonically to an exact fixed
+        point in at most `len(gates) + 1` sweeps. Astable ring oscillators trigger
+        cycle detection once a previously seen logic-state signature recurs and exit
+        cleanly in a symmetry-broken single-wave state.
+        """
+        assert self._lu_piv is not None
+        assert self._matrix_a is not None
+        gates = self._logic_gates()
+        dim = self._matrix_a.shape[0]
+
+        def solve_once() -> tuple[np.ndarray, dict[str, float]]:
+            if dim > 0:
+                rhs_b = self._build_rhs_dc()
+                sol_x = lu_solve(self._lu_piv, rhs_b, check_finite=True)
+                if not np.all(np.isfinite(sol_x)):
+                    raise SingularMatrixError("MNA solve produced non-finite values.")
+            else:
+                sol_x = np.zeros(0, dtype=np.float64)
+            nv: dict[str, float] = {g: 0.0 for g in self.circuit.grounded_nodes()}
+            for node, idx in self._node_to_idx.items():
+                nv[node] = float(sol_x[idx])
+            return sol_x, nv
+
+        if not gates:
+            return solve_once()
+
+        seen_states: set[tuple[bool, ...]] = {tuple(g.output_level for g in gates)}
+        max_sweeps = max(2 * len(gates) + 4, 8)
+        for _ in range(max_sweeps):
+            any_changed = False
+            for gate in gates:
+                _, nv = solve_once()
+                target = gate.evaluate_inputs(nv, dt=0.0)
+                if target != gate.output_level:
+                    gate.set_steady_state_level(target)
+                    any_changed = True
+            if not any_changed:
+                break
+            sig = tuple(g.output_level for g in gates)
+            if sig in seen_states:
+                break
+            seen_states.add(sig)
+
+        return solve_once()
+
+    def _initialize_logic_gates_t0(self, step_dt: float) -> None:
+        """Settle initial t = 0+ logic gate states and queue any initial ring edges."""
+        self._logic_t0_initialized = True
+        gates = self._logic_gates()
+        if not gates:
+            self._t0_node_voltages = {}
+            return
+
+        for gate in gates:
+            gate.reset_state()
+
+        capacitors = [c for c in self.circuit.components if isinstance(c, Capacitor)]
+        inductors = [c for c in self.circuit.components if isinstance(c, Inductor)]
+        non_gnd_nodes = self.circuit.non_ground_nodes()
+        node_to_idx = {node: idx for idx, node in enumerate(non_gnd_nodes)}
+        voltage_sources = self._voltage_sources()
+
+        n_nodes = len(non_gnd_nodes)
+        n_vs = len(voltage_sources)
+        n_caps = len(capacitors)
+        dim = n_nodes + n_vs + n_caps
+
+        if dim == 0:
+            self._t0_node_voltages = {g: 0.0 for g in self.circuit.grounded_nodes()}
+            for gate in gates:
+                gate.sample_inputs_and_schedule(self._t0_node_voltages, 0.0, step_dt)
+            return
+
+        mat = np.zeros((dim, dim), dtype=np.float64)
+        base_rhs = np.zeros(dim, dtype=np.float64)
+
+        for idx in range(n_nodes):
+            mat[idx, idx] += max(self.gmin, 1e-15)
+
+        for comp in self.circuit.components:
+            if isinstance(comp, (Resistor, Switch, Lightbulb, Voltmeter, Ammeter)):
+                if isinstance(comp, (Voltmeter, Ammeter)) and getattr(comp, "is_ideal", False):
+                    continue
+                g = comp.conductance
+                ia = node_to_idx.get(comp.nodes[0])
+                ib = node_to_idx.get(comp.nodes[1])
+                if ia is not None:
+                    mat[ia, ia] += g
+                if ib is not None:
+                    mat[ib, ib] += g
+                if ia is not None and ib is not None:
+                    mat[ia, ib] -= g
+                    mat[ib, ia] -= g
+            elif isinstance(comp, LED):
+                g_led, i_eq = comp.companion_model(0.0, "dc")
+                ia = node_to_idx.get(comp.nodes[0])
+                ib = node_to_idx.get(comp.nodes[1])
+                if ia is not None:
+                    mat[ia, ia] += g_led
+                    base_rhs[ia] += i_eq
+                if ib is not None:
+                    mat[ib, ib] += g_led
+                    base_rhs[ib] -= i_eq
+                if ia is not None and ib is not None:
+                    mat[ia, ib] -= g_led
+                    mat[ib, ia] -= g_led
+            elif isinstance(comp, LogicGate):
+                for in_node in comp.input_nodes:
+                    ii = node_to_idx.get(in_node)
+                    if ii is not None:
+                        mat[ii, ii] += comp.g_in
+                io = node_to_idx.get(comp.output_node)
+                if io is not None:
+                    mat[io, io] += comp.g_out
+            elif isinstance(comp, DCCurrentSource):
+                ia = node_to_idx.get(comp.nodes[0])
+                ib = node_to_idx.get(comp.nodes[1])
+                if ia is not None:
+                    base_rhs[ia] += comp.dc_current
+                if ib is not None:
+                    base_rhs[ib] -= comp.dc_current
+            elif isinstance(comp, Inductor):
+                ia = node_to_idx.get(comp.nodes[0])
+                ib = node_to_idx.get(comp.nodes[1])
+                if ia is not None:
+                    base_rhs[ia] -= comp.ind_current
+                if ib is not None:
+                    base_rhs[ib] += comp.ind_current
+
+        for k, vs in enumerate(voltage_sources):
+            row_k = n_nodes + k
+            ia = node_to_idx.get(vs.nodes[0])
+            ib = node_to_idx.get(vs.nodes[1])
+            if ia is not None:
+                mat[ia, row_k] += 1.0
+                mat[row_k, ia] += 1.0
+            if ib is not None:
+                mat[ib, row_k] -= 1.0
+                mat[row_k, ib] -= 1.0
+            if isinstance(vs, Ammeter) and getattr(vs, "is_ideal", False):
+                r_int = vs.r_internal if self.circuit.is_ammeter_in_parallel(vs) else 0.0
+            else:
+                r_int = getattr(vs, "r_internal", 0.0)
+            if r_int > 0.0:
+                mat[row_k, row_k] += r_int
+            base_rhs[row_k] = vs.voltage_at(0.0) if hasattr(vs, "voltage_at") else 0.0
+
+        for k, cap in enumerate(capacitors):
+            row_k = n_nodes + n_vs + k
+            ia = node_to_idx.get(cap.nodes[0])
+            ib = node_to_idx.get(cap.nodes[1])
+            if ia is not None:
+                mat[ia, row_k] += 1.0
+                mat[row_k, ia] += 1.0
+            if ib is not None:
+                mat[ib, row_k] -= 1.0
+                mat[row_k, ib] -= 1.0
+            if cap.esr > 0.0:
+                mat[row_k, row_k] -= cap.esr
+            base_rhs[row_k] = cap.cap_voltage
+
+        try:
+            t0_lu = lu_factor(mat, check_finite=True)
+        except (ValueError, np.linalg.LinAlgError):
+            return
+
+        def solve_t0() -> dict[str, float]:
+            rhs = base_rhs.copy()
+            for gate in gates:
+                io = node_to_idx.get(gate.output_node)
+                if io is not None:
+                    rhs[io] += gate.g_out * gate.drive_voltage
+            sol = lu_solve(t0_lu, rhs, check_finite=True)
+            nv = {g: 0.0 for g in self.circuit.grounded_nodes()}
+            for node, idx in node_to_idx.items():
+                nv[node] = float(sol[idx])
+            return nv
+
+        seen_states: set[tuple[bool, ...]] = {tuple(g.output_level for g in gates)}
+        max_sweeps = max(2 * len(gates) + 4, 8)
+        for _ in range(max_sweeps):
+            any_changed = False
+            for gate in gates:
+                nv = solve_t0()
+                target = gate.evaluate_inputs(nv, dt=0.0)
+                if target != gate.output_level:
+                    gate.set_steady_state_level(target)
+                    any_changed = True
+            if not any_changed:
+                break
+            sig = tuple(g.output_level for g in gates)
+            if sig in seen_states:
+                break
+            seen_states.add(sig)
+
+        node_v0 = solve_t0()
+        self._t0_node_voltages = node_v0
+        for gate in gates:
+            v_out = node_v0.get(gate.output_node, 0.0)
+            i_out = (gate.drive_voltage - v_out) * gate.g_out
+            p_out = (gate.drive_voltage - v_out) * i_out
+            p_in = sum((node_v0.get(n, 0.0) ** 2) * gate.g_in for n in gate.input_nodes)
+            gate.voltage = v_out
+            gate.current = i_out
+            gate.power = p_out + p_in
+            gate.sample_inputs_and_schedule(node_v0, 0.0, step_dt)
 
     def solve_dc(self, *, compute_cond: bool = False) -> SolveResult:
         """Solve the DC operating point of the circuit.
@@ -487,8 +819,13 @@ class MNASolver:
         warnings = self.circuit.validate_topology()
         self._topology_warnings = list(warnings)
 
+        gates = self._logic_gates()
+        for gate in gates:
+            gate.reset_state()
+
         has_leds = any(isinstance(c, LED) for c in self.circuit.components)
         max_diode_iters = 10 if has_leds else 1
+        rebuilt_any = False
 
         for _d_iter in range(max_diode_iters):
             current_sig = self._dc_conductance_signature()
@@ -501,24 +838,28 @@ class MNASolver:
 
             if needs_rebuild:
                 self._assemble_and_factorize(mode="dc")
+                rebuilt_any = True
 
             assert self._lu_piv is not None
             assert self._matrix_a is not None
 
             dim = self._matrix_a.shape[0]
-            if dim > 0:
-                rhs_b = self._build_rhs_dc()
-                solution_x = lu_solve(self._lu_piv, rhs_b, check_finite=True)
-                if not np.all(np.isfinite(solution_x)):
-                    raise SingularMatrixError("MNA solve produced non-finite values.")
+            if gates:
+                solution_x, node_voltages = self._relax_logic_gates_dc()
             else:
-                solution_x = np.zeros(0, dtype=np.float64)
+                if dim > 0:
+                    rhs_b = self._build_rhs_dc()
+                    solution_x = lu_solve(self._lu_piv, rhs_b, check_finite=True)
+                    if not np.all(np.isfinite(solution_x)):
+                        raise SingularMatrixError("MNA solve produced non-finite values.")
+                else:
+                    solution_x = np.zeros(0, dtype=np.float64)
 
-            node_voltages: dict[str, float] = {}
-            for gnd_node in self.circuit.grounded_nodes():
-                node_voltages[gnd_node] = 0.0
-            for node, idx in self._node_to_idx.items():
-                node_voltages[node] = float(solution_x[idx])
+                node_voltages = {}
+                for gnd_node in self.circuit.grounded_nodes():
+                    node_voltages[gnd_node] = 0.0
+                for node, idx in self._node_to_idx.items():
+                    node_voltages[node] = float(solution_x[idx])
 
             state_changed = False
             for comp in self.circuit.components:
@@ -544,6 +885,17 @@ class MNASolver:
                 comp.current = 0.0
                 comp.power = 0.0
                 branch_currents[comp.name] = 0.0
+                continue
+
+            if isinstance(comp, LogicGate):
+                v_out = node_voltages.get(comp.output_node, 0.0)
+                i_out = (comp.drive_voltage - v_out) * comp.g_out
+                p_out = (comp.drive_voltage - v_out) * i_out
+                p_in = sum((node_voltages.get(n, 0.0) ** 2) * comp.g_in for n in comp.input_nodes)
+                comp.voltage = v_out
+                comp.current = i_out
+                comp.power = p_out + p_in
+                branch_currents[comp.name] = i_out
                 continue
 
             v_a = node_voltages.get(comp.nodes[0], 0.0)
@@ -631,6 +983,9 @@ class MNASolver:
             if isinstance(comp, Voltmeter):
                 self._update_voltmeter_loading(comp)
 
+        warnings = self._collect_gate_runtime_warnings(
+            node_voltages, dt=0.0, base_warnings=warnings
+        )
         cond_num = self.compute_condition_number() if (compute_cond and dim > 0) else None
         return SolveResult(
             node_voltages=node_voltages,
@@ -640,7 +995,7 @@ class MNASolver:
             integration_method="dc",
             condition_number=cond_num,
             warnings=warnings,
-            rebuilt_matrix=needs_rebuild,
+            rebuilt_matrix=rebuilt_any,
         )
 
     def _initialize_t0_derivatives(self) -> None:
@@ -703,6 +1058,15 @@ class MNASolver:
                     rhs[ia] -= comp.ind_current
                 if ib is not None:
                     rhs[ib] += comp.ind_current
+            elif isinstance(comp, LogicGate):
+                for in_node in comp.input_nodes:
+                    ii = node_to_idx.get(in_node)
+                    if ii is not None:
+                        mat[ii, ii] += comp.g_in
+                io = node_to_idx.get(comp.output_node)
+                if io is not None:
+                    mat[io, io] += comp.g_out
+                    rhs[io] += comp.g_out * comp.drive_voltage
 
         for k, vs in enumerate(voltage_sources):
             row_k = n_nodes + k
@@ -788,13 +1152,15 @@ class MNASolver:
 
         if self._transient_step_index == 0:
             self._topology_warnings = self.circuit.validate_topology()
+            if not self._logic_t0_initialized:
+                self._initialize_logic_gates_t0(dt)
             if not use_be_on_first_step:
                 self._initialize_t0_derivatives()
                 self._be_steps_remaining = 0
 
         t_next = self.sim_time + dt
 
-        # 1. Check timed switches and update thermal lightbulb states from previous step.
+        # 1. Check timed switches, thermal lightbulb states, and due logic-gate transitions.
         switch_toggled = False
         switch_opened = False
         for comp in self.circuit.components:
@@ -806,6 +1172,8 @@ class MNASolver:
                         switch_opened = True
             elif isinstance(comp, Lightbulb) and self._transient_step_index > 0:
                 comp.advance_thermal_state(dt)
+            elif isinstance(comp, LogicGate):
+                comp.prepare_step(t_next, dt)
 
         if switch_toggled and use_be_on_switch:
             # Use Backward Euler on the switching step and two settling steps after it
@@ -922,8 +1290,15 @@ class MNASolver:
                 for node, idx in self._node_to_idx.items():
                     node_voltages[node] = float(solution_x[idx])
 
+        # 3d. Sample logic-gate inputs after convergence and schedule future delayed transitions.
+        for comp in self.circuit.components:
+            if isinstance(comp, LogicGate):
+                comp.sample_inputs_and_schedule(node_voltages, t_next, dt)
+
         # 4. Update component voltages, currents, companion states, and meter buffers.
-        step_warnings: list[CircuitWarning] = list(self._topology_warnings)
+        step_warnings = self._collect_gate_runtime_warnings(
+            node_voltages, dt=dt, base_warnings=self._topology_warnings
+        )
         branch_currents: dict[str, float] = {}
 
         # Nominal source voltage scale for inductive kickback comparison
@@ -948,6 +1323,17 @@ class MNASolver:
                 comp.current = 0.0
                 comp.power = 0.0
                 branch_currents[comp.name] = 0.0
+                continue
+
+            if isinstance(comp, LogicGate):
+                v_out = node_voltages.get(comp.output_node, 0.0)
+                i_out = (comp.drive_voltage - v_out) * comp.g_out
+                p_out = (comp.drive_voltage - v_out) * i_out
+                p_in = sum((node_voltages.get(n, 0.0) ** 2) * comp.g_in for n in comp.input_nodes)
+                comp.voltage = v_out
+                comp.current = i_out
+                comp.power = p_out + p_in
+                branch_currents[comp.name] = i_out
                 continue
 
             v_a = node_voltages.get(comp.nodes[0], 0.0)
@@ -1092,9 +1478,10 @@ class MNASolver:
         step_dt = dt if (dt is not None and dt > 0.0) else self.choose_default_dt(duration)
         n_steps = max(1, int(round(duration / step_dt)))
 
-        # Validate topology and initialize t = 0+ voltages/currents for index 0 recording.
+        # Validate topology and initialize t = 0+ states for index 0 recording.
         all_warnings: list[CircuitWarning] = list(self.circuit.validate_topology())
         self._topology_warnings = list(all_warnings)
+        self._initialize_logic_gates_t0(step_dt)
         self._initialize_t0_derivatives()
         if use_be_on_first_step:
             self._be_steps_remaining = 1
@@ -1118,16 +1505,27 @@ class MNASolver:
         # Record t = 0 state
         times[0] = self.sim_time
         gnd_nodes = self.circuit.grounded_nodes()
+        if self._t0_node_voltages:
+            for n, v in self._t0_node_voltages.items():
+                if n in node_history:
+                    node_history[n][0] = v
         for comp in self.circuit.components:
             curr_history[comp.name][0] = comp.current
             volt_history[comp.name][0] = comp.voltage
-            if not isinstance(comp, Ground) and len(comp.nodes) >= 2:
+            if not self._t0_node_voltages and not isinstance(comp, Ground) and len(comp.nodes) >= 2:
                 if comp.nodes[1] in gnd_nodes and comp.nodes[0] not in gnd_nodes:
                     node_history[comp.nodes[0]][0] = comp.voltage
 
         rebuild_count = 0
-        seen_warning_keys: set[tuple[str, tuple[str, ...]]] = {
-            (w.code, w.component_names) for w in all_warnings
+        all_warnings = (
+            self._collect_gate_runtime_warnings(
+                self._t0_node_voltages, dt=step_dt, base_warnings=all_warnings
+            )
+            if self._t0_node_voltages
+            else all_warnings
+        )
+        seen_warning_idx: dict[tuple[str, tuple[str, ...]], int] = {
+            (w.code, w.component_names): idx for idx, w in enumerate(all_warnings)
         }
 
         for k in range(1, n_steps + 1):
@@ -1147,9 +1545,12 @@ class MNASolver:
                 volt_history[comp.name][k] = comp.voltage
             for w in res.warnings:
                 key = (w.code, w.component_names)
-                if key not in seen_warning_keys:
-                    seen_warning_keys.add(key)
+                existing_idx = seen_warning_idx.get(key)
+                if existing_idx is None:
+                    seen_warning_idx[key] = len(all_warnings)
                     all_warnings.append(w)
+                else:
+                    all_warnings[existing_idx] = w
 
         return TransientResult(
             times=times,

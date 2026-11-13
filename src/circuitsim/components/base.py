@@ -96,6 +96,20 @@ _DEFAULT_PARAMETERS_BY_TYPE: dict[str, tuple[ComponentParameter, ...]] = {
     "ground": (),
 }
 
+_LOGIC_GATE_PARAMETERS: tuple[ComponentParameter, ...] = (
+    ComponentParameter("t_pd", "Propagation Delay", "s", allow_zero=True),
+    ComponentParameter("t_edge", "Rise/Fall Time", "s", allow_zero=True),
+    ComponentParameter("v_il", "Input Low Max", "V", allow_zero=True, allow_negative=True),
+    ComponentParameter("v_ih", "Input High Min", "V", allow_zero=True, allow_negative=True),
+    ComponentParameter("v_ol", "Output Low", "V", allow_zero=True, allow_negative=True),
+    ComponentParameter("v_oh", "Output High", "V", allow_zero=True, allow_negative=True),
+    ComponentParameter("r_in", "Input Resistance", "Ω"),
+    ComponentParameter("r_out", "Output Resistance", "Ω"),
+)
+
+for _gate_op in ("not", "and", "or", "nand", "nor", "xor", "xnor"):
+    _DEFAULT_PARAMETERS_BY_TYPE[f"gate_{_gate_op}"] = _LOGIC_GATE_PARAMETERS
+
 
 class Component(ABC):
     """Abstract base class for all electrical components in a circuit.
