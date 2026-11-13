@@ -396,3 +396,43 @@ When ready to perform Stage 2 (internal/package rename after Stage 1 settles):
    - **Risk 1 — Merge Conflicts Across Active Feature Branches**: Renaming `src/circuitsim/` touches every Python file. *Mitigation*: Only perform Stage 2 when `wire-redesign` (and any other open branches) have been merged to `main`.
    - **Risk 2 — Stale `.venv` Editable Install / `.egg-info`**: Editable installs cache the old package name until `pip install -e .` is re-run, causing `ModuleNotFoundError` or stale package metadata. *Mitigation*: Include `pip uninstall -y circuitsim && pip install -e .[dev]` in the Stage 2 checklist and CI.
    - **Risk 3 — Drag-and-Drop / Saved `.circ` Compatibility**: Changing `MIME_COMPONENT_ID` mid-session isn't persistent, whereas `.circ` `"format"` IS persistent; keep `ACCEPTED_FORMAT_NAMES = ("circuitsim", "ohmbench")` indefinitely so user files never break.
+
+## LOGIC GATES PLAN
+
+1. **MODEL (Compare -> Recommend)**
+   - *Options*: (a) **Last-step sampled inputs + RHS-only Thévenin/Norton output (`R_out` fixed e.g. `100 Ω`, `R_in = 10 MΩ`, `t_pd >= dt` delay buffer, linear ramp over `t_r/t_f`)**; (b) Switch-like `R_out` toggle forcing `lu_factor` rebuilds + Backward Euler bursts per edge; (c) LED-style same-step iteration over nonlinear curves (`solver.py` `is_conducting` loop).
+   - *Comparison*: (b) destroys fixed-`dt` LU caching on clocks/ring oscillators; (c) fails or diverges on bistable latches (multiple DC roots) and astable loops. (a) decouples logic state from linear matrix structure so LU `(lu, piv)` stays cached cleanly every step (`lu_solve` only).
+   - *Recommendation*: Use **(a)** with fixed `R_in = 10 MΩ` to `GND`, fixed `R_out = 100 Ω` + smoothed Norton current target `V_out(t) / R_out`, family presets (**5 V CMOS**: `V_IL=1.5, V_IH=3.5, V_OL=0.05, V_OH=4.95 V`; **5 V TTL**: `0.8, 2.0, 0.4, 3.4 V`; **3.3 V LVCMOS**: `0.8, 2.0, 0.1, 3.2 V`), default `t_pd = 10 ns` (clamped `>= dt`), and finite ramp `t_edge = max(t_r, 2*dt)` so Trapezoidal integration never sees step ringing.
+   - *Loops & Latches*: Gates require causal `t_pd >= dt`. True-delay loops (SR NAND latch, odd-inverter ring oscillator) naturally settle or oscillate over time (`Q` initialized `L` at `t=0` to break symmetric latch ties deterministically); zero-delay combinational cycles (`t_pd = 0` topological cycle) are caught pre-run via Kahn/DFS topological check and reported.
+
+2. **SUPPLY**
+   - *v1*: Inputs and outputs reference circuit ground `"0"` implicitly (`Ground` still required), minimizing clutter on 2-input gates.
+   - *Future explicit Vcc/GND*: Store `"supply_mode": "implicit"` (plus preset family) in `.circ` JSON; later add `"explicit"` toggle clamping `V_OH <= V_cc`, `V_OL >= V_gnd`, active only when `V_cc - V_gnd >= V_min` without breaking older saved files.
+
+3. **DIAGNOSTICS (Problems Panel, plain 3-part What/Why/How style)**
+   - **Floating input**: Unwired/high-Z input terminal (only internal `R_in` to GND) -> error naming gate & pin (`"Tie input to High/Low or wire to a driver"`).
+   - **Undefined / mid-band voltage**: `V_IL < V_in < V_IH` -> amber warning reporting measured voltage and active family thresholds.
+   - **Output contention**: >= 2 gate outputs tied to one net (especially driving opposite levels) -> warning/error reporting net, drivers, and contention current `I = (V_OH - V_OL) / (2 * R_out)`.
+   - **Output shorted to supply/ground**: Gate output node clamped directly to ideal `DCVoltageSource` or `Ground` -> warning/error naming source & current.
+
+4. **SYMBOLS & FOOTPRINTS (20 px grid, IEC 60617, no SVG `<text>`)**
+   - *Footprints*: **NOT** (`80x40` / `4x2` grid): `in` at `[-2, 0]`, `out` at `[2, 0]`. **2-input gates (`AND, OR, NAND, NOR, XOR, XNOR`)**: `80x80` (`4x4` grid) so center & all pins sit strictly on 20 px intersections: `a` at `[-2, -1]`, `b` at `[-2, +1]`, `out` at `[2, 0]` (`40 px` pin spacing, body `x=[-20..20], y=[-30..30]`, 4 px negation circle on `NAND/NOR/XNOR/NOT`).
+   - *Labels without SVG `<text>`*: Author qualifiers (`&`, `>=1`, `=1`, `1`) as vector `<path>` geometry in SVG (`stroke="currentColor"`) and mirror in `_paint_procedural_iec` (upright body rendering across rotations). Reuse `polarity_mark_positions` pattern + all-8-orientation pixel/terminal tests.
+
+5. **TEACHING FEATURES**
+   - **Logic Probe component**: Compact `1`-pin indicator displaying live `H` / `L` / `?` and node voltage.
+   - **Net logic coloring** (optional canvas toggle): Green = High (`>= V_IH`), Blue/Gray = Low (`<= V_IL`), Amber = Undefined/Contention.
+   - **Truth-Table Dialog**: Headless helper sweeps all `2^n` input combinations (stepping past `t_pd`) and shows measured voltages + `0/1/X` table beside ideal values.
+
+6. **TESTS (Hand-worked & analytic)**
+   - Analytic truth tables across all 7 gates and all 3 logic families.
+   - Propagation delay & rise-time verification (`v_out` crosses 50% at `t = t_pd + t_edge/2`).
+   - Odd-stage ring oscillator (`N = 3, 5`) matching analytic period `T = 2 * N * t_pd`.
+   - Cross-coupled NAND SR latch verifying Set (`S=0,R=1`), Hold (`1,1` keeps Q), Reset (`1,0`), and recovery.
+   - 5-gate XOR+AND half-adder (`S = A xor B`, `C = A & B`); contention current `I = (V_OH - V_OL) / (R_out1 + R_out2)`; zero-delay cycle error; Backward Euler / LU-reuse convergence checks.
+
+7. **CHAT SPLIT, SPEED, RISKS & PREREQUISITES**
+   - *Prerequisites*: **N-terminal support / 3-terminal pack** across `engine/netlist.py` (`validate_topology` currently inspects `nodes[0..1]` only and needs per-pin GND edges so open gate outputs work while floating inputs warn), `solver.py`, `connectivity`, and `ComponentItem`; **Wire Redesign Step 4** (explicit nets for contention checks); **Milestone 4 Oscilloscope** (needed for live timing waveforms/ring oscillators, while headless tests & truth tables work first).
+   - *Splits*: **Chat 1 (Large, strong model)**: Generalize MNA/`Circuit` to N-terminal parts + `LogicGate` RHS-delay model + contention/cycle checks + core tests; **Chat 2 (Medium)**: 7 IEC footprints/SVG path qualifiers + 8-orientation tests + palette/dialog/v2 save; **Chat 3 (Medium)**: Diagnostics + Logic Probe + net coloring + Truth-Table dialog; **Chat 4 (Small)**: Scope waveform demos (ring oscillator, SR latch).
+   - *Solver Speed*: Fixed `R_out`/`R_in` preserves cached LU factorization (fast `lu_solve` only); ns-scale `t_pd` needs small `dt`, handled smoothly by decoupled sim speed.
+   - *Risks*: Auditing `nodes[0..1]` assumptions across solver/netlist/canvas cleanly; symmetric SR latch metastability at `t=0` (mitigated via deterministic initial state); keeping `dt <= t_pd / 2` so delay & ramp stay well resolved.
