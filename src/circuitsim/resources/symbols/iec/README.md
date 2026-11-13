@@ -48,3 +48,10 @@ Run the symbol preview tool at any time to inspect all symbols in both Dark and 
 | `lightbulb`      | `lightbulb.json`    | `lightbulb.svg`     | —                                                  |
 | `voltmeter`      | `voltmeter.json`    | `voltmeter.svg`     | —                                                  |
 | `ammeter`        | `ammeter.json`      | `ammeter.svg`       | —                                                  |
+| `gate_not`       | `gate_not.json`     | `gate_not.svg`      | 80x40 (`4x2`), extension symbol (`include_extensions=True`) |
+| `gate_and`       | `gate_and.json`     | `gate_and.svg`      | 80x80 (`4x4`), extension symbol (`include_extensions=True`) |
+| `gate_or`        | `gate_or.json`      | `gate_or.svg`       | 80x80 (`4x4`), extension symbol (`include_extensions=True`) |
+| `gate_nand`      | `gate_nand.json`    | `gate_nand.svg`     | 80x80 (`4x4`), extension symbol (`include_extensions=True`) |
+| `gate_nor`       | `gate_nor.json`     | `gate_nor.svg`      | 80x80 (`4x4`), extension symbol (`include_extensions=True`) |
+| `gate_xor`       | `gate_xor.json`     | `gate_xor.svg`      | 80x80 (`4x4`), extension symbol (`include_extensions=True`) |
+| `gate_xnor`      | `gate_xnor.json`    | `gate_xnor.svg`     | 80x80 (`4x4`), extension symbol (`include_extensions=True`) |

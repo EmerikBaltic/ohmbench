@@ -1,0 +1,15 @@
+{
+  "id": "gate_not",
+  "display_name": "NOT Gate",
+  "category": "Logic Gates",
+  "style": "iec",
+  "grid_size": [4, 2],
+  "terminals": [
+    {"name": "in", "grid_pos": [-2, 0]},
+    {"name": "out", "grid_pos": [2, 0]}
+  ],
+  "label_offset": [0, -1.35],
+  "value_offset": [0, 1.35],
+  "default_svg": "gate_not.svg",
+  "states": {}
+}

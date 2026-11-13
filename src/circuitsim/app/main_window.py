@@ -1018,8 +1018,13 @@ class MainWindow(QMainWindow):
             isinstance(param_map, dict)
             and self._sim_state in (SimulationState.RUNNING, SimulationState.PAUSED)
         ):
-            for k, v in param_map.items():
-                self.sim_controller.update_component_parameter(comp_name, k, v)
+            if len(param_map) > 1:
+                self.sim_controller.update_component_parameter(
+                    comp_name, "__batch__", dict(param_map)
+                )
+            else:
+                for k, v in param_map.items():
+                    self.sim_controller.update_component_parameter(comp_name, k, v)
 
     def _on_simulation_frame(self, frame: SimulationFrame) -> None:
         self._sim_state = frame.state

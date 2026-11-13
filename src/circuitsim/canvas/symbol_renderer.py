@@ -145,8 +145,16 @@ class SymbolLibrary:
             stroke_color=stroke_color,
             flat_color=polarity_color if component_id == "led" else None,
         )
+        use_procedural_gate = component_id.startswith("gate_") and (
+            (rotation_deg % 360) != 0 or flipped_h
+        )
         used_svg = False
-        if svg_renderer is not None and lever_angle_deg is None and state != "burned_out":
+        if (
+            svg_renderer is not None
+            and lever_angle_deg is None
+            and state != "burned_out"
+            and not use_procedural_gate
+        ):
             svg_renderer.render(painter, target_rect)
             used_svg = True
         else:
@@ -429,6 +437,74 @@ class SymbolLibrary:
                 painter.drawLine(QPointF(px - 2.5, py), QPointF(px + 2.5, py))
                 painter.drawLine(QPointF(px, py - 2.5), QPointF(px, py + 2.5))
 
+            painter.restore()
+
+        elif component_id.startswith("gate_"):
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            if component_id == "gate_not":
+                body_cx = -2.0
+                painter.drawLine(QPointF(-40.0, 0.0), QPointF(-16.0, 0.0))
+                painter.drawRect(QRectF(-16.0, -14.0, 28.0, 28.0))
+                painter.drawEllipse(QPointF(16.0, 0.0), 4.0, 4.0)
+                painter.drawLine(QPointF(20.0, 0.0), QPointF(40.0, 0.0))
+            else:
+                inverting = component_id in {"gate_nand", "gate_nor", "gate_xnor"}
+                body_cx = -2.0 if inverting else 0.0
+                box_w = 32.0 if inverting else 36.0
+                painter.drawLine(QPointF(-40.0, -20.0), QPointF(-18.0, -20.0))
+                painter.drawLine(QPointF(-40.0, 20.0), QPointF(-18.0, 20.0))
+                painter.drawRect(QRectF(-18.0, -28.0, box_w, 56.0))
+                if inverting:
+                    painter.drawEllipse(QPointF(18.0, 0.0), 4.0, 4.0)
+                    painter.drawLine(QPointF(22.0, 0.0), QPointF(40.0, 0.0))
+                else:
+                    painter.drawLine(QPointF(18.0, 0.0), QPointF(40.0, 0.0))
+
+            painter.save()
+            painter.translate(body_cx, 0.0)
+            if rotation_deg:
+                painter.rotate(-float(rotation_deg))
+            if flipped_h:
+                painter.scale(-1.0, 1.0)
+
+            if component_id == "gate_not":
+                one = QPainterPath(QPointF(-3.0, -3.5))
+                one.lineTo(QPointF(0.0, -6.0))
+                one.lineTo(QPointF(0.0, 6.0))
+                painter.drawPath(one)
+                painter.drawLine(QPointF(-3.0, 6.0), QPointF(3.0, 6.0))
+            elif component_id in {"gate_and", "gate_nand"}:
+                amp = QPainterPath(QPointF(5.0, 6.5))
+                amp.lineTo(QPointF(-2.5, -1.5))
+                amp.cubicTo(
+                    QPointF(-4.5, -3.5), QPointF(-3.5, -6.5), QPointF(-0.5, -6.5)
+                )
+                amp.cubicTo(QPointF(2.0, -6.5), QPointF(3.0, -3.5), QPointF(0.5, -1.5))
+                amp.lineTo(QPointF(-3.5, 1.5))
+                amp.cubicTo(
+                    QPointF(-5.5, 3.0), QPointF(-5.0, 6.5), QPointF(-1.0, 6.5)
+                )
+                amp.cubicTo(QPointF(2.0, 6.5), QPointF(4.0, 4.5), QPointF(5.0, 1.5))
+                painter.drawPath(amp)
+            elif component_id in {"gate_or", "gate_nor"}:
+                geq = QPainterPath(QPointF(-7.5, -6.0))
+                geq.lineTo(QPointF(-1.5, -2.25))
+                geq.lineTo(QPointF(-7.5, 1.5))
+                painter.drawPath(geq)
+                painter.drawLine(QPointF(-7.5, 5.5), QPointF(-1.5, 5.5))
+                one = QPainterPath(QPointF(2.0, -3.5))
+                one.lineTo(QPointF(4.5, -6.0))
+                one.lineTo(QPointF(4.5, 6.0))
+                painter.drawPath(one)
+                painter.drawLine(QPointF(2.0, 6.0), QPointF(7.0, 6.0))
+            else:
+                painter.drawLine(QPointF(-7.5, -2.5), QPointF(-1.5, -2.5))
+                painter.drawLine(QPointF(-7.5, 2.5), QPointF(-1.5, 2.5))
+                one = QPainterPath(QPointF(2.0, -3.5))
+                one.lineTo(QPointF(4.5, -6.0))
+                one.lineTo(QPointF(4.5, 6.0))
+                painter.drawPath(one)
+                painter.drawLine(QPointF(2.0, 6.0), QPointF(7.0, 6.0))
             painter.restore()
 
         else:

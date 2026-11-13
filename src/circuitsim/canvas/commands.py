@@ -8,6 +8,7 @@ from PySide6.QtCore import QPointF
 from PySide6.QtGui import QUndoCommand
 
 from circuitsim.canvas.connectivity import PointPx
+from circuitsim.components.logic_gate import LogicGate
 
 if TYPE_CHECKING:
     from circuitsim.canvas.component_item import ComponentItem
@@ -295,14 +296,21 @@ class EditComponentParametersCommand(QUndoCommand):
 
     def _apply(self, params: dict[str, object], show_val: bool) -> None:
         comp = self.item.component
-        param_keys = {p.key for p in comp.get_editable_parameters()}
-        for k, v in params.items():
-            if k in param_keys:
-                comp.set_parameter_value(k, v)
-            elif hasattr(comp, k):
-                setattr(comp, k, v)
+        was_running = self.item.live_display_value is not None
+        if isinstance(comp, LogicGate):
+            comp.set_parameters_batch(params)  # type: ignore[arg-type]
+            if not was_running and "initial_state" in params:
+                comp.reset_state()
+        else:
+            param_keys = {p.key for p in comp.get_editable_parameters()}
+            for k, v in params.items():
+                if k in param_keys:
+                    comp.set_parameter_value(k, v)
+                elif hasattr(comp, k):
+                    setattr(comp, k, v)
         comp.show_value = show_val
         self.item.live_display_value = None
+        self.item.setToolTip(self.item.get_live_tooltip(is_running=False))
         self.item.update()
         emitted_params: dict[str, object] = {}
         for k, v in params.items():

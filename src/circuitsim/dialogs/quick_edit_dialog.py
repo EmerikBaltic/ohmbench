@@ -23,6 +23,7 @@ from PySide6.QtWidgets import (
 from circuitsim.components.base import Component, ComponentParameter
 from circuitsim.components.led import LED, LED_COLOUR_PRESETS
 from circuitsim.components.lightbulb import Lightbulb
+from circuitsim.components.logic_gate import LOGIC_FAMILY_PRESETS, LogicGate
 from circuitsim.components.meters import Ammeter, Voltmeter
 from circuitsim.components.switch import Switch
 from circuitsim.dialogs.value_parser import (
@@ -87,6 +88,8 @@ class QuickValueDialog(QDialog):
         self._updating_color: bool = False
         self._updating_vf: bool = False
         self._updating_meter: bool = False
+        self._updating_gate_family: bool = False
+        self._updating_gate_thresholds: bool = False
         self.led_color_combo: QComboBox | None = None
         self.led_datasheet_lbl: QLabel | None = None
         self.led_datasheet_hint_lbl: QLabel | None = None
@@ -95,6 +98,9 @@ class QuickValueDialog(QDialog):
         self.meter_preset_combo: QComboBox | None = None
         self.meter_loading_notice_label: QLabel | None = None
         self.meter_ideal_hint_lbl: QLabel | None = None
+        self.gate_family_combo: QComboBox | None = None
+        self.gate_initial_combo: QComboBox | None = None
+        self.gate_family_hint_lbl: QLabel | None = None
 
         form = QFormLayout()
         form.setSpacing(8)
@@ -139,6 +145,40 @@ class QuickValueDialog(QDialog):
             self.led_color_combo.setCurrentText(component.color_name)
             self.led_color_combo.currentTextChanged.connect(self._on_led_color_changed)
             form.addRow("Colour:", self.led_color_combo)
+
+        if isinstance(component, LogicGate):
+            self.gate_family_combo = QComboBox(self)
+            self.gate_family_combo.setObjectName("gate_family_combo")
+            for label, key in (
+                ("5V CMOS", "5V_CMOS"),
+                ("5V TTL", "5V_TTL"),
+                ("3.3V LVCMOS", "3V3_LVCMOS"),
+                ("Custom", "Custom"),
+            ):
+                self.gate_family_combo.addItem(label, key)
+            fam_idx = self.gate_family_combo.findData(component.family)
+            if fam_idx >= 0:
+                self.gate_family_combo.setCurrentIndex(fam_idx)
+            self.gate_family_combo.currentIndexChanged.connect(
+                self._on_gate_family_changed
+            )
+
+            fam_box = QWidget(self)
+            fam_vbox = QVBoxLayout(fam_box)
+            fam_vbox.setContentsMargins(0, 0, 0, 0)
+            fam_vbox.setSpacing(2)
+            fam_vbox.addWidget(self.gate_family_combo)
+
+            self.gate_family_hint_lbl = QLabel(
+                self._format_gate_family_hint(component.family), self
+            )
+            self.gate_family_hint_lbl.setObjectName("gate_family_hint_lbl")
+            self.gate_family_hint_lbl.setWordWrap(True)
+            self.gate_family_hint_lbl.setStyleSheet(
+                "color: #58A6FF; font-size: 11px;"
+            )
+            fam_vbox.addWidget(self.gate_family_hint_lbl)
+            form.addRow("Logic Family:", fam_box)
 
         for spec in self._param_specs:
             field_container = QWidget(self)
@@ -305,6 +345,16 @@ class QuickValueDialog(QDialog):
             self.led_burnout_current_edit.setObjectName("led_burnout_current_edit")
             form.addRow("Burn-out Current Threshold:", self.led_burnout_current_edit)
 
+        if isinstance(component, LogicGate):
+            self.gate_initial_combo = QComboBox(self)
+            self.gate_initial_combo.setObjectName("gate_initial_combo")
+            self.gate_initial_combo.addItem("Low (L)", False)
+            self.gate_initial_combo.addItem("High (H)", True)
+            init_idx = self.gate_initial_combo.findData(bool(component.initial_state))
+            if init_idx >= 0:
+                self.gate_initial_combo.setCurrentIndex(init_idx)
+            form.addRow("Initial Output (t = 0):", self.gate_initial_combo)
+
         self.show_value_cb = QCheckBox("Show value on schematic canvas")
         self.show_value_cb.setChecked(component.show_value)
         form.addRow("Display:", self.show_value_cb)
@@ -356,6 +406,34 @@ class QuickValueDialog(QDialog):
             self._updating_vf = False
         elif color_name == "Custom" and self.led_datasheet_lbl is not None:
             self.led_datasheet_lbl.setText("Forward voltage: user defined (Custom)")
+
+    @staticmethod
+    def _format_gate_family_hint(family_key: str) -> str:
+        if family_key == "Custom" or family_key not in LOGIC_FAMILY_PRESETS:
+            return "User-defined input thresholds and output rails (Custom)."
+        preset = LOGIC_FAMILY_PRESETS[family_key]
+        return (
+            f"Preset rails/thresholds: V_IL={preset['v_il']} V, V_IH={preset['v_ih']} V, "
+            f"V_OL={preset['v_ol']} V, V_OH={preset['v_oh']} V"
+        )
+
+    def _on_gate_family_changed(self, _index: int) -> None:
+        if (
+            self._updating_gate_family
+            or not isinstance(self.component, LogicGate)
+            or self.gate_family_combo is None
+        ):
+            return
+        family_key = str(self.gate_family_combo.currentData() or "Custom")
+        if family_key in LOGIC_FAMILY_PRESETS and family_key != "Custom":
+            preset = LOGIC_FAMILY_PRESETS[family_key]
+            self._updating_gate_thresholds = True
+            for k in ("v_il", "v_ih", "v_ol", "v_oh"):
+                if k in self.inputs:
+                    self.inputs[k].setText(str(preset[k]))
+            self._updating_gate_thresholds = False
+        if self.gate_family_hint_lbl is not None:
+            self.gate_family_hint_lbl.setText(self._format_gate_family_hint(family_key))
 
     def _on_meter_preset_changed(self, text: str) -> None:
         if self._updating_meter or not isinstance(self.component, (Voltmeter, Ammeter)):
@@ -442,6 +520,32 @@ class QuickValueDialog(QDialog):
                         self._updating_color = False
             except ValueError:
                 pass
+
+        if (
+            isinstance(self.component, LogicGate)
+            and spec.key in ("v_il", "v_ih", "v_ol", "v_oh")
+            and not self._updating_gate_thresholds
+            and self.gate_family_combo is not None
+        ):
+            curr_family = str(self.gate_family_combo.currentData() or "Custom")
+            if curr_family in LOGIC_FAMILY_PRESETS and curr_family != "Custom":
+                preset = LOGIC_FAMILY_PRESETS[curr_family]
+                try:
+                    typed_val = parse_engineering_value(
+                        self.inputs[spec.key].text().strip()
+                    )
+                    if not math.isclose(typed_val, preset[spec.key], abs_tol=1e-6):
+                        custom_idx = self.gate_family_combo.findData("Custom")
+                        if custom_idx >= 0:
+                            self._updating_gate_family = True
+                            self.gate_family_combo.setCurrentIndex(custom_idx)
+                            if self.gate_family_hint_lbl is not None:
+                                self.gate_family_hint_lbl.setText(
+                                    self._format_gate_family_hint("Custom")
+                                )
+                            self._updating_gate_family = False
+                except ValueError:
+                    pass
 
     def _update_field_preview(self, spec: ComponentParameter) -> None:
         lbl = self.preview_labels.get(spec.key)
@@ -537,6 +641,30 @@ class QuickValueDialog(QDialog):
                 if cname in LED_COLOUR_PRESETS:
                     parsed_map["color"] = str(LED_COLOUR_PRESETS[cname]["hex"])
 
+        if isinstance(self.component, LogicGate):
+            v_il = float(parsed_map.get("v_il", self.component.v_il))
+            v_ih = float(parsed_map.get("v_ih", self.component.v_ih))
+            v_ol = float(parsed_map.get("v_ol", self.component.v_ol))
+            v_oh = float(parsed_map.get("v_oh", self.component.v_oh))
+            if v_il >= v_ih:
+                return (
+                    None,
+                    f"Low input threshold V_IL ({v_il:g} V) must be strictly less than High input threshold V_IH ({v_ih:g} V).",
+                )
+            if v_ol >= v_oh:
+                return (
+                    None,
+                    f"Low output voltage V_OL ({v_ol:g} V) must be strictly less than High output voltage V_OH ({v_oh:g} V).",
+                )
+            if self.gate_family_combo is not None:
+                parsed_map["family"] = str(
+                    self.gate_family_combo.currentData() or self.component.family
+                )
+            if self.gate_initial_combo is not None:
+                parsed_map["initial_state"] = bool(
+                    self.gate_initial_combo.currentData()
+                )
+
         return parsed_map, None
 
     def _apply_current_inputs(self) -> bool:
@@ -552,6 +680,9 @@ class QuickValueDialog(QDialog):
 
         if self._on_apply is not None:
             self._on_apply(parsed_map, show_val)
+        elif isinstance(self.component, LogicGate):
+            self.component.set_parameters_batch(parsed_map)  # type: ignore[arg-type]
+            self.component.show_value = show_val
         else:
             param_keys = {p.key for p in self.component.get_editable_parameters()}
             for k, v in parsed_map.items():

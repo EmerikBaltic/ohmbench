@@ -309,6 +309,71 @@ def led_marks(
     }
 
 
+def logic_gate_marks(
+    component_id: str,
+    center_px: tuple[float, float],
+    *,
+    rotation_deg: int = 0,
+    flipped_h: bool = False,
+    grid_px: int = GRID_PITCH_PX,
+) -> dict[str, object]:
+    """Compute scene pixel coordinates for logic gate terminals, body center, and pin tags.
+
+    Uses the same local transform order as `ComponentItem` (CW rotation by
+    `rotation_deg`, horizontal mirror when `flipped_h` is True, then translation
+    by `center_px`).
+    """
+    scale = float(grid_px) / float(GRID_PITCH_PX)
+    angle_rad = math.radians(rotation_deg % 360)
+    cos_a = round(math.cos(angle_rad), 12)
+    sin_a = round(math.sin(angle_rad), 12)
+
+    def _transform_px(lx: float, ly: float) -> tuple[float, float]:
+        rx = lx * cos_a - ly * sin_a
+        ry = lx * sin_a + ly * cos_a
+        if flipped_h:
+            rx = -rx
+        return (round(center_px[0] + rx, 3), round(center_px[1] + ry, 3))
+
+    inverting = component_id in {"gate_not", "gate_nand", "gate_nor", "gate_xnor"}
+    body_cx_local = (-2.0 if inverting else 0.0) * scale
+
+    if component_id == "gate_not":
+        terminal_specs: tuple[tuple[str, tuple[float, float], tuple[float, float]], ...] = (
+            ("in", (-2.0, 0.0), (-29.0 * scale, -9.0 * scale)),
+            ("out", (2.0, 0.0), (30.0 * scale, -9.0 * scale)),
+        )
+    else:
+        terminal_specs = (
+            ("a", (-2.0, -1.0), (-29.0 * scale, -29.0 * scale)),
+            ("b", (-2.0, 1.0), (-29.0 * scale, 11.0 * scale)),
+            ("out", (2.0, 0.0), (30.0 * scale, -9.0 * scale)),
+        )
+
+    terminals: list[tuple[str, tuple[float, float]]] = []
+    pin_tags: list[tuple[str, tuple[float, float]]] = []
+    for name, grid_pos, tag_local_px in terminal_specs:
+        terminals.append(
+            (
+                name,
+                transform_terminal_position(
+                    grid_pos,
+                    center_px,
+                    rotation_deg=rotation_deg,
+                    flipped_h=flipped_h,
+                    grid_px=grid_px,
+                ),
+            )
+        )
+        pin_tags.append((name, _transform_px(tag_local_px[0], tag_local_px[1])))
+
+    return {
+        "terminals": terminals,
+        "body_center": _transform_px(body_cx_local, 0.0),
+        "pin_tags": pin_tags,
+    }
+
+
 def parse_symbol_metadata_dict(
     data: dict[str, object],
     *,

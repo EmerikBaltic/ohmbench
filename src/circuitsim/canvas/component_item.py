@@ -23,6 +23,8 @@ from PySide6.QtWidgets import (
 )
 
 from circuitsim.app.themes import ThemeMode, ThemePalette, get_theme_palette
+from circuitsim.canvas.symbol_geometry import logic_gate_marks
+from circuitsim.components.logic_gate import LogicGate
 from circuitsim.canvas.connectivity import (
     PlacedComponentSpec,
     PointPx,
@@ -63,6 +65,13 @@ COMPONENT_PREFIXES: dict[str, str] = {
     "dc_current": "I",
     "ground": "GND",
     "switch": "SW",
+    "gate_not": "U",
+    "gate_and": "U",
+    "gate_or": "U",
+    "gate_nand": "U",
+    "gate_nor": "U",
+    "gate_xor": "U",
+    "gate_xnor": "U",
     "lightbulb": "B",
     "voltmeter": "VM",
     "ammeter": "A",
@@ -99,6 +108,14 @@ def format_component_value_summary(comp: Component) -> str:
         return f"{comp.rated_power:g}W / {comp.rated_voltage:g}V"
     if isinstance(comp, (Voltmeter, Ammeter)):
         return comp.format_reading()
+    if isinstance(comp, LogicGate):
+        family_labels = {
+            "5V_CMOS": "5V CMOS",
+            "5V_TTL": "5V TTL",
+            "3V3_LVCMOS": "3.3V LVCMOS",
+            "Custom": "Custom",
+        }
+        return family_labels.get(comp.family, str(comp.family))
     return ""
 
 
@@ -332,6 +349,22 @@ class ComponentItem(QGraphicsObject):
             and getattr(self.component, "loading_error_message", None)
         ):
             lines.append(self.component.loading_error_message)
+        if isinstance(self.component, LogicGate):
+            g = self.component
+            lines.append(f"Operation: {g.operation.upper()} | Family: {g.family}")
+            lines.append(
+                f"Delay: t_pd={format_engineering_value(g.t_pd, 's')}, "
+                f"t_edge={format_engineering_value(g.t_edge, 's')}"
+            )
+            lines.append(
+                f"Thresholds: V_IL={g.v_il:.3g} V, V_IH={g.v_ih:.3g} V | "
+                f"Rails: V_OL={g.v_ol:.3g} V, V_OH={g.v_oh:.3g} V"
+            )
+            if is_running:
+                lvl = getattr(self, "logic_level", "") or ("H" if g.output_level else "L")
+                lines.append(f"Output Level: {lvl}")
+            else:
+                lines.append(f"Initial Output: {'H' if g.initial_state else 'L'}")
         return "\n".join(lines)
 
     def set_diagnostic(
@@ -379,6 +412,10 @@ class ComponentItem(QGraphicsObject):
             self.component.has_reading = not telemetry.display_value.startswith("--")
             if isinstance(self.component, Voltmeter):
                 self.component.loading_error_message = telemetry.loading_error_message
+        elif isinstance(self.component, LogicGate):
+            self.logic_level = telemetry.logic_level
+            if telemetry.logic_level in ("H", "L"):
+                self.component._output_level = telemetry.logic_level == "H"
 
         self.setToolTip(self.get_live_tooltip(is_running=True))
         self.update()
@@ -386,6 +423,7 @@ class ComponentItem(QGraphicsObject):
     def reset_live_telemetry(self) -> None:
         """Clear live telemetry and restore initial component state (when simulation stops)."""
         self.live_display_value = None
+        self.logic_level = ""
         self.component.reset_state()
         if isinstance(self.component, Switch):
             self._lever_angle_deg = (
@@ -748,6 +786,18 @@ class ComponentItem(QGraphicsObject):
                 rect = rect.united(QRectF(ax - 8.0, ay - 6.0, 16.0, 12.0))
                 rect = rect.united(QRectF(kx - 8.0, ky - 6.0, 16.0, 12.0))
 
+            if isinstance(self.component, LogicGate) and (
+                self.isSelected() or self._is_hovered
+            ):
+                gate_info = logic_gate_marks(
+                    self.component.component_type,
+                    (0.0, 0.0),
+                    rotation_deg=self.rotation_deg,
+                    flipped_h=self.flipped_h,
+                )
+                for _pin_name, (tx, ty) in gate_info["pin_tags"]:  # type: ignore[misc]
+                    rect = rect.united(QRectF(tx - 15.0, ty - 7.0, 30.0, 14.0))
+
             is_over_bulb = (
                 isinstance(self.component, Lightbulb)
                 and self.component.is_over_bright
@@ -1030,5 +1080,26 @@ class ComponentItem(QGraphicsObject):
                 kx, ky = marks["cathode_tag"]
                 painter.drawText(QRectF(ax - 8.0, ay - 6.0, 16.0, 12.0), Qt.AlignmentFlag.AlignCenter, "A")
                 painter.drawText(QRectF(kx - 8.0, ky - 6.0, 16.0, 12.0), Qt.AlignmentFlag.AlignCenter, "K")
+
+            # Logic gate upright pin tags ('in'/'out' or 'a'/'b'/'out') when selected or hovered
+            if isinstance(self.component, LogicGate) and (
+                self.isSelected() or self._is_hovered
+            ):
+                gate_info = logic_gate_marks(
+                    self.component.component_type,
+                    (0.0, 0.0),
+                    rotation_deg=self.rotation_deg,
+                    flipped_h=self.flipped_h,
+                )
+                tag_font = QFont("Segoe UI", 7)
+                tag_font.setBold(True)
+                painter.setFont(tag_font)
+                painter.setPen(QColor(palette.symbol_label))
+                for pin_name, (tx, ty) in gate_info["pin_tags"]:  # type: ignore[misc]
+                    painter.drawText(
+                        QRectF(tx - 15.0, ty - 7.0, 30.0, 14.0),
+                        Qt.AlignmentFlag.AlignCenter,
+                        pin_name,
+                    )
 
             painter.restore()

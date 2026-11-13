@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections import deque
+from collections.abc import Mapping
 
 from circuitsim.components.base import Component
 from circuitsim.dialogs.value_parser import parse_engineering_value
@@ -217,6 +218,14 @@ class LogicGate(Component):
                 f"Gate {name!r}: unsupported supply_mode {supply_mode!r}; expected one of {_SUPPLY_MODES}."
             )
 
+        if canon_family != "Custom" and (
+            abs(parsed_v_il - preset["v_il"]) > 1e-12
+            or abs(parsed_v_ih - preset["v_ih"]) > 1e-12
+            or abs(parsed_v_ol - preset["v_ol"]) > 1e-12
+            or abs(parsed_v_oh - preset["v_oh"]) > 1e-12
+        ):
+            canon_family = "Custom"
+
         self.operation: str = op
         self.family: str = canon_family
         self.t_pd: float = parsed_t_pd
@@ -230,8 +239,6 @@ class LogicGate(Component):
         self.initial_state: bool = bool(initial_state)
         self.supply_mode: str = supply_mode
 
-        self.input_nodes: tuple[str, ...] = self.nodes[:-1]
-        self.output_node: str = self.nodes[-1]
         self.input_pin_names: tuple[str, ...] = ("in",) if op == "not" else ("a", "b")
         self.output_pin_name: str = "out"
 
@@ -244,6 +251,16 @@ class LogicGate(Component):
         self._pending_events: deque[tuple[float, bool]] = deque()
         # Active output ramp: (v_start, v_end, t_start, t_end, target_level)
         self._active_ramp: tuple[float, float, float, float, bool] | None = None
+
+    @property
+    def input_nodes(self) -> tuple[str, ...]:
+        """Input terminal node identifiers, tracking dynamic `.nodes` rebinding."""
+        return tuple(self.nodes[:-1])
+
+    @property
+    def output_node(self) -> str:
+        """Output terminal node identifier, tracking dynamic `.nodes` rebinding."""
+        return self.nodes[-1]
 
     @property
     def component_type(self) -> str:
@@ -311,6 +328,90 @@ class LogicGate(Component):
         if key in ("v_ol", "v_oh") and self._active_ramp is None:
             self._drive_voltage = self.level_voltage(self._output_level)
         return updated
+
+    def set_parameters_batch(
+        self, params: Mapping[str, float | str | bool]
+    ) -> dict[str, object]:
+        """Atomically validate and apply multiple LogicGate parameters & settings."""
+        snapshot = (
+            self.family,
+            self.t_pd,
+            self.t_edge,
+            self.v_il,
+            self.v_ih,
+            self.v_ol,
+            self.v_oh,
+            self.r_in,
+            self.r_out,
+            self.initial_state,
+            self.supply_mode,
+            self._drive_voltage,
+        )
+        parsed: dict[str, object] = {}
+        param_keys = {p.key for p in self.get_editable_parameters()}
+        try:
+            for key, raw_val in params.items():
+                if key == "family":
+                    canon = normalize_logic_family(str(raw_val))
+                    self.family = canon
+                    parsed[key] = canon
+                elif key == "initial_state":
+                    lvl = bool(raw_val)
+                    self.initial_state = lvl
+                    parsed[key] = lvl
+                elif key == "supply_mode":
+                    self.supply_mode = str(raw_val)
+                    parsed[key] = self.supply_mode
+                elif key in param_keys:
+                    parsed[key] = super().set_parameter_value(key, raw_val)  # type: ignore[arg-type]
+
+            if self.v_il >= self.v_ih:
+                raise ValueError(
+                    f"Gate {self.name!r}: v_il ({self.v_il} V) must remain strictly less than v_ih ({self.v_ih} V)."
+                )
+            if self.v_ol >= self.v_oh:
+                raise ValueError(
+                    f"Gate {self.name!r}: v_ol ({self.v_ol} V) must remain strictly less than v_oh ({self.v_oh} V)."
+                )
+
+            thresh_keys = ("v_il", "v_ih", "v_ol", "v_oh")
+            if "family" in parsed and parsed["family"] != "Custom":
+                preset = LOGIC_FAMILY_PRESETS[str(parsed["family"])]
+                if any(k not in parsed for k in thresh_keys):
+                    for k in thresh_keys:
+                        if k not in parsed:
+                            setattr(self, k, preset[k])
+                elif any(
+                    abs(getattr(self, k) - preset[k]) > 1e-12 for k in thresh_keys
+                ):
+                    self.family = "Custom"
+            elif "family" not in parsed and any(k in parsed for k in thresh_keys):
+                if self.family != "Custom":
+                    preset = LOGIC_FAMILY_PRESETS[self.family]
+                    if any(
+                        abs(getattr(self, k) - preset[k]) > 1e-12 for k in thresh_keys
+                    ):
+                        self.family = "Custom"
+
+            if self._active_ramp is None:
+                self._drive_voltage = self.level_voltage(self._output_level)
+        except Exception:
+            (
+                self.family,
+                self.t_pd,
+                self.t_edge,
+                self.v_il,
+                self.v_ih,
+                self.v_ol,
+                self.v_oh,
+                self.r_in,
+                self.r_out,
+                self.initial_state,
+                self.supply_mode,
+                self._drive_voltage,
+            ) = snapshot
+            raise
+        return parsed
 
     def reset_state(self) -> None:
         """Reset all transient queues, input history, and operating telemetry to initial state."""

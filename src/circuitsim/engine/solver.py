@@ -21,10 +21,26 @@ from circuitsim.components.sources import (
     DCCurrentSource,
     DCVoltageSource,
 )
+from circuitsim.components.base import Component
 from circuitsim.components.switch import Switch
 from circuitsim.dialogs.value_parser import format_engineering_value
 from circuitsim.engine.errors import CircuitWarning, SingularMatrixError
 from circuitsim.engine.netlist import Circuit
+
+_TAG_RESISTOR = 0
+_TAG_LIGHTBULB = 1
+_TAG_VOLTMETER = 2
+_TAG_AMMETER = 3
+_TAG_LED = 4
+_TAG_SWITCH = 5
+_TAG_CAPACITOR = 6
+_TAG_INDUCTOR = 7
+_TAG_LOGIC_GATE = 8
+_TAG_DC_VS = 9
+_TAG_AC_VS = 10
+_TAG_DC_IS = 11
+_TAG_GROUND = 12
+_TAG_OTHER = 13
 
 
 class IntegrationMethod(str, Enum):
@@ -139,11 +155,100 @@ class MNASolver:
         self._logic_t0_initialized: bool = False
         self._t0_node_voltages: dict[str, float] = {}
 
+        # Per-circuit-version component type buckets (avoids repeated ABC isinstance checks in inner transient loops)
+        self._buckets_version: int = -1
+        self._buckets_len: int = -1
+        self._bucket_grounded_nodes: tuple[str, ...] = ()
+        self._bucket_tagged_comps: tuple[tuple[Component, int], ...] = ()
+        self._bucket_rhs_comps: tuple[tuple[Component, int], ...] = ()
+        self._bucket_lightbulbs: tuple[Lightbulb, ...] = ()
+        self._bucket_voltmeters: tuple[Voltmeter, ...] = ()
+        self._bucket_leds: tuple[LED, ...] = ()
+        self._bucket_switches: tuple[Switch, ...] = ()
+        self._bucket_inductors: tuple[Inductor, ...] = ()
+        self._bucket_logic_gates: tuple[LogicGate, ...] = ()
+
     def invalidate_cache(self) -> None:
         """Force the solver to rebuild and re-factorize the MNA matrix on next solve."""
         self._lu_piv = None
         self._cached_circuit_version = -1
         self._cached_mode = ""
+        self._buckets_version = -1
+
+    def _ensure_component_buckets(self) -> None:
+        """Partition circuit components once per topology version to keep inner loops free of ABC checks."""
+        circ_ver = self.circuit.version
+        raw_comps = self.circuit._components.values()
+        if self._buckets_version == circ_ver and self._buckets_len == len(raw_comps):
+            return
+
+        tagged: list[tuple[Component, int]] = []
+        rhs_tagged: list[tuple[Component, int]] = []
+        grounded_nodes: list[str] = []
+        lightbulbs: list[Lightbulb] = []
+        voltmeters: list[Voltmeter] = []
+        leds: list[LED] = []
+        switches: list[Switch] = []
+        inductors: list[Inductor] = []
+        logic_gates: list[LogicGate] = []
+
+        for comp in raw_comps:
+            if isinstance(comp, Ground):
+                tagged.append((comp, _TAG_GROUND))
+                grounded_nodes.append(comp.node)
+            elif isinstance(comp, Resistor):
+                tagged.append((comp, _TAG_RESISTOR))
+            elif isinstance(comp, Lightbulb):
+                tagged.append((comp, _TAG_LIGHTBULB))
+                lightbulbs.append(comp)
+            elif isinstance(comp, Voltmeter):
+                tagged.append((comp, _TAG_VOLTMETER))
+                voltmeters.append(comp)
+            elif isinstance(comp, Ammeter):
+                tagged.append((comp, _TAG_AMMETER))
+                rhs_tagged.append((comp, _TAG_AMMETER))
+            elif isinstance(comp, LED):
+                tagged.append((comp, _TAG_LED))
+                rhs_tagged.append((comp, _TAG_LED))
+                leds.append(comp)
+            elif isinstance(comp, Switch):
+                tagged.append((comp, _TAG_SWITCH))
+                rhs_tagged.append((comp, _TAG_SWITCH))
+                switches.append(comp)
+            elif isinstance(comp, Capacitor):
+                tagged.append((comp, _TAG_CAPACITOR))
+                rhs_tagged.append((comp, _TAG_CAPACITOR))
+            elif isinstance(comp, Inductor):
+                tagged.append((comp, _TAG_INDUCTOR))
+                rhs_tagged.append((comp, _TAG_INDUCTOR))
+                inductors.append(comp)
+            elif isinstance(comp, LogicGate):
+                tagged.append((comp, _TAG_LOGIC_GATE))
+                rhs_tagged.append((comp, _TAG_LOGIC_GATE))
+                logic_gates.append(comp)
+            elif isinstance(comp, DCVoltageSource):
+                tagged.append((comp, _TAG_DC_VS))
+                rhs_tagged.append((comp, _TAG_DC_VS))
+            elif isinstance(comp, ACVoltageSource):
+                tagged.append((comp, _TAG_AC_VS))
+                rhs_tagged.append((comp, _TAG_AC_VS))
+            elif isinstance(comp, DCCurrentSource):
+                tagged.append((comp, _TAG_DC_IS))
+                rhs_tagged.append((comp, _TAG_DC_IS))
+            else:
+                tagged.append((comp, _TAG_OTHER))
+
+        self._bucket_grounded_nodes = tuple(grounded_nodes)
+        self._bucket_tagged_comps = tuple(tagged)
+        self._bucket_rhs_comps = tuple(rhs_tagged)
+        self._bucket_lightbulbs = tuple(lightbulbs)
+        self._bucket_voltmeters = tuple(voltmeters)
+        self._bucket_leds = tuple(leds)
+        self._bucket_switches = tuple(switches)
+        self._bucket_inductors = tuple(inductors)
+        self._bucket_logic_gates = tuple(logic_gates)
+        self._buckets_len = len(tagged)
+        self._buckets_version = circ_ver
 
     def reset_transient(self) -> None:
         """Reset simulation time, component states, and solver cache."""
@@ -268,29 +373,20 @@ class MNASolver:
     def _transient_conductance_signature(
         self, dt: float, method_str: str
     ) -> tuple[float, ...]:
+        self._ensure_component_buckets()
         method_code = 1.0 if method_str == "backward_euler" else 2.0
         sig: list[float] = [self.gmin, dt, method_code]
-        for comp in self.circuit.components:
-            if isinstance(comp, (Resistor, Lightbulb, Voltmeter, Ammeter)):
-                if isinstance(comp, (Voltmeter, Ammeter)) and comp.is_ideal:
-                    sig.append(0.0)
-                else:
-                    sig.append(comp.conductance)
-            elif isinstance(comp, LED):
-                g_led, _ = comp.companion_model(dt, method_str)
-                sig.append(g_led)
-            elif isinstance(comp, Switch):
-                g_sw, _ = comp.companion_model(dt, method_str)
-                sig.append(g_sw)
-            elif isinstance(comp, Capacitor):
-                g_c, _ = comp.companion_model(dt, method_str)
-                sig.append(g_c)
-            elif isinstance(comp, Inductor):
-                g_l, _ = comp.companion_model(dt, method_str)
-                sig.append(g_l)
-            elif isinstance(comp, LogicGate):
+        for comp, tag in self._bucket_tagged_comps:
+            if tag <= _TAG_LIGHTBULB:
+                sig.append(comp.conductance)
+            elif tag <= _TAG_AMMETER:
+                sig.append(0.0 if comp.is_ideal else comp.conductance)
+            elif tag <= _TAG_INDUCTOR:
+                g_eq, _ = comp.companion_model(dt, method_str)
+                sig.append(g_eq)
+            elif tag == _TAG_LOGIC_GATE:
                 sig.extend((comp.g_in, comp.g_out))
-            elif isinstance(comp, (DCVoltageSource, ACVoltageSource)):
+            elif tag <= _TAG_AC_VS:
                 sig.append(comp.r_internal)
         return tuple(sig)
 
@@ -455,68 +551,73 @@ class MNASolver:
         self, sim_time: float, dt: float, method_str: str
     ) -> np.ndarray:
         """Assemble the right-hand side vector b for a transient step at `sim_time`."""
+        self._ensure_component_buckets()
         dim = len(self._node_to_idx) + len(self._vs_to_idx)
         rhs_b = np.zeros(dim, dtype=np.float64)
+        node_to_idx = self._node_to_idx
 
-        for comp in self.circuit.components:
-            if isinstance(comp, DCCurrentSource):
-                idx_pos = self._node_to_idx.get(comp.nodes[0])
-                idx_neg = self._node_to_idx.get(comp.nodes[1])
+        for comp, tag in self._bucket_rhs_comps:
+            if tag == _TAG_DC_IS:
+                idx_pos = node_to_idx.get(comp.nodes[0])
+                idx_neg = node_to_idx.get(comp.nodes[1])
                 if idx_pos is not None:
                     rhs_b[idx_pos] += comp.dc_current
                 if idx_neg is not None:
                     rhs_b[idx_neg] -= comp.dc_current
-            elif isinstance(comp, (DCVoltageSource, ACVoltageSource)):
+            elif tag == _TAG_DC_VS or tag == _TAG_AC_VS:
                 row_k = self._vs_to_idx[comp.name]
                 rhs_b[row_k] = comp.voltage_at(sim_time)
-            elif isinstance(comp, Ammeter) and comp.is_ideal:
-                row_k = self._vs_to_idx[comp.name]
-                rhs_b[row_k] = 0.0
-            elif isinstance(comp, LED):
+            elif tag == _TAG_AMMETER:
+                if comp.is_ideal:
+                    row_k = self._vs_to_idx[comp.name]
+                    rhs_b[row_k] = 0.0
+            elif tag == _TAG_LED:
                 _, i_eq = comp.companion_model(dt, method_str)
-                idx_a = self._node_to_idx.get(comp.nodes[0])
-                idx_k = self._node_to_idx.get(comp.nodes[1])
+                idx_a = node_to_idx.get(comp.nodes[0])
+                idx_k = node_to_idx.get(comp.nodes[1])
                 if idx_a is not None:
                     rhs_b[idx_a] += i_eq
                 if idx_k is not None:
                     rhs_b[idx_k] -= i_eq
-            elif isinstance(comp, Switch) and (comp.c_parasitic > 0.0 or comp.arcing):
-                _, i_sw_eq = comp.companion_model(dt, method_str)
-                idx_a = self._node_to_idx.get(comp.nodes[0])
-                idx_b = self._node_to_idx.get(comp.nodes[1])
-                if idx_a is not None:
-                    rhs_b[idx_a] += i_sw_eq
-                if idx_b is not None:
-                    rhs_b[idx_b] -= i_sw_eq
-            elif isinstance(comp, Capacitor):
+            elif tag == _TAG_SWITCH:
+                if comp.c_parasitic > 0.0 or comp.arcing:
+                    _, i_sw_eq = comp.companion_model(dt, method_str)
+                    idx_a = node_to_idx.get(comp.nodes[0])
+                    idx_b = node_to_idx.get(comp.nodes[1])
+                    if idx_a is not None:
+                        rhs_b[idx_a] += i_sw_eq
+                    if idx_b is not None:
+                        rhs_b[idx_b] -= i_sw_eq
+            elif tag == _TAG_CAPACITOR:
                 # i_ab(t_n) = G_eq * v_ab(t_n) - I_eq
                 # KCL at node_a: +G_eq * v_ab - I_eq => move +I_eq to RHS at node_a
                 _, i_eq = comp.companion_model(dt, method_str)
-                idx_a = self._node_to_idx.get(comp.nodes[0])
-                idx_b = self._node_to_idx.get(comp.nodes[1])
+                idx_a = node_to_idx.get(comp.nodes[0])
+                idx_b = node_to_idx.get(comp.nodes[1])
                 if idx_a is not None:
                     rhs_b[idx_a] += i_eq
                 if idx_b is not None:
                     rhs_b[idx_b] -= i_eq
-            elif isinstance(comp, Inductor):
+            elif tag == _TAG_INDUCTOR:
                 # i_ab(t_n) = G_eq * v_ab(t_n) + I_hist
                 # KCL at node_a: +G_eq * v_ab + I_hist => move -I_hist to RHS at node_a
                 _, i_hist = comp.companion_model(dt, method_str)
-                idx_a = self._node_to_idx.get(comp.nodes[0])
-                idx_b = self._node_to_idx.get(comp.nodes[1])
+                idx_a = node_to_idx.get(comp.nodes[0])
+                idx_b = node_to_idx.get(comp.nodes[1])
                 if idx_a is not None:
                     rhs_b[idx_a] -= i_hist
                 if idx_b is not None:
                     rhs_b[idx_b] += i_hist
-            elif isinstance(comp, LogicGate):
-                idx_out = self._node_to_idx.get(comp.output_node)
+            elif tag == _TAG_LOGIC_GATE:
+                idx_out = node_to_idx.get(comp.output_node)
                 if idx_out is not None:
                     rhs_b[idx_out] += comp.g_out * comp.drive_voltage
 
         return rhs_b
 
     def _logic_gates(self) -> list[LogicGate]:
-        return [c for c in self.circuit.components if isinstance(c, LogicGate)]
+        self._ensure_component_buckets()
+        return list(self._bucket_logic_gates)
 
     def _collect_gate_runtime_warnings(
         self,
@@ -1150,6 +1251,7 @@ class MNASolver:
         if dt <= 0.0:
             raise ValueError(f"Transient step dt must be > 0, got {dt}.")
 
+        self._ensure_component_buckets()
         if self._transient_step_index == 0:
             self._topology_warnings = self.circuit.validate_topology()
             if not self._logic_t0_initialized:
@@ -1163,17 +1265,17 @@ class MNASolver:
         # 1. Check timed switches, thermal lightbulb states, and due logic-gate transitions.
         switch_toggled = False
         switch_opened = False
-        for comp in self.circuit.components:
-            if isinstance(comp, Switch):
-                was_closed = comp.closed
-                if comp.check_timed_event(t_next):
-                    switch_toggled = True
-                    if was_closed and not comp.closed:
-                        switch_opened = True
-            elif isinstance(comp, Lightbulb) and self._transient_step_index > 0:
-                comp.advance_thermal_state(dt)
-            elif isinstance(comp, LogicGate):
-                comp.prepare_step(t_next, dt)
+        for sw in self._bucket_switches:
+            was_closed = sw.closed
+            if sw.check_timed_event(t_next):
+                switch_toggled = True
+                if was_closed and not sw.closed:
+                    switch_opened = True
+        if self._transient_step_index > 0:
+            for bulb in self._bucket_lightbulbs:
+                bulb.advance_thermal_state(dt)
+        for gate in self._bucket_logic_gates:
+            gate.prepare_step(t_next, dt)
 
         if switch_toggled and use_be_on_switch:
             # Use Backward Euler on the switching step and two settling steps after it
@@ -1225,7 +1327,7 @@ class MNASolver:
             solution_x = np.zeros(0, dtype=np.float64)
 
         node_voltages: dict[str, float] = {}
-        for gnd_node in self.circuit.grounded_nodes():
+        for gnd_node in self._bucket_grounded_nodes:
             node_voltages[gnd_node] = 0.0
         for node, idx in self._node_to_idx.items():
             node_voltages[node] = float(solution_x[idx])
@@ -1235,8 +1337,8 @@ class MNASolver:
         #     Backward Euler on this step and the following two steps.
         arc_state_changed = False
         arc_ignited_switches: list[str] = []
-        for comp in self.circuit.components:
-            if isinstance(comp, Switch) and not comp.closed:
+        for comp in self._bucket_switches:
+            if not comp.closed:
                 v_sw = node_voltages.get(comp.nodes[0], 0.0) - node_voltages.get(
                     comp.nodes[1], 0.0
                 )
@@ -1263,37 +1365,37 @@ class MNASolver:
                     node_voltages[node] = float(solution_x[idx])
 
         # 3c. Check for LED conduction state transitions
-        for _diode_iter in range(5):
-            led_state_changed = False
-            for comp in self.circuit.components:
-                if isinstance(comp, LED) and not comp.burned_out:
-                    v_ak = node_voltages.get(comp.nodes[0], 0.0) - node_voltages.get(comp.nodes[1], 0.0)
-                    if comp.is_conducting:
-                        i_ak = (v_ak - comp.forward_voltage) / comp.r_on
-                        if i_ak < -1e-9 or v_ak < comp.forward_voltage - 1e-4:
-                            comp.is_conducting = False
-                            led_state_changed = True
-                    else:
-                        if v_ak > comp.forward_voltage + 1e-4:
-                            comp.is_conducting = True
-                            led_state_changed = True
-            if not led_state_changed:
-                break
-            self._assemble_and_factorize(
-                mode="transient", dt=dt, method_str=method_str
-            )
-            needs_rebuild = True
-            assert self._lu_piv is not None
-            if dim > 0:
-                rhs_b = self._build_rhs_transient(t_next, dt, method_str)
-                solution_x = lu_solve(self._lu_piv, rhs_b, check_finite=True)
-                for node, idx in self._node_to_idx.items():
-                    node_voltages[node] = float(solution_x[idx])
+        if self._bucket_leds:
+            for _diode_iter in range(5):
+                led_state_changed = False
+                for comp in self._bucket_leds:
+                    if not comp.burned_out:
+                        v_ak = node_voltages.get(comp.nodes[0], 0.0) - node_voltages.get(comp.nodes[1], 0.0)
+                        if comp.is_conducting:
+                            i_ak = (v_ak - comp.forward_voltage) / comp.r_on
+                            if i_ak < -1e-9 or v_ak < comp.forward_voltage - 1e-4:
+                                comp.is_conducting = False
+                                led_state_changed = True
+                        else:
+                            if v_ak > comp.forward_voltage + 1e-4:
+                                comp.is_conducting = True
+                                led_state_changed = True
+                if not led_state_changed:
+                    break
+                self._assemble_and_factorize(
+                    mode="transient", dt=dt, method_str=method_str
+                )
+                needs_rebuild = True
+                assert self._lu_piv is not None
+                if dim > 0:
+                    rhs_b = self._build_rhs_transient(t_next, dt, method_str)
+                    solution_x = lu_solve(self._lu_piv, rhs_b, check_finite=True)
+                    for node, idx in self._node_to_idx.items():
+                        node_voltages[node] = float(solution_x[idx])
 
         # 3d. Sample logic-gate inputs after convergence and schedule future delayed transitions.
-        for comp in self.circuit.components:
-            if isinstance(comp, LogicGate):
-                comp.sample_inputs_and_schedule(node_voltages, t_next, dt)
+        for comp in self._bucket_logic_gates:
+            comp.sample_inputs_and_schedule(node_voltages, t_next, dt)
 
         # 4. Update component voltages, currents, companion states, and meter buffers.
         step_warnings = self._collect_gate_runtime_warnings(
@@ -1302,30 +1404,34 @@ class MNASolver:
         branch_currents: dict[str, float] = {}
 
         # Nominal source voltage scale for inductive kickback comparison
-        max_source_v = max(
-            (
-                abs(c.dc_voltage)
-                if isinstance(c, DCVoltageSource)
-                else (abs(c.amplitude) + abs(c.dc_offset))
-                if isinstance(c, ACVoltageSource)
-                else 0.0
-                for c in self.circuit.components
-            ),
-            default=10.0,
-        )
-        kickback_threshold = max(
-            self.KICKBACK_VOLTAGE_WARNING_MIN, 5.0 * max_source_v
-        )
+        if self._bucket_inductors:
+            max_source_v = max(
+                (
+                    abs(c.dc_voltage)
+                    if tag == _TAG_DC_VS
+                    else (abs(c.amplitude) + abs(c.dc_offset))
+                    if tag == _TAG_AC_VS
+                    else 0.0
+                    for c, tag in self._bucket_tagged_comps
+                ),
+                default=10.0,
+            )
+            kickback_threshold = max(
+                self.KICKBACK_VOLTAGE_WARNING_MIN, 5.0 * max_source_v
+            )
+        else:
+            max_source_v = 0.0
+            kickback_threshold = self.KICKBACK_VOLTAGE_WARNING_MIN
 
-        for comp in self.circuit.components:
-            if isinstance(comp, Ground):
+        for comp, tag in self._bucket_tagged_comps:
+            if tag == _TAG_GROUND:
                 comp.voltage = 0.0
                 comp.current = 0.0
                 comp.power = 0.0
                 branch_currents[comp.name] = 0.0
                 continue
 
-            if isinstance(comp, LogicGate):
+            if tag == _TAG_LOGIC_GATE:
                 v_out = node_voltages.get(comp.output_node, 0.0)
                 i_out = (comp.drive_voltage - v_out) * comp.g_out
                 p_out = (comp.drive_voltage - v_out) * i_out
@@ -1340,8 +1446,8 @@ class MNASolver:
             v_b = node_voltages.get(comp.nodes[1], 0.0)
             v_ab = v_a - v_b
 
-            if isinstance(comp, (Resistor, Lightbulb, Voltmeter, Ammeter)):
-                if isinstance(comp, Voltmeter):
+            if tag <= _TAG_AMMETER:
+                if tag == _TAG_VOLTMETER:
                     if comp.is_ideal:
                         i_ab = 0.0
                         comp.voltage = v_ab
@@ -1354,7 +1460,7 @@ class MNASolver:
                         comp.current = i_ab
                         comp.power = v_ab * i_ab
                         comp.record_sample(t_next, comp.voltage, dt)
-                elif isinstance(comp, Ammeter):
+                elif tag == _TAG_AMMETER:
                     if comp.is_ideal:
                         row_k = self._vs_to_idx[comp.name]
                         i_ab = float(solution_x[row_k])
@@ -1373,7 +1479,7 @@ class MNASolver:
                     comp.voltage = v_ab
                     comp.current = i_ab
                     comp.power = v_ab * i_ab
-            elif isinstance(comp, LED):
+            elif tag == _TAG_LED:
                 comp.voltage = v_ab
                 if comp.burned_out:
                     i_ab = v_ab / comp.r_off
@@ -1396,14 +1502,14 @@ class MNASolver:
                     comp.is_conducting = False
                     comp.brightness = 0.0
                     comp.is_over_current = False
-            elif isinstance(comp, Switch):
+            elif tag == _TAG_SWITCH:
                 comp.update_companion_state(v_ab, dt, method_str)
                 i_ab = comp.current
-            elif isinstance(comp, Capacitor):
+            elif tag == _TAG_CAPACITOR:
                 g_eq, i_eq = comp.companion_model(dt, method_str)
                 i_ab = g_eq * v_ab - i_eq
                 comp.update_companion_state(v_ab, i_ab)
-            elif isinstance(comp, Inductor):
+            elif tag == _TAG_INDUCTOR:
                 g_eq, i_hist = comp.companion_model(dt, method_str)
                 i_ab = g_eq * v_ab + i_hist
                 comp.update_companion_state(v_ab, i_ab)
@@ -1419,13 +1525,13 @@ class MNASolver:
                             component_names=(comp.name,),
                         )
                     )
-            elif isinstance(comp, (DCVoltageSource, ACVoltageSource)):
+            elif tag == _TAG_DC_VS or tag == _TAG_AC_VS:
                 row_k = self._vs_to_idx[comp.name]
                 i_ab = float(solution_x[row_k])
                 comp.voltage = v_ab
                 comp.current = i_ab
                 comp.power = v_ab * i_ab
-            elif isinstance(comp, DCCurrentSource):
+            elif tag == _TAG_DC_IS:
                 i_ab = -comp.dc_current
                 comp.voltage = v_ab
                 comp.current = i_ab
@@ -1435,9 +1541,8 @@ class MNASolver:
 
             branch_currents[comp.name] = i_ab
 
-        for comp in self.circuit.components:
-            if isinstance(comp, Voltmeter):
-                self._update_voltmeter_loading(comp)
+        for comp in self._bucket_voltmeters:
+            self._update_voltmeter_loading(comp)
 
         self.sim_time = t_next
         self._transient_step_index += 1

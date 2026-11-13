@@ -738,11 +738,23 @@ class SimulationSession:
         self,
         comp_name: str,
         param_key: str,
-        raw_value: float | str | bool,
+        raw_value: float | str | bool | dict[str, object],
     ) -> SimulationFrame:
-        """Validate and apply a parameter change to `comp_name` live."""
+        """Validate and apply a parameter change (or atomic batch) to `comp_name` live."""
         comp = self.circuit.get_component(comp_name)
-        if param_key == "is_ideal":
+        if param_key == "__batch__" and isinstance(raw_value, dict):
+            if isinstance(comp, LogicGate):
+                comp.set_parameters_batch(raw_value)  # type: ignore[arg-type]
+            else:
+                for k, v in raw_value.items():
+                    if k == "is_ideal":
+                        comp.is_ideal = bool(v)
+                    elif hasattr(comp, k):
+                        try:
+                            comp.set_parameter_value(k, v)  # type: ignore[arg-type]
+                        except (KeyError, TypeError):
+                            setattr(comp, k, v)
+        elif param_key == "is_ideal":
             comp.is_ideal = bool(raw_value)
         elif param_key == "family" and isinstance(comp, LogicGate):
             comp.set_family_preset(str(raw_value))

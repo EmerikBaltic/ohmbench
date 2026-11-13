@@ -241,7 +241,7 @@ def dict_to_document_v2(data: object) -> CircuitDocumentV2:
 
     graph = WireGraph(wires=tuple(wires), junctions=tuple(junctions))
     # Validate attachment integrity
-    catalog = load_all_iec_metadata(DEFAULT_IEC_SYMBOLS_DIR)
+    catalog = load_all_iec_metadata(DEFAULT_IEC_SYMBOLS_DIR, include_extensions=True)
     terminals: dict[str, tuple[str, ...]] = {}
     for spec in placed:
         meta = catalog.get(spec.component.component_type)
@@ -353,7 +353,7 @@ def migrate_v1_to_v2(v1_input: CircuitDocument | dict[str, Any] | str | Path) ->
     else:
         raise CircuitFileError("Unsupported input for migration.")
 
-    catalog = load_all_iec_metadata(DEFAULT_IEC_SYMBOLS_DIR)
+    catalog = load_all_iec_metadata(DEFAULT_IEC_SYMBOLS_DIR, include_extensions=True)
 
     # 1. Map terminal positions to TerminalRefs
     terminal_by_pos: dict[PointPx, TerminalRef] = {}

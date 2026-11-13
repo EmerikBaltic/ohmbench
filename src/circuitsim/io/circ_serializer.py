@@ -43,6 +43,7 @@ from circuitsim.components.factory import (
     KNOWN_COMPONENT_TYPES,
     create_default_component_model,
 )
+from circuitsim.components.logic_gate import LogicGate
 
 FORMAT_NAME: str = "circuitsim"
 ACCEPTED_FORMAT_NAMES: tuple[str, ...] = ("circuitsim", "ohmbench")
@@ -66,6 +67,41 @@ _EXTRA_SETTINGS: dict[str, dict[str, str]] = {
         "color": "str",
         "burnout_enabled": "bool",
         "burnout_current": "float_or_none",
+    },
+    "gate_not": {
+        "family": "str",
+        "initial_state": "bool",
+        "supply_mode": "str",
+    },
+    "gate_and": {
+        "family": "str",
+        "initial_state": "bool",
+        "supply_mode": "str",
+    },
+    "gate_or": {
+        "family": "str",
+        "initial_state": "bool",
+        "supply_mode": "str",
+    },
+    "gate_nand": {
+        "family": "str",
+        "initial_state": "bool",
+        "supply_mode": "str",
+    },
+    "gate_nor": {
+        "family": "str",
+        "initial_state": "bool",
+        "supply_mode": "str",
+    },
+    "gate_xor": {
+        "family": "str",
+        "initial_state": "bool",
+        "supply_mode": "str",
+    },
+    "gate_xnor": {
+        "family": "str",
+        "initial_state": "bool",
+        "supply_mode": "str",
     },
     "voltmeter": {"mode": "str", "is_ideal": "bool"},
     "ammeter": {"mode": "str", "is_ideal": "bool"},
@@ -280,18 +316,31 @@ def _component_from_dict(entry: object, index: int) -> PlacedComponentSpec:
 
     params = _require_dict(d.get("parameters", {}), f"{who}: its parameter list")
     allowed = {p.key for p in comp.get_editable_parameters()}
-    for key, value in params.items():
-        if key not in allowed:
-            raise CircuitFileError(f"{who} has an unknown parameter '{key}'.")
-        if value is None and _NULLABLE_PARAMETERS.get((ctype, key)):
-            setattr(comp, key, None)
-            continue
-        if not _is_number(value):
-            raise CircuitFileError(f"{who}: parameter '{key}' must be a number.")
+    if isinstance(comp, LogicGate):
+        batch_params: dict[str, float] = {}
+        for key, value in params.items():
+            if key not in allowed:
+                raise CircuitFileError(f"{who} has an unknown parameter '{key}'.")
+            if not _is_number(value):
+                raise CircuitFileError(f"{who}: parameter '{key}' must be a number.")
+            batch_params[key] = float(value)
         try:
-            comp.set_parameter_value(key, float(value))
+            comp.set_parameters_batch(batch_params)
         except ValueError as exc:
             raise CircuitFileError(f"{who}: {exc}") from exc
+    else:
+        for key, value in params.items():
+            if key not in allowed:
+                raise CircuitFileError(f"{who} has an unknown parameter '{key}'.")
+            if value is None and _NULLABLE_PARAMETERS.get((ctype, key)):
+                setattr(comp, key, None)
+                continue
+            if not _is_number(value):
+                raise CircuitFileError(f"{who}: parameter '{key}' must be a number.")
+            try:
+                comp.set_parameter_value(key, float(value))
+            except ValueError as exc:
+                raise CircuitFileError(f"{who}: {exc}") from exc
 
     settings = _require_dict(d.get("settings", {}), f"{who}: its settings")
     allowed_extra = _EXTRA_SETTINGS.get(ctype, {})
@@ -299,6 +348,9 @@ def _component_from_dict(entry: object, index: int) -> PlacedComponentSpec:
         if key not in allowed_extra:
             raise CircuitFileError(f"{who} has an unknown setting '{key}'.")
         _apply_setting(comp, ctype, key, allowed_extra[key], value, who)
+
+    if isinstance(comp, LogicGate):
+        comp.reset_state()
 
     center = _require_point(d.get("center_px"), f"{who}: 'center_px'")
     rotation = d.get("rotation_deg", 0)

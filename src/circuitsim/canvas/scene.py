@@ -15,6 +15,7 @@ from PySide6.QtGui import QBrush, QColor, QPainter, QPen, QUndoStack
 from PySide6.QtWidgets import QGraphicsScene
 
 from circuitsim.app.themes import ThemeMode, get_theme_palette
+from circuitsim.components.logic_gate import LogicGate
 from circuitsim.canvas.commands import (
     AddComponentCommand,
     AddWireCommand,
@@ -1010,14 +1011,29 @@ class CircuitScene(QGraphicsScene):
         old_params: dict[str, object] = {}
         parsed_new: dict[str, object] = {}
         param_keys = {p.key for p in comp.get_editable_parameters()}
-        for k, raw_val in new_params.items():
-            if k in param_keys:
-                old_params[k] = comp.get_parameter_value(k)
-                parsed_new[k] = comp.set_parameter_value(k, raw_val)  # type: ignore[arg-type]
-                comp.set_parameter_value(k, old_params[k])  # type: ignore[arg-type]
-            elif hasattr(comp, k):
-                old_params[k] = getattr(comp, k)
-                parsed_new[k] = raw_val
+        if isinstance(comp, LogicGate):
+            old_params = {
+                k: (comp.get_parameter_value(k) if k in param_keys else getattr(comp, k))
+                for k in new_params
+                if k in param_keys or hasattr(comp, k)
+            }
+            if "family" not in old_params and any(
+                k in new_params for k in ("v_il", "v_ih", "v_ol", "v_oh")
+            ):
+                old_params["family"] = comp.family
+            parsed_new = comp.set_parameters_batch(new_params)  # type: ignore[arg-type]
+            if "family" in old_params and "family" not in parsed_new:
+                parsed_new["family"] = comp.family
+            comp.set_parameters_batch(old_params)  # type: ignore[arg-type]
+        else:
+            for k, raw_val in new_params.items():
+                if k in param_keys:
+                    old_params[k] = comp.get_parameter_value(k)
+                    parsed_new[k] = comp.set_parameter_value(k, raw_val)  # type: ignore[arg-type]
+                    comp.set_parameter_value(k, old_params[k])  # type: ignore[arg-type]
+                elif hasattr(comp, k):
+                    old_params[k] = getattr(comp, k)
+                    parsed_new[k] = raw_val
 
         old_show = comp.show_value
         new_show = old_show if show_value is None else bool(show_value)

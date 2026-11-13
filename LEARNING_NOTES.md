@@ -608,4 +608,12 @@ When you connect a logic gate to resistors, capacitors, or LEDs, the simulator s
 2. Oscillation frequency:
    $$f = \frac{1}{T} = \frac{1}{150 \times 10^{-9}\text{ s}} \approx 6.67\text{ MHz}$$
 
+---
+
+### UI, IEC Symbols, and Serialization Architecture (Logic Gates Chat 2)
+- **IEC 60617 rectangular symbols without `<text>` rotation bugs**: All 7 symbols (`gate_not.svg` at `80×40`; `gate_and/or/nand/nor/xor/xnor.svg` at `80×80`) author their qualifiers (`1`, `&`, `≥1`, `=1`) purely as vector `<path>` strokes (`#000000`, width 2, no fill). At `rotation_deg != 0` or `flipped_h=True`, `SymbolLibrary.paint_symbol()` delegates logic gates to `_paint_procedural_iec()`, which translates to the rectangular body center `(body_cx, 0)` and applies `rotate(-rotation_deg)` then `scale(-1, 1)` so the box, leads, and negation bubble rotate/flip with pins while the qualifier remains upright and unmirrored across all 8 orientations.
+- **Dynamic node binding & extension symbol catalogs**: Canvas netlist extraction (`connectivity.py`) and explicit wiring (`wiring/netlist.py`) rebind `comp.nodes` dynamically during topological compilation, so `LogicGate.input_nodes` and `LogicGate.output_node` are `@property` views over `self.nodes` rather than stale constructor snapshots. Explicit wiring netlists and v2/migration helpers load symbol metadata with `include_extensions=True` so LEDs and Logic Gates resolve cleanly without modifying the core 11-symbol loader default.
+- **Atomic multi-threshold validation & `.circ` persistence**: Editing `v_il`/`v_ih` or `v_ol`/`v_oh` simultaneously (e.g. shifting both thresholds above/below prior limits or toggling presets between `5V_CMOS`, `5V_TTL`, `3V3_LVCMOS`, and `Custom`) runs through `LogicGate.set_parameters_batch()` across `QuickValueDialog`, `EditComponentParametersCommand`, `SimulationSession`, and `.circ` v1/v2 deserializers (`_EXTRA_SETTINGS` saving `family`, `initial_state`, `supply_mode`).
+- **Inner-loop ABC dispatch overhead (`MNASolver`)**: Because `Component` inherits from `abc.ABC`, calling `isinstance(comp, ...)` repeatedly inside `step_transient`, `_transient_conductance_signature`, and `_build_rhs_transient` went through `_abc._abc_instancecheck` (~891 checks/step on a 30-resistor ladder, dominating 68% of step runtime). Partitioning components once per `circuit.version` into integer-tagged tuples and type buckets cut 350 transient steps on the ladder from ~81 ms to ~18 ms and kept UI heartbeats responsive.
+
 

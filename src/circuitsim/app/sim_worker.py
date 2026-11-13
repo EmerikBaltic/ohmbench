@@ -225,7 +225,7 @@ class SimulationWorkerController(QObject):
         self._sig_toggle_switch.emit(switch_name)
 
     def update_component_parameter(
-        self, comp_name: str, param_key: str, value: float | str
+        self, comp_name: str, param_key: str, value: object
     ) -> None:
         """Update a component parameter live on the worker thread."""
         self._ensure_thread_running()

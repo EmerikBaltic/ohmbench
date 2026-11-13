@@ -22,6 +22,7 @@ CATEGORY_ORDER: tuple[str, ...] = (
     "Passive",
     "Switches",
     "Semiconductors",
+    "Logic Gates",
     "Loads",
     "Instruments",
 )
@@ -32,6 +33,15 @@ COMPONENT_ORDER_IN_CATEGORY: dict[str, tuple[str, ...]] = {
     "Passive": ("resistor", "capacitor", "inductor"),
     "Switches": ("switch",),
     "Semiconductors": ("led",),
+    "Logic Gates": (
+        "gate_not",
+        "gate_and",
+        "gate_or",
+        "gate_nand",
+        "gate_nor",
+        "gate_xor",
+        "gate_xnor",
+    ),
     "Loads": ("lightbulb",),
     "Instruments": ("voltmeter", "ammeter"),
 }

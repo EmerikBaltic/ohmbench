@@ -1,0 +1,16 @@
+{
+  "id": "gate_xnor",
+  "display_name": "XNOR Gate",
+  "category": "Logic Gates",
+  "style": "iec",
+  "grid_size": [4, 4],
+  "terminals": [
+    {"name": "a", "grid_pos": [-2, -1]},
+    {"name": "b", "grid_pos": [-2, 1]},
+    {"name": "out", "grid_pos": [2, 0]}
+  ],
+  "label_offset": [0, -2.5],
+  "value_offset": [0, 2.5],
+  "default_svg": "gate_xnor.svg",
+  "states": {}
+}

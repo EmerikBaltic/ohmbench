@@ -118,7 +118,7 @@ def build_circuit(
     catalog = (
         symbol_catalog
         if symbol_catalog is not None
-        else load_all_iec_metadata(DEFAULT_IEC_SYMBOLS_DIR)
+        else load_all_iec_metadata(DEFAULT_IEC_SYMBOLS_DIR, include_extensions=True)
     )
     terminals = terminal_names_by_component(components, catalog)
     graph.validate(terminals)
