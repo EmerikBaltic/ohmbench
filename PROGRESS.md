@@ -29,8 +29,8 @@
 - [x] `B3` (`done`, `17aabda`, 373 fast): HYDROGEN QUEUE `4.3` — Netlist via `circuitsim.wiring.netlist.build_circuit` and diagnostics (including `FreeEnd` amber open-wire note).
 - [x] `B4` (`done` `c1c1820`, 375 fast): HYDROGEN QUEUE `4.4` — Move, rotate, flip, delete components/wires/junctions preserving `TerminalRef` attachments + 100 random ops + S1 + S2.
 - [x] `B5` (`done` `3040025`, 376 fast): HYDROGEN QUEUE `4.5` — Save and load schema v2 (`CircuitDocumentV2`) + v1 auto-migration in `CircuitScene` and `MainWindow` (round-trip v2 + v1 divider/12V+12V + error safety + clean undo stack).
-- [x] `B6` (`done`, 377 fast): HYDROGEN QUEUE `4.6` — Existing features that touch wires (examples, export PNG/SVG, label collision avoidance, hover tooltips, zoom-to-fit, recent/dirty/undo).
-- [ ] `GATE B` (`in_progress`): Full test suite + offscreen `10 V` / `1 kΩ` / `2 kΩ` voltage divider smoke test (`6.667 V`), tag `checkpoint/B-done`.
+- [x] `B6` (`done` `f0b29dc`, 377 fast): HYDROGEN QUEUE `4.6` — Existing features that touch wires (examples, export PNG/SVG, label collision avoidance, hover tooltips, zoom-to-fit, recent/dirty/undo).
+- [x] `GATE B` (`done`, 378 full): Full test suite (`378 passed in 74.18s`) + offscreen `10 V` / `1 kΩ` / `2 kΩ` voltage divider smoke test (`6.666667 V`), tagged `checkpoint/B-done`.
 
 ### OLD CODE MAP (to remove in D5)
 - `src/circuitsim/canvas/connectivity.py`: `route_orthogonal_wire`, `point_on_wire`, `point_strictly_inside_wire`, `wires_overlap_collinear`, `find_wires_attached_to_components`, `_route_wire_avoiding_body`, `reroute_wires_for_updated_terminals`, and geometric endpoint-clustering / T-junction point-on-segment pass inside `extract_connectivity`.
@@ -39,7 +39,7 @@
 - `src/circuitsim/canvas/commands.py`: coordinate-only wire point dicts in `AddWireCommand`, `ToggleJunctionCommand`, `MoveComponentsCommand`, `RotateComponentsCommand`, `FlipComponentsCommand`, `DeleteItemsCommand`, `PasteItemsCommand` once replaced by `WireGraph` transitions.
 
 ### PART C — WIRE REDESIGN PHASE 5 & 6 (branch `wire-redesign`)
-- [ ] `C1` (`todo`): HYDROGEN QUEUE `5.1` — Interactive wire drawing tool re-enabled (terminals, junctions, wire interior split, `FreeEnd`, live preview via `route()`, `Esc`/right-click cancel, 10 px snap).
+- [ ] `C1` (`in_progress`): HYDROGEN QUEUE `5.1` — Interactive wire drawing tool re-enabled (live preview via `route()`, `10 px` terminal/junction snap, `FreeEnd`, wire-on-wire notice, `Esc`/right-click cancel, 1 undo step). Acceptance: dragging/clicking from terminal or in `W` mode previews via `route()`, attaches nearest terminal/junction within 10 px, leaves `FreeEnd` + note on wire interior, `Esc`/right-click cancels cleanly.
 - [ ] `C2` (`todo`): HYDROGEN QUEUE `5.2` — Waypoint clicks while drawing + `Backspace` removes last waypoint + rejections (same terminal, duplicate wire, zero-length wire).
 - [ ] `C3` (`todo`): HYDROGEN QUEUE `5.3` — Interactive wire segment dragging (parallel slide updating `hints`, live preview via `route()`, 1 undo step).
 - [ ] `C4` (`todo`): HYDROGEN QUEUE `5.4` — Editing wire ends (`Acceptance S3`: drag handle, detach, reattach to terminal/junction/wire-split/`FreeEnd`, 1 undo step) + synthetic `QTest` mouse tests.
@@ -85,10 +85,10 @@
 - [x] 4.4 Moving, rotating, flipping, deleting (100 random ops + S1 + S2) - *done (`c1c1820`, 375 fast)*
 - [x] 4.5 Save and load schema v2 + v1 migration - *done (`3040025`, 376 fast)*
 - [x] 4.6 Existing features that touch wires (examples, export, labels, tooltips, zoom-to-fit, recent/dirty/undo) - *done (377 fast)*
-- [x] CHECKPOINT 4A-1 DONE - *done (377 fast; awaiting GATE B full suite + divider smoke test)*
+- [x] CHECKPOINT 4A-1 DONE - *done (`f0b29dc`, 378 full; `checkpoint/B-done`)*
 
 ### Phase 5: Wire Tool, Step 4A-2 (branch `wire-redesign`)
-- [ ] 5.1 Wire drawing tool re-enabled (live preview, 10 px snap, `JunctionRef`, `FreeEnd`, wire-on-wire notice) - *todo*
+- [ ] 5.1 Wire drawing tool re-enabled (live preview, 10 px snap, `JunctionRef`, `FreeEnd`, wire-on-wire notice) - *in progress*
 - [ ] 5.2 Rejections (same terminal, duplicate wire, zero-length wire) - *todo*
 - [ ] 5.3 Editing wire ends (Acceptance S3: handle, detach, reattach/free-end, 1 undo step) - *todo*
 - [ ] 5.4 Synthetic mouse tests (`QTest`, shared `qapp`) - *todo*
