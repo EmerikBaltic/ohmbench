@@ -247,7 +247,10 @@ def dict_to_document_v2(data: object) -> CircuitDocumentV2:
         meta = catalog.get(spec.component.component_type)
         if meta is not None:
             terminals[spec.component.name] = tuple(t.name for t in meta.terminals)
-    graph.validate(terminals)
+    try:
+        graph.validate(terminals)
+    except WireGraphError as exc:
+        raise CircuitFileError(str(exc)) from exc
 
     view = _view_from_dict(data.get("view"))
     return CircuitDocumentV2(placed=placed, graph=graph, view=view)
@@ -357,11 +360,24 @@ def migrate_v1_to_v2(v1_input: CircuitDocument | dict[str, Any] | str | Path) ->
 
     # 1. Map terminal positions to TerminalRefs
     terminal_by_pos: dict[PointPx, TerminalRef] = {}
+    aligned_terminals_at_pos: dict[PointPx, list[TerminalRef]] = {}
     for spec in doc.placed:
         cname = spec.component.name
+        cx, cy = float(spec.center_px[0]), float(spec.center_px[1])
+        is_grid_aligned = (
+            cx.is_integer()
+            and cy.is_integer()
+            and int(cx) % GRID_PX == 0
+            and int(cy) % GRID_PX == 0
+        )
         resolved = spec.resolve_terminals_px(catalog)
         for tname, pt in resolved.items():
-            terminal_by_pos[snap_px(pt)] = TerminalRef(cname, tname)
+            spt = snap_px(pt)
+            terminal_by_pos.setdefault(spt, TerminalRef(cname, tname))
+            if is_grid_aligned:
+                aligned_terminals_at_pos.setdefault(spt, []).append(
+                    TerminalRef(cname, tname)
+                )
 
     # 2. Filter zero-length wires and normalize
     raw_wires: list[tuple[str, tuple[PointPx, ...]]] = []
@@ -454,6 +470,24 @@ def migrate_v1_to_v2(v1_input: CircuitDocument | dict[str, Any] | str | Path) ->
             wire_counter += 1
             hints = tuple(sub[1:-1])
             new_wires.append(Wire(wid, att_a, att_b, hints))
+
+    # Preserve pin-to-pin contact for grid-aligned v1 components placed with touching terminals.
+    from circuitsim.wiring.model import _find_duplicate as _find_dup_pin
+
+    existing_wids = {w.id for w in new_wires}
+    for pt in sorted(aligned_terminals_at_pos):
+        refs = aligned_terminals_at_pos[pt]
+        if len(refs) < 2:
+            continue
+        primary = refs[0]
+        for other in refs[1:]:
+            if other != primary and _find_dup_pin(new_wires, primary, other) is None:
+                while f"W{wire_counter}" in existing_wids:
+                    wire_counter += 1
+                wid = f"W{wire_counter}"
+                wire_counter += 1
+                existing_wids.add(wid)
+                new_wires.append(Wire(wid, primary, other, ()))
 
     # Create WireGraph and let it normalize any degree < 3 junctions or stray dots
     # We use WireGraph.remove_wire / normalize by creating the graph directly

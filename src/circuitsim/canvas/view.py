@@ -102,7 +102,10 @@ class CircuitView(QGraphicsView):
         for it in items[1:]:
             rect = rect.united(it.sceneBoundingRect())
         for w in self.circuit_scene.placed_wires:
-            rect = rect.united(w.sceneBoundingRect())
+            if len(w.points) >= 2:
+                rect = rect.united(w.sceneBoundingRect())
+        for jitem in self.circuit_scene.junction_items:
+            rect = rect.united(jitem.sceneBoundingRect())
 
         rect = rect.adjusted(-margin_px, -margin_px, margin_px, margin_px)
         vp_size = self.viewport().size()

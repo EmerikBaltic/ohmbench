@@ -75,7 +75,7 @@ from circuitsim.wiring.router import (
     route as wire_route,
     simplify_orthogonal_points as wire_simplify_points,
 )
-from circuitsim.wiring.serializer import migrate_v1_to_v2
+from circuitsim.wiring.serializer import CircuitDocumentV2, migrate_v1_to_v2
 
 
 @dataclass(frozen=True)
@@ -1807,6 +1807,43 @@ class CircuitScene(QGraphicsScene):
     # Save / Load (.circ) support
     # ------------------------------------------------------------------
 
+    def to_document_v2(self, view: ViewState | None = None) -> CircuitDocumentV2:
+        """Snapshot the schematic as a Qt-free Schema v2 `CircuitDocumentV2` ready to be saved."""
+        export_graph = self._wire_graph
+        placed_by_id = {id(item): item for item in self._placed_items}
+        term_pos_by_id = {
+            id(item): item.terminal_scene_positions_px()
+            for item in self._placed_items
+        }
+        existing_pairs: set[frozenset[Attachment]] = {
+            frozenset((w.end_a, w.end_b)) for w in export_graph.wires
+        }
+        for item_a, term_a, item_b, term_b in self._pin_to_pin_bonds:
+            if (
+                placed_by_id.get(id(item_a)) is not item_a
+                or placed_by_id.get(id(item_b)) is not item_b
+            ):
+                continue
+            pt_a = term_pos_by_id[id(item_a)].get(term_a)
+            pt_b = term_pos_by_id[id(item_b)].get(term_b)
+            if pt_a is None or pt_a != pt_b:
+                continue
+            ref_a = TerminalRef(item_a.component.name, term_a)
+            ref_b = TerminalRef(item_b.component.name, term_b)
+            if ref_a == ref_b:
+                continue
+            pair = frozenset((ref_a, ref_b))
+            if pair in existing_pairs:
+                continue
+            existing_pairs.add(pair)
+            wid = export_graph.new_wire_id()
+            export_graph = export_graph.add_wire(ref_a, ref_b, wire_id=wid)
+        return CircuitDocumentV2(
+            placed=[item.to_placed_spec() for item in self._placed_items],
+            graph=export_graph,
+            view=view if view is not None else ViewState(theme=self.theme.value),
+        )
+
     def to_document(self, view: ViewState | None = None) -> CircuitDocument:
         """Snapshot the schematic as a Qt-free `CircuitDocument` ready to be saved."""
         return CircuitDocument(
@@ -1816,14 +1853,17 @@ class CircuitScene(QGraphicsScene):
             view=view if view is not None else ViewState(theme=self.theme.value),
         )
 
-    def load_document(self, doc: CircuitDocument) -> None:
+    def load_document(self, doc: CircuitDocument | CircuitDocumentV2) -> None:
         """Replace the whole schematic with `doc`, all-or-nothing.
 
+        Accepts both Schema v2 (`CircuitDocumentV2`) and legacy Schema v1
+        (`CircuitDocument`, auto-migrated via `migrate_v1_to_v2`).
         Step 1 builds every new item without touching the scene. If anything
         goes wrong there, `CircuitFileError` is raised and the current circuit
         is left exactly as it was. Step 2 (the swap) only runs after step 1
         succeeded and contains no code that can reasonably fail.
         """
+        is_v1 = not isinstance(doc, CircuitDocumentV2)
         try:
             new_items: list[ComponentItem] = []
             for spec in doc.placed:
@@ -1837,9 +1877,9 @@ class CircuitScene(QGraphicsScene):
                 item.set_rotation_deg(spec.rotation_deg)
                 item.set_flipped_h(spec.flipped_h)
                 new_items.append(item)
-            migrated_v2 = migrate_v1_to_v2(doc)
+            doc_v2 = migrate_v1_to_v2(doc) if is_v1 else doc
             # Dry run of netlist extraction: proves the circuit can be analysed.
-            migrated_v2.build_circuit(
+            doc_v2.build_circuit(
                 symbol_catalog=self.symbol_library.metadata_catalog,
             )
         except CircuitFileError:
@@ -1870,10 +1910,11 @@ class CircuitScene(QGraphicsScene):
         for idx, item in enumerate(new_items):
             self._placed_items.append(item)
             self.addItem(item)
-            self._record_pin_to_pin_bonds_for(item, new_items[:idx])
+            if is_v1:
+                self._record_pin_to_pin_bonds_for(item, new_items[:idx])
 
         self._wire_counter = 0
-        self._wire_graph = migrated_v2.graph
+        self._wire_graph = doc_v2.graph
         self._sync_graphics_from_wire_graph()
         self.undo_stack.clear()  # a freshly loaded file has no undo history
         self.clearSelection()

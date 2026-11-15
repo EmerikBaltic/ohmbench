@@ -27,9 +27,9 @@
 - [x] `B1` (`done`): HYDROGEN QUEUE `4.1` — `CircuitScene` backed by `WireGraph` (`scene.wire_graph`), attachment-based & legacy `add_wire`, graph undo/redo & `MoveComponentsCommand` merge (`mergeWith`).
 - [x] `B2` (`done`): HYDROGEN QUEUE `4.2` — Display (`WireItem` using `circuitsim.wiring.router.route()`, `JunctionItem` when `junction_dot_visible(jid)` / degree >= 3, `FreeEnd` hollow marker, 10 px hit stroke).
 - [x] `B3` (`done`, `17aabda`, 373 fast): HYDROGEN QUEUE `4.3` — Netlist via `circuitsim.wiring.netlist.build_circuit` and diagnostics (including `FreeEnd` amber open-wire note).
-- [x] `B4` (`done`, 375 fast): HYDROGEN QUEUE `4.4` — Move, rotate, flip, delete components/wires/junctions preserving `TerminalRef` attachments + 100 random ops + S1 + S2.
-- [ ] `B5` (`in_progress`): HYDROGEN QUEUE `4.5` — Save and load schema v2 (`CircuitDocumentV2`) + v1 auto-migration in `CircuitScene` and `MainWindow` (round-trip v2 + v1 divider/12V+12V + error safety + clean undo stack).
-- [ ] `B6` (`todo`): HYDROGEN QUEUE `4.6` — Existing features that touch wires (examples, export PNG/SVG, label collision avoidance, hover tooltips, zoom-to-fit, recent/dirty/undo).
+- [x] `B4` (`done` `c1c1820`, 375 fast): HYDROGEN QUEUE `4.4` — Move, rotate, flip, delete components/wires/junctions preserving `TerminalRef` attachments + 100 random ops + S1 + S2.
+- [x] `B5` (`done`, 376 fast): HYDROGEN QUEUE `4.5` — Save and load schema v2 (`CircuitDocumentV2`) + v1 auto-migration in `CircuitScene` and `MainWindow` (round-trip v2 + v1 divider/12V+12V + error safety + clean undo stack).
+- [ ] `B6` (`in_progress`): HYDROGEN QUEUE `4.6` — Existing features that touch wires (examples, export PNG/SVG, label collision avoidance, hover tooltips, zoom-to-fit, recent/dirty/undo). Acceptance: bundled examples migrate & simulate cleanly, PNG/SVG include wires/junctions without selection/hover artifacts, labels skip updates during drag and avoid `WireItem`s, tooltips/zoom-to-fit/recent/dirty work.
 - [ ] `GATE B` (`todo`): Full test suite + offscreen `10 V` / `1 kΩ` / `2 kΩ` voltage divider smoke test (`6.667 V`), tag `checkpoint/B-done`.
 
 ### OLD CODE MAP (to remove in D5)
@@ -82,9 +82,9 @@
 - [x] 4.1 Scene state (`WireGraph`) and undo/redo + move merge + `add_wire` between attachments - *done*
 - [x] 4.2 Display (`WireItem` using `route()`, `JunctionItem` degree >= 3, `FreeEnd` hollow marker, 10 px hit stroke, wire tool notice) - *done*
 - [x] 4.3 Netlist (`circuitsim.wiring.netlist`) and diagnostics (including `FreeEnd` amber note) - *done*
-- [x] 4.4 Moving, rotating, flipping, deleting (100 random ops + S1 + S2) - *done (375 fast)*
-- [ ] 4.5 Save and load schema v2 + v1 migration - *in progress*
-- [ ] 4.6 Existing features that touch wires (examples, export, labels, tooltips, zoom-to-fit, recent/dirty/undo) - *todo*
+- [x] 4.4 Moving, rotating, flipping, deleting (100 random ops + S1 + S2) - *done (`c1c1820`, 375 fast)*
+- [x] 4.5 Save and load schema v2 + v1 migration - *done (376 fast)*
+- [ ] 4.6 Existing features that touch wires (examples, export, labels, tooltips, zoom-to-fit, recent/dirty/undo) - *in progress*
 - [ ] CHECKPOINT 4A-1 DONE - *todo*
 
 ### Phase 5: Wire Tool, Step 4A-2 (branch `wire-redesign`)

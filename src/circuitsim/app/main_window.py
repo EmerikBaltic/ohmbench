@@ -59,8 +59,10 @@ from circuitsim.dialogs.value_parser import (
 from circuitsim.io.circ_serializer import (
     CircuitFileError,
     ViewState,
-    load_document,
-    save_document,
+)
+from circuitsim.wiring.serializer import (
+    load_document_v2,
+    save_document_v2,
 )
 from circuitsim.engine.simulation_session import (
     SimulationFrame,
@@ -740,7 +742,7 @@ class MainWindow(QMainWindow):
         """Load a `.circ` file. On any problem show a message and change nothing."""
         p = Path(path)
         try:
-            doc = load_document(p)  # reads + validates; builds new objects only
+            doc = load_document_v2(p)  # reads + validates v2 (auto-migrates v1)
             self.circuit_scene.load_document(doc)  # all-or-nothing swap
         except CircuitFileError as exc:
             self._show_error("Could not open file", str(exc))
@@ -772,7 +774,9 @@ class MainWindow(QMainWindow):
         """Save the circuit to `path`; show a message and return False on failure."""
         p = Path(path)
         try:
-            save_document(p, self.circuit_scene.to_document(self._current_view_state()))
+            save_document_v2(
+                p, self.circuit_scene.to_document_v2(self._current_view_state())
+            )
         except CircuitFileError as exc:
             self._show_error("Could not save file", str(exc))
             return False
@@ -976,7 +980,7 @@ class MainWindow(QMainWindow):
             return
 
         try:
-            doc = load_document(path)
+            doc = load_document_v2(path)
             self.circuit_scene.load_document(doc)
         except Exception as exc:
             self._show_error("Could not load example", f"Failed to load example circuit: {exc}")

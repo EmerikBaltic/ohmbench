@@ -472,3 +472,165 @@ def test_phase4_4_random_100_ops_fuzz_with_undo_redo(qapp) -> None:
     for _ in range(100):
         scene.undo_stack.redo()
     assert _state_snapshot() == final_snapshot
+
+
+def test_phase4_5_save_load_v2_and_v1_migration_and_bad_files(tmp_path, qapp) -> None:
+    """MainWindow saves Schema v2, auto-migrates v1 divider and 12V+12V files, and rejects bad files cleanly."""
+    import json
+
+    from circuitsim.app.main_window import MainWindow
+    from circuitsim.app.settings import AppSettings
+    from circuitsim.canvas.connectivity import PlacedComponentSpec, WireSpec
+    from circuitsim.components import DCVoltageSource, Ground, Resistor
+    from circuitsim.io.circ_serializer import CircuitDocument, ViewState, dumps_document
+
+    settings = AppSettings(data_dir=tmp_path / "settings")
+    win = MainWindow(settings=settings)
+    errors: list[str] = []
+    win._show_error = lambda _title, msg: errors.append(msg)
+    try:
+        scene = win.circuit_scene
+        v1 = scene.place_new_component("dc_voltage", QPointF(0.0, 0.0), rotation_deg=90)
+        r1 = scene.place_new_component("resistor", QPointF(100.0, -40.0), flipped_h=True)
+        r2 = scene.place_new_component(
+            "resistor", QPointF(180.0, 0.0), rotation_deg=90, flipped_h=True
+        )
+        gnd = scene.place_new_component("ground", QPointF(0.0, 120.0))
+
+        scene.edit_component_parameters(v1, {"dc_voltage": 24.0})
+        scene.edit_component_parameters(r1, {"resistance": 1000.0})
+        scene.edit_component_parameters(r2, {"resistance": 6000.0})
+
+        scene.add_wire(TerminalRef("V1", "pos"), TerminalRef("R1", "b"))
+        scene.add_wire(TerminalRef("R1", "a"), TerminalRef("R2", "a"))
+        w_bot = scene.add_wire(TerminalRef("V1", "neg"), TerminalRef("R2", "b"))
+        assert w_bot is not None
+        w_gnd = scene.add_wire(
+            [_interior_grid_point(w_bot.points), gnd.terminal_scene_positions_px()["gnd"]]
+        )
+        assert w_gnd is not None
+        assert len(scene.junction_items) == 1
+
+        # Save once, then change R2 to 3000 ohm and save again -> creates .bak backup
+        v2_path = tmp_path / "v2_roundtrip.circ"
+        assert win.save_to_path(v2_path) is True
+        scene.edit_component_parameters(r2, {"resistance": 3000.0})
+        assert win.save_to_path(v2_path) is True
+        bak_path = tmp_path / "v2_roundtrip.circ.bak"
+        assert bak_path.exists()
+        assert json.loads(bak_path.read_text(encoding="utf-8"))["schema_version"] == 2
+
+        raw_v2 = json.loads(v2_path.read_text(encoding="utf-8"))
+        assert raw_v2["schema_version"] == 2
+        assert len(raw_v2["junctions"]) == 1
+        assert all("end_a" in w and "end_b" in w for w in raw_v2["wires"])
+        partition_before = _net_partition(scene.extract_connectivity_result())
+    finally:
+        win.circuit_scene.undo_stack.setClean()
+        win.close()
+
+    # Load v2 in a fresh window and verify hand-calculated voltage: 24 * 3k / (1k + 3k) = 18.0 V
+    win2 = MainWindow(settings=settings)
+    errors2: list[str] = []
+    win2._show_error = lambda _title, msg: errors2.append(msg)
+    try:
+        assert win2.open_path(v2_path) is True and errors2 == []
+        assert not win2.circuit_scene.undo_stack.canUndo()
+        assert not win2.has_unsaved_changes()
+        assert len(win2.circuit_scene.junction_items) == 1
+        conn_v2 = win2.circuit_scene.extract_connectivity_result()
+        assert _net_partition(conn_v2) == partition_before
+        sol_v2 = MNASolver(conn_v2.circuit).solve_dc()
+        # Hand calculation: V_mid = 24.0 * 3000.0 / (1000.0 + 3000.0) = 18.0 V, I = 24.0 / 4000.0 = 6.0 mA
+        assert math.isclose(
+            sol_v2.node_voltages[conn_v2.component_nodes["R2"]["a"]], 18.0, rel_tol=1e-6
+        )
+        assert math.isclose(abs(conn_v2.circuit.get_component("R2").current), 6.0e-3, rel_tol=1e-6)
+
+        # Open v1 voltage divider file (12 V, 1 kOhm, 3 kOhm -> 9.0 V)
+        v1_div_doc = CircuitDocument(
+            placed=[
+                PlacedComponentSpec(DCVoltageSource("V1", "a", "b", voltage=12.0), (-100.0, 0.0)),
+                PlacedComponentSpec(Resistor("R1", "a", "b", resistance=1000.0), (0.0, 0.0)),
+                PlacedComponentSpec(Resistor("R2", "a", "b", resistance=3000.0), (120.0, 0.0)),
+                PlacedComponentSpec(Ground("GND1"), (-140.0, 60.0)),
+            ],
+            wires=[
+                WireSpec("W1", ((-140, 0), (-140, -60), (-40, -60), (-40, 0))),
+                WireSpec("W2", ((40, 0), (80, 0))),
+                WireSpec("W3", ((160, 0), (160, 40), (-60, 40), (-60, 0))),
+                WireSpec("W4", ((-60, 40), (-140, 40))),
+            ],
+            junctions=[(-60, 40)],
+            view=ViewState(theme="dark", zoom=1.0),
+        )
+        v1_div_path = tmp_path / "v1_divider.circ"
+        v1_div_path.write_text(dumps_document(v1_div_doc), encoding="utf-8")
+        assert json.loads(v1_div_path.read_text(encoding="utf-8"))["schema_version"] == 1
+        assert win2.open_path(v1_div_path) is True and errors2 == []
+        conn_div = win2.circuit_scene.extract_connectivity_result()
+        sol_div = MNASolver(conn_div.circuit).solve_dc()
+        # Hand calculation: V_mid = 12.0 * 3000.0 / (1000.0 + 3000.0) = 9.0 V
+        assert math.isclose(
+            sol_div.node_voltages[conn_div.component_nodes["R1"]["b"]], 9.0, rel_tol=1e-6
+        )
+
+        # Open v1 12V + 12V series chain across 100 ohm load (-> 24.0 V, 0.24 A)
+        v1_chain_doc = CircuitDocument(
+            placed=[
+                PlacedComponentSpec(DCVoltageSource("V1", "a", "b", voltage=12.0), (-60.0, 0.0)),
+                PlacedComponentSpec(DCVoltageSource("V2", "a", "b", voltage=12.0), (40.0, 0.0)),
+                PlacedComponentSpec(Resistor("R1", "a", "b", resistance=100.0), (140.0, 0.0)),
+                PlacedComponentSpec(Ground("GND1"), (-100.0, 60.0)),
+            ],
+            wires=[
+                WireSpec("W_v1v2", ((-20, 0), (0, 0))),
+                WireSpec("W_v2r", ((80, 0), (100, 0))),
+                WireSpec("W_ret", ((180, 0), (180, 60), (-100, 60), (-100, 0))),
+                WireSpec("W_gnd", ((-100, 60), (-100, 40))),
+            ],
+            junctions=[(-100, 60)],
+        )
+        v1_chain_path = tmp_path / "v1_12plus12.circ"
+        v1_chain_path.write_text(dumps_document(v1_chain_doc), encoding="utf-8")
+        assert win2.open_path(v1_chain_path) is True and errors2 == []
+        session_chain = SimulationSession(
+            connectivity=win2.circuit_scene.extract_connectivity_result()
+        )
+        frame_chain = session_chain.start()
+        assert frame_chain.state == SimulationState.RUNNING
+        # Hand calculation: V_top = 12 + 12 = 24.0 V; I = 24.0 / 100.0 = 0.24 A
+        assert math.isclose(abs(frame_chain.components["R1"].current), 0.24, rel_tol=1e-6)
+        assert math.isclose(abs(frame_chain.components["R1"].voltage), 24.0, rel_tol=1e-6)
+
+        # Corrupted, truncated, and unknown-version files leave the scene unchanged.
+        before_graph = win2.circuit_scene.wire_graph
+        before_names = [it.component.name for it in win2.circuit_scene.placed_items]
+        undo_before = win2.circuit_scene.undo_stack.count()
+
+        bad_newer = json.loads(v2_path.read_text(encoding="utf-8"))
+        bad_newer["schema_version"] = 99
+        bad_missing_comp = json.loads(v2_path.read_text(encoding="utf-8"))
+        bad_missing_comp["wires"][0]["end_a"] = {
+            "kind": "terminal",
+            "component": "MISSING99",
+            "terminal": "a",
+        }
+        for fname, payload in (
+            ("corrupt.circ", "{not json"),
+            ("truncated.circ", v2_path.read_text(encoding="utf-8")[:40]),
+            ("newer.circ", json.dumps(bad_newer)),
+            ("dangling.circ", json.dumps(bad_missing_comp)),
+        ):
+            bad_p = tmp_path / fname
+            bad_p.write_text(payload, encoding="utf-8")
+            assert win2.open_path(bad_p) is False, fname
+            assert win2.circuit_scene.wire_graph == before_graph
+            assert [it.component.name for it in win2.circuit_scene.placed_items] == before_names
+            assert win2.circuit_scene.undo_stack.count() == undo_before
+
+        assert len(errors2) == 4
+        assert any("newer version of Ohmbench" in m for m in errors2)
+    finally:
+        win2.circuit_scene.undo_stack.setClean()
+        win2.close()
