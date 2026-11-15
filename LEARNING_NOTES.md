@@ -616,4 +616,38 @@ When you connect a logic gate to resistors, capacitors, or LEDs, the simulator s
 - **Atomic multi-threshold validation & `.circ` persistence**: Editing `v_il`/`v_ih` or `v_ol`/`v_oh` simultaneously (e.g. shifting both thresholds above/below prior limits or toggling presets between `5V_CMOS`, `5V_TTL`, `3V3_LVCMOS`, and `Custom`) runs through `LogicGate.set_parameters_batch()` across `QuickValueDialog`, `EditComponentParametersCommand`, `SimulationSession`, and `.circ` v1/v2 deserializers (`_EXTRA_SETTINGS` saving `family`, `initial_state`, `supply_mode`).
 - **Inner-loop ABC dispatch overhead (`MNASolver`)**: Because `Component` inherits from `abc.ABC`, calling `isinstance(comp, ...)` repeatedly inside `step_transient`, `_transient_conductance_signature`, and `_build_rhs_transient` went through `_abc._abc_instancecheck` (~891 checks/step on a 30-resistor ladder, dominating 68% of step runtime). Partitioning components once per `circuit.version` into integer-tagged tuples and type buckets cut 350 transient steps on the ladder from ~81 ms to ~18 ms and kept UI heartbeats responsive.
 
+---
+
+### Oscilloscope Core Architecture & Measurement Physics
+
+The Qt-free `circuitsim.scope` engine sits behind `SimulationSession` and processes live MNA node voltages in pure NumPy before any UI panel draws pixels:
+
+1. **Decoupled Simulation Time vs. Wall-Clock Time**:
+   A transient solver tracks electrical time `t_sim` independently of your computer's wall clock. `SimulationSpeed` lets you watch fast microsecond transients in slow motion (`0.1x`), inspect millisecond circuits near `1x`, race ahead at `10x`, or run unthrottled (`AS_FAST_AS_POSSIBLE`). If `dt` is very tiny (for example `1 ns` on digital gates) and CPU time hits the frame wall-clock budget before finishing `target_steps`, `SimulationSession` raises `overflow=True` (`"Sim slower than real-time"`) instead of freezing the app.
+
+2. **Timebase Coupling, Peak-Detect & Roll Mode**:
+   When you set a scope timebase `seconds/div` (from `10 ns/div` to `10 s/div` at `100 points/div`), the solver couples `dt = min(dt_scope, dt_circuit)`. On slow timebases (`dt_circuit < dt_scope`), many solver steps land inside each horizontal pixel column: `resample_for_display` uses vectorized `np.minimum.reduceat` / `np.maximum.reduceat` (**peak-detect**) so narrow spikes or switching glitches between display ticks are preserved rather than averaged away. At `100 ms/div` or slower, **Roll mode** scrolls continuously right-to-left like a strip-chart recorder.
+
+3. **Triggers, Hysteresis, Holdoff & Sub-Sample Interpolation**:
+   Real signals with millivolts of noise would trigger repeatedly on a flat threshold; comparator **hysteresis** (`0.05 div` by default) arms only after the waveform goes `level - h` away from the threshold. **Sub-sample linear interpolation** estimates crossing time between sample indices to `< 0.1 * dt` so repeated sine waves lock cleanly without horizontal jitter. **Holdoff** ignores new crossings until `holdoff_s` has elapsed, **Auto** free-runs into `"Auto (free run)"` if no trigger occurs within `auto_timeout_s`, and **Single** latches the first complete triggered window and freezes in `STOP`.
+
+4. **Integer-Period Measurements, 10x Probe & Differential Math (`CH1 - CH2`)**:
+   Computing `Vavg`, `Vrms`, and **AC coupling** over the whole captured array biases answers when `3.4` cycles happen to fit on screen. Instead, `circuitsim.scope` integrates over the largest integer number of detected complete periods `[t_r0, t_rk]` (falling back smoothly to the full window when `< 1` period is present). Because circuit probes reference ground `"0"`, measuring voltage across a floating component uses differential Math `CH1 - CH2`. Both `1x` and `10x` probe settings keep circuit-referred node volts consistent while validating supported hardware probe multipliers.
+
+5. **Periodic-Hann FFT & Resolution Bandwidth (`RBW`)**:
+   Truncating a continuous tone at finite window duration leaks energy across FFT bins. Multiplying by a periodic Hann window and dividing by coherent gain (`0.5`) recovers true sine peaks, with `RBW ≈ 1.44 * (fs / N)` indicating bin selectivity.
+
+#### Hands-On Exercises (`circuitsim.tools.scope_demo`)
+Run the headless scope demo generator to export 4 reference waveforms to `docs/design/`:
+
+```powershell
+$env:QT_QPA_PLATFORM='offscreen'
+.\.venv\Scripts\python.exe -m circuitsim.tools.scope_demo --export docs/design/
+```
+
+1. **RC Low-Pass Phase Lag (`docs/design/scope_sine.png`)**: Compare `CH1` (input) and `CH2` (output) at `f = f_c = 1/(2*pi*R*C) = 1 kHz`. Verify by hand that `|H(j*w_c)| = 1/sqrt(2) ≈ 0.707` (`10 Vpp -> 7.07 Vpp`) and `CH2` lags `CH1` by `+45.0 deg`.
+2. **RC Step Rise Time (`docs/design/scope_rc_step.png`)**: Using `tau = R * C = 1.0 ms`, check the analytical `10%-90%` rise-time formula `t_r = ln(9) * tau ≈ 2.20 ms` against the measured readout shown in the bottom bar.
+3. **Square-Wave Fourier Harmonics (`docs/design/scope_fft.png`)**: Compare the peak heights of `3 kHz` and `5 kHz` relative to the `1 kHz` fundamental against the Fourier coefficients `1/3` (`-9.54 dB`) and `1/5` (`-13.98 dB`) predicted for a `50%` duty square wave.
+
+
 

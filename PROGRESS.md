@@ -457,8 +457,8 @@ When ready to perform Stage 2 (internal/package rename after Stage 1 settles):
 | 9 | Comprehensive Qt-free analytical & circuit test suite (`tests/test_scope_core.py`) | `[x]` | `5a7a78e` |
 | 10 | Offscreen Qt waveform debug tool & PNG exports (`tools/scope_demo.py`, `docs/design/scope_*.png`) | `[x]` | `849c7ea` |
 | 11 | Performance benchmarks, sink overhead (<5%) & UI responsiveness check (`tests/test_scope_performance.py`) | `[x]` | `d2f10be` |
-| 12 | Scope core API & Next-Chat UI requirements in `PROGRESS.md` | `[x]` | pending |
-| 13 | Student `LEARNING_NOTES.md`, final fast suite check & wrap-up | `[ ]` | - |
+| 12 | Scope core API & Next-Chat UI requirements in `PROGRESS.md` | `[x]` | `2cfbf48` |
+| 13 | Student `LEARNING_NOTES.md`, final fast suite check & wrap-up | `[x]` | pending |
 
 ## OSCILLOSCOPE ORIENTATION, BENCHMARKS & DESIGN NOTE
 
