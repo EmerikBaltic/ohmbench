@@ -251,11 +251,14 @@ class CircuitView(QGraphicsView):
             event.accept()
             return
 
-        # 3. Left-click wire drawing (either clicking a terminal, or in Wire Mode, or finishing click-to-click wire)
+        # 3. Left-click wire drawing (either clicking a terminal, or in Wire Mode, or adding waypoint / finishing wire)
         if event.button() == Qt.MouseButton.LeftButton:
             if self.circuit_scene.is_drawing_wire:
                 self._wire_drag_active = False
-                self.circuit_scene.finish_wire_preview(scene_pt)
+                if self.circuit_scene.is_snap_target_at(scene_pt):
+                    self.circuit_scene.finish_wire_preview(scene_pt)
+                elif not self.circuit_scene.add_wire_preview_waypoint(scene_pt):
+                    self.circuit_scene.finish_wire_preview(scene_pt)
                 self._update_cursor_for_scene_pos(scene_pt)
                 event.accept()
                 return
@@ -366,9 +369,15 @@ class CircuitView(QGraphicsView):
         super().mouseReleaseEvent(event)
 
     def mouseDoubleClickEvent(self, event: QMouseEvent) -> None:
-        """Open the Quick Value Dialog when double-clicking a component (Addition #1)."""
+        """Finish wire on double-click while drawing, otherwise open Quick Value Dialog."""
         if event.button() == Qt.MouseButton.LeftButton:
             scene_pt = self.mapToScene(event.position().toPoint())
+            if self.circuit_scene.is_drawing_wire:
+                self._wire_drag_active = False
+                self.circuit_scene.finish_wire_preview(scene_pt)
+                self._update_cursor_for_scene_pos(scene_pt)
+                event.accept()
+                return
             self._pressed_switch_item = None
             hit_item = self.circuit_scene.itemAt(scene_pt, self.transform())
             if isinstance(hit_item, ComponentItem):
@@ -497,6 +506,11 @@ class CircuitView(QGraphicsView):
             return
         if event.key() == Qt.Key.Key_W and not event.modifiers():
             self.set_wire_mode(not self._wire_mode_enabled)
+            event.accept()
+            return
+        if event.key() == Qt.Key.Key_Backspace and self.circuit_scene.is_drawing_wire:
+            self.circuit_scene.pop_wire_preview_waypoint(self._last_scene_pos)
+            self._update_cursor_for_scene_pos(self._last_scene_pos)
             event.accept()
             return
         if event.key() in (Qt.Key.Key_Delete, Qt.Key.Key_Backspace):

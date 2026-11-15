@@ -258,3 +258,156 @@ def test_phase5_1_interactive_wire_drawing_preview_snap_junction_free_end_and_ca
     finally:
         win.circuit_scene.undo_stack.setClean()
         win.close()
+
+
+def test_phase5_2_waypoints_backspace_and_invalid_wire_rejections(tmp_path, qapp) -> None:
+    """Phase 5.2: waypoint clicks, Backspace pop/cancel, double-click finish, and readable zero-undo rejections."""
+    settings = AppSettings(data_dir=tmp_path / "settings_52")
+    win = MainWindow(settings=settings)
+    win.resize(1000, 760)
+    win.show()
+    qapp.processEvents()
+    view = win.circuit_view
+    scene = win.circuit_scene
+    vp = view.viewport()
+
+    try:
+        view.reset_zoom()
+        qapp.processEvents()
+
+        r1 = scene.place_new_component("resistor", QPointF(-100.0, 0.0))
+        r2 = scene.place_new_component("resistor", QPointF(100.0, 0.0))
+        p_r1a = r1.terminal_scene_positions_px()["a"]
+        p_r1b = r1.terminal_scene_positions_px()["b"]
+        p_r2a = r2.terminal_scene_positions_px()["a"]
+        p_r2b = r2.terminal_scene_positions_px()["b"]
+
+        # 1. Click-to-click with intermediate waypoints and Backspace pop (without deleting selected component).
+        r2.setSelected(True)
+        QTest.mousePress(
+            vp, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier, _vpos(win, *p_r1b)
+        )
+        QTest.mouseRelease(
+            vp, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier, _vpos(win, *p_r1b)
+        )
+        assert scene.is_drawing_wire is True
+
+        # Add two waypoints (-20, -80) and (40, -80), then pop the second with Backspace.
+        QTest.mousePress(
+            vp, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier, _vpos(win, -20, -80)
+        )
+        QTest.mouseRelease(
+            vp, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier, _vpos(win, -20, -80)
+        )
+        assert scene._wire_hints == [(-20, -80)]
+
+        QTest.mousePress(
+            vp, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier, _vpos(win, 40, -80)
+        )
+        QTest.mouseRelease(
+            vp, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier, _vpos(win, 40, -80)
+        )
+        assert scene._wire_hints == [(-20, -80), (40, -80)]
+
+        QTest.keyClick(view, Qt.Key.Key_Backspace)
+        assert scene.is_drawing_wire is True
+        assert scene._wire_hints == [(-20, -80)]
+        assert len(scene.placed_items) == 2  # selected R2 was NOT deleted!
+
+        # Add (60, -80) and finish by clicking R2.a
+        QTest.mousePress(
+            vp, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier, _vpos(win, 60, -80)
+        )
+        QTest.mouseRelease(
+            vp, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier, _vpos(win, 60, -80)
+        )
+        QTest.mousePress(
+            vp, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier, _vpos(win, *p_r2a)
+        )
+        assert scene.is_drawing_wire is False
+        assert len(scene.placed_wires) == 1
+        w_wp = scene.placed_wires[0]
+        assert w_wp.end_a == TerminalRef("R1", "b")
+        assert w_wp.end_b == TerminalRef("R2", "a")
+        assert w_wp.hints == ((-20, -80), (60, -80))
+        assert (-20, -80) in w_wp.points and (60, -80) in w_wp.points
+
+        # Backspace with no waypoints cancels active wire preview without deleting selection.
+        QTest.mousePress(
+            vp, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier, _vpos(win, *p_r1a)
+        )
+        QTest.mouseRelease(
+            vp, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier, _vpos(win, *p_r1a)
+        )
+        assert scene.is_drawing_wire is True
+        QTest.keyClick(view, Qt.Key.Key_Backspace)
+        assert scene.is_drawing_wire is False
+        assert len(scene.placed_items) == 2
+        r2.setSelected(False)
+
+        # 2. W mode empty-grid start + waypoint + double-click finish -> clean hints & FreeEnd.
+        QTest.keyClick(view, Qt.Key.Key_W)
+        QTest.mousePress(
+            vp, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier, _vpos(win, 0, 120)
+        )
+        QTest.mouseRelease(
+            vp, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier, _vpos(win, 0, 120)
+        )
+        QTest.mousePress(
+            vp, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier, _vpos(win, 80, 120)
+        )
+        QTest.mouseRelease(
+            vp, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier, _vpos(win, 80, 120)
+        )
+        QTest.mouseDClick(
+            vp, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier, _vpos(win, 80, 180)
+        )
+        assert scene.is_drawing_wire is False
+        w_dclick = scene.placed_wires[-1]
+        assert w_dclick.end_a == FreeEnd(0, 120)
+        assert w_dclick.end_b == FreeEnd(80, 180)
+        assert w_dclick.hints == ((80, 120),)
+
+        # 3. Rejections emit readable notices and push ZERO undo steps:
+        undo_before = scene.undo_stack.count()
+        wires_before = len(scene.placed_wires)
+
+        # 3a. Same terminal
+        scene.start_wire_preview(p_r1a)
+        assert scene.finish_wire_preview(p_r1a) is None
+        assert "terminal to itself" in scene.last_status_notice.lower()
+        assert scene.undo_stack.count() == undo_before
+        assert len(scene.placed_wires) == wires_before
+
+        # 3b. Same junction
+        split_res = scene.wire_graph.split_wire_at(w_wp.wire_id, (20, -80))
+        scene.set_wire_graph(split_res.graph)
+        wires_after_split = len(scene.placed_wires)
+        scene.start_wire_preview((20, -80))
+        assert scene.finish_wire_preview((24, -82)) is None
+        assert "junction to itself" in scene.last_status_notice.lower()
+        assert scene.undo_stack.count() == undo_before
+        assert len(scene.placed_wires) == wires_after_split
+
+        # 3c. Duplicate wire between existing attachment pair (R1.a <-> R2.b added once, rejected on 2nd)
+        w_dup_first = scene.add_wire(TerminalRef("R1", "a"), TerminalRef("R2", "b"))
+        assert w_dup_first is not None
+        undo_after_first = scene.undo_stack.count()
+        wires_after_first = len(scene.placed_wires)
+
+        scene.start_wire_preview(p_r2b)
+        assert scene.finish_wire_preview(p_r1a) is None
+        assert "already exists" in scene.last_status_notice.lower()
+        assert win.statusBar().currentMessage() == scene.last_status_notice
+        assert scene.undo_stack.count() == undo_after_first
+        assert len(scene.placed_wires) == wires_after_first
+
+        # 3d. Zero-length wire in empty space
+        scene.start_wire_preview((220, 220))
+        assert scene.finish_wire_preview((223, 218)) is None
+        assert "zero-length" in scene.last_status_notice.lower()
+        assert scene.undo_stack.count() == undo_after_first
+        assert len(scene.placed_wires) == wires_after_first
+    finally:
+        win.circuit_scene.undo_stack.setClean()
+        win.close()

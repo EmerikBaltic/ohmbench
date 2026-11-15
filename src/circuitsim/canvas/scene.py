@@ -773,6 +773,66 @@ class CircuitScene(QGraphicsScene):
         snapped = wire_snap_px((sx, sy))
         return (FreeEnd(*snapped), snapped)
 
+    def is_snap_target_at(self, pos: QPointF | tuple[float, float]) -> bool:
+        """Return True if `pos` is within 10 px of a terminal or existing junction."""
+        if (
+            self.find_terminal_near(pos, tolerance_px=self.TERMINAL_SNAP_RADIUS_PX)
+            is not None
+        ):
+            return True
+        return (
+            self._find_junction_at(
+                pos,
+                self._wire_graph,
+                tolerance_px=self.TERMINAL_SNAP_RADIUS_PX,
+            )
+            is not None
+        )
+
+    def add_wire_preview_waypoint(
+        self, pos: QPointF | tuple[float, float]
+    ) -> bool:
+        """Append a grid-snapped intermediate waypoint to the active preview wire.
+
+        Returns False if `pos` snaps to the start/previous waypoint (caller can finish).
+        """
+        if self._wire_start_pt is None or self._wire_start_att is None:
+            return False
+        sx = pos.x() if isinstance(pos, QPointF) else float(pos[0])
+        sy = pos.y() if isinstance(pos, QPointF) else float(pos[1])
+        snapped = wire_snap_px((sx, sy))
+        last_anchor = (
+            self._wire_hints[-1] if self._wire_hints else self._wire_start_pt
+        )
+        if snapped == last_anchor:
+            return False
+        self._wire_hints.append(snapped)
+        self.update_wire_preview((sx, sy))
+        return True
+
+    def pop_wire_preview_waypoint(
+        self, cursor_pos: QPointF | tuple[float, float] | None = None
+    ) -> bool:
+        """Remove the last preview waypoint, or cancel preview when no waypoints remain."""
+        if not self.is_drawing_wire:
+            return False
+        if self._wire_hints:
+            self._wire_hints.pop()
+            target = (
+                cursor_pos
+                if cursor_pos is not None
+                else (
+                    self._wire_hints[-1]
+                    if self._wire_hints
+                    else self._wire_start_pt
+                )
+            )
+            if target is not None:
+                self.update_wire_preview(target)
+            return True
+        self.cancel_wire_preview()
+        return False
+
     def _point_hits_existing_wire(self, pt: PointPx, graph: WireGraph) -> bool:
         """Return True if `pt` lies anywhere on an existing wire polyline in `graph`."""
         term_map = self._terminal_pos_map()
@@ -875,10 +935,32 @@ class CircuitScene(QGraphicsScene):
         pts = self.update_wire_preview(end_pos)
         att_a = self._wire_start_att
         att_b = self._wire_end_att
-        hints = tuple(self._wire_hints)
+        start_pt = self._wire_start_pt
+        hints_list = list(self._wire_hints)
         self.cancel_wire_preview()
-        if att_b is None or len(pts) < 2 or att_a == att_b:
+        if att_b is None:
             return None
+        if att_a == att_b:
+            if isinstance(att_a, TerminalRef):
+                self._emit_status_notice("Cannot connect a terminal to itself")
+            elif isinstance(att_a, JunctionRef):
+                self._emit_status_notice("Cannot connect a junction to itself")
+            else:
+                self._emit_status_notice("Zero-length wire ignored")
+            return None
+        if len(pts) < 2:
+            self._emit_status_notice("Zero-length wire ignored")
+            return None
+        if self._find_duplicate_graph_wire(self._wire_graph, att_a, att_b) is not None:
+            self._emit_status_notice("Wire already exists between these points")
+            return None
+
+        end_pt = pts[-1]
+        while hints_list and hints_list[0] == start_pt:
+            hints_list.pop(0)
+        while hints_list and hints_list[-1] == end_pt:
+            hints_list.pop()
+        hints = tuple(hints_list)
 
         free_on_wire = (
             isinstance(att_a, FreeEnd)
