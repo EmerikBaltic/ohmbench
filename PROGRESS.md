@@ -52,8 +52,8 @@
 - [x] `D2` (`done` `00e4dca`, 385 fast): Explicit `J` key junction placement on wire at snapped cursor via `split_wire_at`.
 - [x] `D3` (`done` `ca399f3`, 386 fast): Junction dragging (`MoveJunctionCommand(junction_id, old_pos, new_pos)` updating `Junction.pos` and rerouting incident wires).
 - [x] `D4` (`done` `186ec82`, 387 fast): Copy/paste of selections containing components, wires, and junctions (`Ctrl+C` / `Ctrl+V`).
-- [x] `D5` (`done`, 388 fast): Remove dead old wire routing/endpoint code listed in `OLD CODE MAP`.
-- [ ] `GATE D` (`in_progress`): Full test suite + `python -m pytest -q` + tag `checkpoint/D-done`.
+- [x] `D5` (`done` `819b46f`, 388 fast): Remove dead old wire routing/endpoint code listed in `OLD CODE MAP`.
+- [x] `GATE D` (`done`, 389 full x3 + `python -m pytest -q`): Full test suite (`389 passed` in `83.76s`, `83.56s`, `83.20s` via `.\.venv\Scripts\pytest.exe -q`, plus `389 passed in 83.89s` via `.\.venv\Scripts\python.exe -m pytest -q`) + tag `checkpoint/D-done`.
 
 ## HYDROGEN QUEUE (Last Commit: phase-3)
 ### Phase 0: Verify
@@ -97,6 +97,14 @@
 ### Phase 6: Documentation & Report (branch `wire-redesign`)
 - [x] 6.1 Update `PROGRESS.md` (built, audited tests, next tasks S4/S5 & Step 4B `D1`–`D5`) and `README.md` (`test_phase6_1_golden_roundtrips_and_s1_s5_matrix` S1–S5 + Schema v2 & bundled example round-trips; zero existing tests weakened or replaced) - *done (`c053c45`, 383 fast)*
 - [x] CHECKPOINT 4A-2 / GATE C DONE - *done (384 full x3, offscreen `MainWindow` divider `V_mid=6.666667 V`; `checkpoint/C-done`)*
+
+### Phase 4B: Step 4B Interactions & Cleanup (branch `wire-redesign`)
+- [x] `D1` Split-on-drop (dropping component onto wire splits inline or taps junction in 1 undo step) - *done (`95685c3`, 384 fast)*
+- [x] `D2` Explicit `J` key junction placement (`toggle_junction_at` via `split_wire_at` / `collapse_junction`) - *done (`00e4dca`, 385 fast)*
+- [x] `D3` Junction dragging (`MoveJunctionCommand` updating `Junction.pos` and rerouting incident wires) - *done (`ca399f3`, 386 fast)*
+- [x] `D4` Subgraph copy/paste (`extract_subgraph` / `paste_subgraph` with components, `hints`, and junctions via `Ctrl+C` / `Ctrl+V`) - *done (`186ec82`, 387 fast)*
+- [x] `D5` Remove dead legacy wire routing helpers and command wire dicts (`OLD CODE MAP` cleanup) - *done (`819b46f`, 388 fast)*
+- [x] CHECKPOINT 4B / GATE D DONE - *done (`389 passed` x3 in `83.76s` / `83.56s` / `83.20s` + `python -m pytest -q` `389 passed in 83.89s`; `checkpoint/D-done`)*
 
 ## Current Status: Milestone 2 & Milestone 3 Step 3A Complete, Phase 1 Quick Wins Tasks 1-10 Done, Startup & Shutdown Fixes Done, LED Lifecycle Complete, Paint Safety & Crash Handler Hardening Complete, Meter Loading & Ideal Modes Complete (289 Passing Tests)
 
