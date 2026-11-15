@@ -260,7 +260,12 @@ def select_window_trigger(
     window_duration_s: float,
     pre_trigger_fraction: float = 0.5,
 ) -> TriggerEvent | None:
-    """Pick the latest complete trigger event whose window ``[t_trig - pre*W, t_trig + (1-pre)*W]`` fits in ``[t_min, t_max]``."""
+    """Pick the latest trigger event for display.
+
+    Prefers an event whose full pre/post window fits in ``[t_min, t_max]``; falls
+    back to an event whose post-trigger tail ``t_trig + (1-pre)*W <= t_max`` fits
+    so single-shot startup steps near ``t = 0`` still trigger cleanly.
+    """
     if not events or window_duration_s <= 0.0:
         return None
     pre = pre_trigger_fraction * window_duration_s
@@ -268,12 +273,12 @@ def select_window_trigger(
     eps = 1e-12 * max(1.0, window_duration_s)
 
     best_full: TriggerEvent | None = None
-    best_partial: TriggerEvent | None = None
+    best_post_only: TriggerEvent | None = None
     for ev in reversed(events):
-        if ev.time_s >= t_min + pre - eps:
-            if best_partial is None:
-                best_partial = ev
-            if ev.time_s <= t_max - post + eps:
+        if ev.time_s <= t_max - post + eps:
+            if best_post_only is None:
+                best_post_only = ev
+            if ev.time_s >= t_min + pre - eps:
                 best_full = ev
                 break
-    return best_full if best_full is not None else best_partial
+    return best_full if best_full is not None else best_post_only
