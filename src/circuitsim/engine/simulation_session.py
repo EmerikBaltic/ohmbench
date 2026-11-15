@@ -17,6 +17,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import Enum
+from itertools import chain
 import time
 from typing import TYPE_CHECKING, Any, Callable, Iterable, Protocol, Sequence
 
@@ -412,18 +413,38 @@ class SimulationSession:
         self,
         t0: float,
         dt: float,
-        node_names: tuple[str, ...],
-        rows: list[list[float]],
+        dicts: list[dict[str, float]],
+        *,
+        uniform_keys: bool = False,
     ) -> None:
-        if not rows or not self._scope_sinks:
+        if not dicts or not self._scope_sinks:
             return
         from circuitsim.scope.capture import SampleBlock
+
+        first = dicts[0]
+        first_keys = first.keys()
+        node_names = tuple(first_keys)
+        n_rows = len(dicts)
+        n_cols = len(node_names)
+        try:
+            flat = chain.from_iterable(map(dict.values, dicts))
+            arr = np.fromiter(flat, dtype=np.float64, count=n_rows * n_cols).reshape(
+                (n_rows, n_cols)
+            )
+            # Verify key stability unless circuit topology version remained unchanged across chunk
+            if not uniform_keys and not all(d.keys() == first_keys for d in dicts):
+                raise ValueError("Node key mismatch inside chunk")
+        except Exception:
+            arr = np.asarray(
+                [[d.get(name, 0.0) for name in node_names] for d in dicts],
+                dtype=np.float64,
+            )
 
         block = SampleBlock(
             t0=t0,
             dt=dt,
             node_names=node_names,
-            data=np.asarray(rows, dtype=np.float64),
+            data=arr,
         )
         for sink in tuple(self._scope_sinks):
             handler = getattr(sink, "on_sample_block", None)
@@ -753,13 +774,7 @@ class SimulationSession:
             self._last_overflow = False
             self._last_speed_ratio = self.speed.multiplier
             if self._has_scope_sink:
-                n_names = tuple(node_v.keys())
-                self._emit_scope_block(
-                    res_step.sim_time,
-                    self._dt,
-                    n_names,
-                    [list(node_v.values())],
-                )
+                self._emit_scope_block(res_step.sim_time, self._dt, [node_v])
             return self.build_frame(node_voltages=node_v)
         except CircuitError as exc:
             self.state = SimulationState.ERROR
@@ -803,26 +818,19 @@ class SimulationSession:
         collected_warnings: list[CircuitWarning] = []
         steps_done = 0
         sink_active = self._has_scope_sink
-        captured_rows: list[list[float]] = []
-        captured_names: tuple[str, ...] | None = None
-        captured_keys = None
+        captured_dicts: list[dict[str, float]] = []
+        append_captured = captured_dicts.append
         captured_t0 = 0.0
+        ver_before = self.circuit.version
 
         try:
             while True:
                 res = self.solver.step_transient(step_dt)
                 last_node_voltages = res.node_voltages
                 if sink_active:
-                    if captured_names is None:
-                        captured_names = tuple(last_node_voltages.keys())
-                        captured_keys = last_node_voltages.keys()
+                    if not steps_done:
                         captured_t0 = res.sim_time
-                    if last_node_voltages.keys() == captured_keys:
-                        captured_rows.append(list(last_node_voltages.values()))
-                    else:
-                        captured_rows.append(
-                            [last_node_voltages.get(n, 0.0) for n in captured_names]
-                        )
+                    append_captured(last_node_voltages)
                 if res.warnings:
                     collected_warnings.extend(res.warnings)
                 steps_done += 1
@@ -839,8 +847,13 @@ class SimulationSession:
             self._active_diagnostics = [self._convert_error_to_diagnostic(exc)]
             return self.build_frame()
 
-        if sink_active and captured_rows and captured_names is not None:
-            self._emit_scope_block(captured_t0, step_dt, captured_names, captured_rows)
+        if sink_active and captured_dicts:
+            self._emit_scope_block(
+                captured_t0,
+                step_dt,
+                captured_dicts,
+                uniform_keys=(self.circuit.version == ver_before),
+            )
 
         t_wall_elapsed = max(1e-9, self._clock() - t_wall_start)
         sim_advanced = steps_done * step_dt

@@ -455,8 +455,8 @@ When ready to perform Stage 2 (internal/package rename after Stage 1 settles):
 | 7 | Math traces (`CH1-CH2`, `CH1+CH2`, `CH1*CH2`), periodic-Hann FFT, XY & cursors (`math_fft.py`) | `[x]` | `80ea01c` |
 | 8 | `ScopeCore` state machine, Roll mode, Single & Auto Set (`core.py`, `__init__.py`) | `[x]` | `3fd9cde` |
 | 9 | Comprehensive Qt-free analytical & circuit test suite (`tests/test_scope_core.py`) | `[x]` | `5a7a78e` |
-| 10 | Offscreen Qt waveform debug tool & PNG exports (`tools/scope_demo.py`, `docs/design/scope_*.png`) | `[x]` | pending |
-| 11 | Performance benchmarks, sink overhead (<5%) & UI responsiveness check (`tests/test_scope_performance.py`) | `[ ]` | - |
+| 10 | Offscreen Qt waveform debug tool & PNG exports (`tools/scope_demo.py`, `docs/design/scope_*.png`) | `[x]` | `849c7ea` |
+| 11 | Performance benchmarks, sink overhead (<5%) & UI responsiveness check (`tests/test_scope_performance.py`) | `[x]` | pending |
 | 12 | Scope core API & Next-Chat UI requirements in `PROGRESS.md` | `[ ]` | - |
 | 13 | Student `LEARNING_NOTES.md`, final fast suite check & wrap-up | `[ ]` | - |
 
@@ -480,4 +480,15 @@ When ready to perform Stage 2 (internal/package rename after Stage 1 settles):
 - **Decoupled clock & step coupling (`SimulationSession`)**: adds `SimulationSpeed.AS_FAST_AS_POSSIBLE`, injected `clock`, `SimulationFrame.overflow`, and `set_timebase()` using `compute_coupled_solver_dt(timebase, solver.choose_default_dt())` without resetting transient state or forcing repeated LU rebuilds.
 - **Low-overhead capture sink**: `SimulationSession.step_chunk` keeps a zero-cost `self._scope_sink is None` check and otherwise fills one pre-allocated NumPy `(n_steps, n_nodes)` buffer into a frozen, picklable, read-only `SampleBlock` (< 5% solver overhead), stored in a fixed-capacity vectorized `RingBuffer`.
 - **Signal pipeline & state machine**: `ScopeCore` ingests blocks, routes requested nets (with `1x`/`10x` scaling & integer-period-fallback AC coupling), detects sub-sample interpolated triggers with hysteresis & holdoff, emits immutable read-only `ScopeFrame` snapshots (switching cleanly to Roll mode at `>= 100 ms/div`), and computes IEEE-style 10%-90% measurements, periodic-Hann FFT, math traces, XY, and cursors in `< 2 ms` per 4ch 1000-pt frame.
+
+### Scope Core Performance Benchmarks & Architecture Decision (Item 11)
+- **4-ch 1000-pt `produce_frame()` (measurements + math + FFT)**: **2.172 ms** average (hard limit `< 8.0 ms`).
+- **Active `ScopeCore` sink overhead (median of 5 paired 2,000-step trials vs no sink)**:
+  - (a) 5-part RC: `30,614` -> `29,663 steps/s` (**+3.21%** overhead)
+  - (b) 30-R ladder + RC: `19,469` -> `18,851 steps/s` (**+3.28%** overhead)
+  - (c) RL + switch: `25,408` -> `24,856 steps/s` (**+2.22%** overhead)
+  - (d) Nonlinear LED + R: `29,724` -> `28,958 steps/s` (**+2.64%** overhead)
+- **30-R ladder `MainWindow` UI responsiveness with active scope sink**: `19` timer heartbeats in `300 ms`, `avg_gap = 16.53 ms`, `max_gap = 38.65 ms` (`< 50 ms` limit).
+- **Decision**: Keep the single background `QThread` simulation worker (`SimulationWorkerController`); multiprocessing (`max_gap > 100 ms` threshold) is **not needed**.
+
 
