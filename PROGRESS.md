@@ -23,28 +23,34 @@
 - [x] `GATE A` (`done`): Run `.\.venv\Scripts\pytest.exe -q` 3 times consecutively (`370 passed` x3, 0 failures, 0 access violations) and tag `checkpoint/A-done`.
 
 ### PART B — WIRE REDESIGN PHASE 4 (branch `wire-redesign`)
-- [ ] `B0` (`todo`): Switch to `wire-redesign`, fast-forward merge `main`, write `OLD CODE MAP`, inspect & discard `stash@{0}` without dropping stash entry.
-- [ ] `B1` (`todo`): HYDROGEN QUEUE `4.1` — `CircuitScene` owns `WireGraph`; `WireItem(wire_id)` renders routed segments & junction dots; `AddWireCommand` / `RemoveWireCommand` operate on `WireGraph`.
-- [ ] `B2` (`todo`): HYDROGEN QUEUE `4.2` — Wire drawing tool creates `TerminalAttachment` / `JunctionAttachment` / `FreeAttachment`, live preview via `route()`, Esc cancels, `DeleteSelectionCommand` handles wires + components + junctions.
-- [ ] `B3` (`todo`): HYDROGEN QUEUE `4.3` — Component move (`MoveComponentsCommand`) re-routes all incident wires and cascades through attached junctions; live reroute during drag.
-- [ ] `B4` (`todo`): HYDROGEN QUEUE `4.4` — Component rotate/flip (`RotateComponentCommand`, `FlipComponentCommand`) updates terminal positions via shared transform and re-routes incident wires.
-- [ ] `B5` (`todo`): HYDROGEN QUEUE `4.5` — Segment dragging (`EditWireRoutingCommand`) inserts/updates `locked_elbow`, live preview, double-click resets `locked_elbow=None`.
-- [ ] `B6` (`todo`): HYDROGEN QUEUE `4.6` — Simulation netlist extraction in `CircuitScene` / `MainWindow` uses `circuitsim.wiring.netlist.build_netlist`; DC/AC/transient/probes/scope work identically.
+- [x] `B0` (`done`): Switch to `wire-redesign`, fast-forward merge `main`, run fast suite (`369 passed, 1 deselected in 49.48s`), inspect & discard `stash@{0}` without dropping stash entry, inspect `backup/stash-4-1`, write `OLD CODE MAP`.
+- [ ] `B1` (`in_progress`): HYDROGEN QUEUE `4.1` — `CircuitScene` backed by `WireGraph` (`scene.wire_graph`), attachment-based & legacy `add_wire`, graph undo/redo & `MoveComponentsCommand` merge (`mergeWith`).
+- [ ] `B2` (`todo`): HYDROGEN QUEUE `4.2` — Display (`WireItem` using `circuitsim.wiring.router.route()`, `JunctionItem` when `junction_dot_visible(jid)` / degree >= 3, `FreeEnd` hollow marker, 10 px hit stroke).
+- [ ] `B3` (`todo`): HYDROGEN QUEUE `4.3` — Netlist via `circuitsim.wiring.netlist.build_circuit` and diagnostics (including `FreeEnd` amber open-wire note).
+- [ ] `B4` (`todo`): HYDROGEN QUEUE `4.4` — Move, rotate, flip, delete components/wires/junctions preserving `TerminalRef` attachments + 100 random ops + S1 + S2.
+- [ ] `B5` (`todo`): HYDROGEN QUEUE `4.5` — Save and load schema v2 (`CircuitDocumentV2`) + v1 auto-migration in `CircuitScene` and `MainWindow`.
+- [ ] `B6` (`todo`): HYDROGEN QUEUE `4.6` — Existing features that touch wires (examples, export PNG/SVG, label collision avoidance, hover tooltips, zoom-to-fit, recent/dirty/undo).
 - [ ] `GATE B` (`todo`): Full test suite + offscreen `10 V` / `1 kΩ` / `2 kΩ` voltage divider smoke test (`6.667 V`), tag `checkpoint/B-done`.
 
+### OLD CODE MAP (to remove in D5)
+- `src/circuitsim/canvas/connectivity.py`: `route_orthogonal_wire`, `point_on_wire`, `point_strictly_inside_wire`, `wires_overlap_collinear`, `find_wires_attached_to_components`, `_route_wire_avoiding_body`, `reroute_wires_for_updated_terminals`, and geometric endpoint-clustering / T-junction point-on-segment pass inside `extract_connectivity`.
+- `src/circuitsim/canvas/scene.py`: legacy coordinate wire/junction storage and routing helpers (`_explicit_junctions`, `_active_junction_dots`, `_move_start_wires`, `_suppress_live_reroute`, `_insert_wire_item`, `_remove_wire_item`, `_set_explicit_junction`, `add_routed_wire`, `toggle_junction_at`) once all callers and `D1`–`D4` interactions run on `WireGraph`.
+- `src/circuitsim/canvas/wire_item.py`: legacy coordinate-only mode (`WireSpec`, `to_wire_spec()`) without `wire_id` / `Attachment` metadata.
+- `src/circuitsim/canvas/commands.py`: coordinate-only wire point dicts in `AddWireCommand`, `ToggleJunctionCommand`, `MoveComponentsCommand`, `RotateComponentsCommand`, `FlipComponentsCommand`, `DeleteItemsCommand`, `PasteItemsCommand` once replaced by `WireGraph` transitions.
+
 ### PART C — WIRE REDESIGN PHASE 5 & 6 (branch `wire-redesign`)
-- [ ] `C1` (`todo`): `5.1` — Polarity & orientation audit (all 8 orientations `(0,90,180,270) x (no-flip, h-flip)`).
-- [ ] `C2` (`todo`): `5.2` — Save/load integration (`CircuitScene.to_dict` / `from_dict` using `circuitsim.wiring.serializer` schema v2 + v1 auto-migration).
-- [ ] `C3` (`todo`): `5.3` — View & zoom stability regression tests.
-- [ ] `C4` (`todo`): `5.4` — Paint safety & theme palette regression tests for new `WireItem` & junction dot rendering.
-- [ ] `C5` (`todo`): `5.5` — Full regression & cleanup of old tests (documenting any replaced geometric-wire test in `PROGRESS.md`).
-- [ ] `C6` (`todo`): `6.1` — Documentation & `PROGRESS.md` update.
+- [ ] `C1` (`todo`): HYDROGEN QUEUE `5.1` — Interactive wire drawing tool re-enabled (terminals, junctions, wire interior split, `FreeEnd`, live preview via `route()`, `Esc`/right-click cancel, 10 px snap).
+- [ ] `C2` (`todo`): HYDROGEN QUEUE `5.2` — Waypoint clicks while drawing + `Backspace` removes last waypoint + rejections (same terminal, duplicate wire, zero-length wire).
+- [ ] `C3` (`todo`): HYDROGEN QUEUE `5.3` — Interactive wire segment dragging (parallel slide updating `hints`, live preview via `route()`, 1 undo step).
+- [ ] `C4` (`todo`): HYDROGEN QUEUE `5.4` — Editing wire ends (`Acceptance S3`: drag handle, detach, reattach to terminal/junction/wire-split/`FreeEnd`, 1 undo step) + synthetic `QTest` mouse tests.
+- [ ] `C5` (`todo`): HYDROGEN QUEUE `5.5` — Update/audit existing wire tests (document any replaced coordinate-mechanism test in `PROGRESS.md`) + performance benchmark (`route()` + 50-part drag step <= ~30 ms).
+- [ ] `C6` (`todo`): HYDROGEN QUEUE `6.1` — Verification matrix S1–S5, golden circuit round-trips, update `PROGRESS.md` and `README.md`.
 - [ ] `GATE C` (`todo`): Full test suite + tag `checkpoint/C-done`.
 
 ### PART D — WIRE REDESIGN STEP 4B (branch `wire-redesign`)
-- [ ] `D1` (`todo`): Split-on-drop (dropping component pin onto wire segment or wire endpoint onto component pin splits wire at junction in one undo macro).
-- [ ] `D2` (`todo`): Explicit `J` key junction placement at snapped cursor on wire segment.
-- [ ] `D3` (`todo`): Junction dragging (`MoveJunctionCommand(junction_id, old_pos, new_pos)`).
+- [ ] `D1` (`todo`): Split-on-drop (dropping component onto wire splits inline or taps junction in one undo step).
+- [ ] `D2` (`todo`): Explicit `J` key junction placement on wire at snapped cursor via `split_wire_at`.
+- [ ] `D3` (`todo`): Junction dragging (`MoveJunctionCommand(junction_id, old_pos, new_pos)` updating `Junction.pos` and rerouting incident wires).
 - [ ] `D4` (`todo`): Copy/paste of selections containing components, wires, and junctions (`Ctrl+C` / `Ctrl+V`).
 - [ ] `D5` (`todo`): Remove dead old wire routing/endpoint code listed in `OLD CODE MAP`.
 - [ ] `GATE D` (`todo`): Full test suite + `python -m pytest -q` + tag `checkpoint/D-done`.
@@ -73,7 +79,7 @@
 - [x] 3e Unguarded `paint()` exception vs `test_paint_safety_guard_on_component_wire_and_junction` - *done (FAILED: exception uncaught, restored cleanly)*
 
 ### Phase 4: Wire Redesign, Step 4A-1 (branch `wire-redesign`)
-- [ ] 4.1 Scene state (`WireGraph`) and undo/redo + move merge + `add_wire` between attachments - *todo*
+- [ ] 4.1 Scene state (`WireGraph`) and undo/redo + move merge + `add_wire` between attachments - *in progress*
 - [ ] 4.2 Display (`WireItem` using `route()`, `JunctionItem` degree >= 3, `FreeEnd` hollow marker, 10 px hit stroke, wire tool notice) - *todo*
 - [ ] 4.3 Netlist (`circuitsim.wiring.netlist`) and diagnostics (including `FreeEnd` amber note) - *todo*
 - [ ] 4.4 Moving, rotating, flipping, deleting (100 random ops + S1 + S2) - *todo*
