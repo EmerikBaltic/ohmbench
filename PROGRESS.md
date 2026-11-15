@@ -439,3 +439,45 @@ When ready to perform Stage 2 (internal/package rename after Stage 1 settles):
      - **Chat 3 (NEXT — Logic Probe, net coloring & Truth-Table dialog)**: Interactive Logic Probe, live H/L net highlighting, and truth-table view; **Chat 4 (Small)**: Scope waveform demos (ring oscillator, SR latch).
    - *Solver Speed*: Fixed `R_out`/`R_in` preserves cached LU factorization (fast `lu_solve` only); ns-scale `t_pd` needs small `dt`, handled smoothly by decoupled sim speed.
    - *Risks*: Auditing `nodes[0..1]` assumptions across solver/netlist/canvas cleanly; symmetric SR latch metastability at `t=0` (mitigated via deterministic initial state); keeping `dt <= t_pd / 2` so delay & ramp stay well resolved.
+
+---
+
+## SCOPE CORE QUEUE
+
+| Item | Description | Status | Commit |
+| --- | --- | --- | --- |
+| 1 | Orientation, step-rate benchmarks & design note | `[x]` | pending |
+| 2 | Decoupled simulation time, `SimulationSpeed.AS_FAST_AS_POSSIBLE` & step coupling (`timebase.py`, `simulation_session.py`) | `[ ]` | - |
+| 3 | Qt-free sample sink, immutable `SampleBlock` & vectorized `RingBuffer` (`capture.py`, `simulation_session.py`) | `[ ]` | - |
+| 4 | Vectorized trigger engine (`trigger.py`) | `[ ]` | - |
+| 5 | 4-channel vertical scaling, 1x/10x probe & DC/AC/GND coupling (`channels.py`) | `[ ]` | - |
+| 6 | Automated waveform measurements & phase lag (`measurements.py`) | `[ ]` | - |
+| 7 | Math traces (`CH1-CH2`, `CH1+CH2`, `CH1*CH2`), periodic-Hann FFT, XY & cursors (`math_fft.py`) | `[ ]` | - |
+| 8 | `ScopeCore` state machine, Roll mode, Single & Auto Set (`core.py`, `__init__.py`) | `[ ]` | - |
+| 9 | Comprehensive Qt-free analytical & circuit test suite (`tests/test_scope_core.py`) | `[ ]` | - |
+| 10 | Offscreen Qt waveform debug tool & PNG exports (`tools/scope_demo.py`, `docs/design/scope_*.png`) | `[ ]` | - |
+| 11 | Performance benchmarks, sink overhead (<5%) & UI responsiveness check (`tests/test_scope_performance.py`) | `[ ]` | - |
+| 12 | Scope core API & Next-Chat UI requirements in `PROGRESS.md` | `[ ]` | - |
+| 13 | Student `LEARNING_NOTES.md`, final fast suite check & wrap-up | `[ ]` | - |
+
+## OSCILLOSCOPE ORIENTATION, BENCHMARKS & DESIGN NOTE
+
+### Orientation & Spec Conflict Resolutions
+- Branch: `main`; baseline `pytest -m "not slow"`: **344 passed, 1 deselected in 30.32s**.
+- `docs/design/oscilloscope.md` does not exist; `circuit_simulator_specification.txt` Section 7 exists. Task rules override Section 7 on three points:
+  1. **Probing**: Net-name probing via `SampleBlock.node_names` with ground `"0"` reference and `CH1 - CH2` differential math (UI chat adds the 4-terminal `Oscilloscope` canvas part).
+  2. **Trigger**: Supports `rising`, `falling`, and `either` edges, explicit hysteresis (`0.05 div` default), simulated-time `holdoff`, and `DC`/`AC` trigger coupling.
+  3. **Timebase Coupling**: `dt = min(dt_scope, dt_circuit)` with vectorized min/max peak-detect buckets whenever `dt_circuit < dt_scope`, plus Roll mode at `time/div >= 100 ms`.
+
+### Baseline Transient Solver Step Rates (warmup 50 steps, 2,000 timed steps, `dt = 10 us`)
+- (a) 5-part RC (`AC 5 V / 1 kHz`, `1 kΩ`, `10 kΩ`, `1 uF`): **30,593 steps/s** (`32.7 us/step`)
+- (b) 30-resistor ladder + RC load: **19,534 steps/s** (`51.2 us/step`)
+- (c) RL + switch (`12 V DC`, switch toggled at step 1000, `100 Ω`, `10 mH` / `1 Ω` DCR): **25,256 steps/s** (`39.6 us/step`)
+- (d) Nonlinear LED + resistor (`AC 5 V / 1 kHz`, `150 Ω`, red LED): **29,494 steps/s** (`33.9 us/step`)
+
+### Design Note (<= 30 lines)
+- **Qt-free `src/circuitsim/scope/` package**: zero `PySide6` imports (`timebase.py`, `capture.py`, `trigger.py`, `channels.py`, `measurements.py`, `math_fft.py`, `core.py`), verified automatically in tests.
+- **Decoupled clock & step coupling (`SimulationSession`)**: adds `SimulationSpeed.AS_FAST_AS_POSSIBLE`, injected `clock`, `SimulationFrame.overflow`, and `set_timebase()` using `compute_coupled_solver_dt(timebase, solver.choose_default_dt())` without resetting transient state or forcing repeated LU rebuilds.
+- **Low-overhead capture sink**: `SimulationSession.step_chunk` keeps a zero-cost `self._scope_sink is None` check and otherwise fills one pre-allocated NumPy `(n_steps, n_nodes)` buffer into a frozen, picklable, read-only `SampleBlock` (< 5% solver overhead), stored in a fixed-capacity vectorized `RingBuffer`.
+- **Signal pipeline & state machine**: `ScopeCore` ingests blocks, routes requested nets (with `1x`/`10x` scaling & integer-period-fallback AC coupling), detects sub-sample interpolated triggers with hysteresis & holdoff, emits immutable read-only `ScopeFrame` snapshots (switching cleanly to Roll mode at `>= 100 ms/div`), and computes IEEE-style 10%-90% measurements, periodic-Hann FFT, math traces, XY, and cursors in `< 2 ms` per 4ch 1000-pt frame.
+
