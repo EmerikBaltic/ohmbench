@@ -1,5 +1,15 @@
 # Project Progress — Ohmbench (formerly CircuitSim)
 
+## FIX QUEUE (branch `wire-redesign`)
+- [ ] `E0` (`todo`): Create offscreen real-input UI helpers (`tests/ui_flow_helpers.py`), reproduce E1–E5 on both `wire-redesign` and `main`, mark failing reproductions `xfail(strict=True)`, and record the per-branch failure table.
+- [ ] `E1` (`todo`): Fix `Select All + Delete` crash (`DeleteItemsCommand` / atomic `_placed_items` + `WireGraph` updates / `WireGraph.detach_component` / UI delete detaches unselected wires).
+- [ ] `E2` (`todo`): Fix terminal snapping & wire-on-wire splitting in Wire mode (zoom-scaled tolerance, grid-cell consistency, priority `terminal > junction > wire interior > wire bend > free end`, click vs drag, double-click, update Phase 5.1 wire-on-wire test).
+- [ ] `E3` (`todo`): Fix dropping/dragging a 2-terminal part onto a wire (no route jump on unattached wires during drag, inline split around straight/bent wires excluding dropped part obstacle, never tap both terminals in parallel).
+- [ ] `E4` (`todo`): Fix Wire mode visibility & `Esc` behavior (`QToolButton:checked` CSS rule using palette tokens, status bar text `"Wire mode - click a terminal to start, Esc to leave"`, `Esc` exits mode cleanly).
+- [ ] `E5` (`todo`): Fix label plates cutting wires (suppress opaque plate / clip intersecting wire band so wires remain visible).
+- [ ] `E6` (`todo`): Fix `QFont::setPointSize: Point size <= 0 (-1)` startup warning, add `UI BUG RULE` to `AGENT_INSTRUCTIONS.md`, add `MANUAL REGRESSION CHECKLIST` to `PROGRESS.md`.
+- [ ] `GATE E` (`todo`): Full test suite 3x sequentially + `python -m pytest -q` + offscreen `MainWindow` divider smoke test + tag `checkpoint/E-done`.
+
 ## FLASH QUEUE
 - Phase 1 Task 1: Housekeeping (.gitignore, switch breakdown voltage hint, label collision avoidance) - [done]
 - Phase 1 Task 2: Recent Files (File > Open Recent, 8 files, injected path, missing file handling) - [done]
