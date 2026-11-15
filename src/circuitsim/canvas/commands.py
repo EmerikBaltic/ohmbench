@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Sequence
+from typing import TYPE_CHECKING, Collection, Sequence
 
 from PySide6.QtCore import QPointF
 from PySide6.QtGui import QUndoCommand
@@ -444,6 +444,7 @@ class PasteItemsCommand(QUndoCommand):
         *,
         old_graph: WireGraph | None = None,
         new_graph: WireGraph | None = None,
+        select_junction_ids: Collection[str] = (),
     ) -> None:
         super().__init__(
             f"Paste ({len(components)} components, {len(wires)} wires)"
@@ -454,6 +455,7 @@ class PasteItemsCommand(QUndoCommand):
         self.junctions: tuple[PointPx, ...] = tuple(junctions)
         self.old_graph: WireGraph | None = old_graph
         self.new_graph: WireGraph | None = new_graph
+        self.select_junction_ids: frozenset[str] = frozenset(select_junction_ids)
 
     def redo(self) -> None:
         self.scene.clearSelection()
@@ -468,6 +470,10 @@ class PasteItemsCommand(QUndoCommand):
                 preferred_wire_items={w.wire_id: w for w in self.wires},
                 select_wire_ids={w.wire_id for w in self.wires},
             )
+            for jid in self.select_junction_ids:
+                jitem = self.scene._junction_items_by_id.get(jid)
+                if jitem is not None:
+                    jitem.setSelected(True)
         else:
             for wire in self.wires:
                 self.scene._insert_wire_item(wire, select=True, refresh=False)

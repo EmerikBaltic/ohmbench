@@ -384,3 +384,188 @@ def test_d3_junction_dragging_reroutes_wires_and_undo_redo(tmp_path, qapp) -> No
     finally:
         win.circuit_scene.undo_stack.setClean()
         win.close()
+
+
+def test_d4_copy_paste_components_wires_and_junctions_undo_redo(qapp) -> None:
+    """D4: Copy/paste preserves components, wire hints, junctions, and attachments in 1 undo step."""
+    win = MainWindow(settings=AppSettings())
+    try:
+        win.resize(1100, 800)
+        win.show()
+        scene = win.circuit_scene
+        view = win.circuit_view
+        view.centerOn(0.0, 0.0)
+        view.setFocus()
+        qapp.processEvents()
+
+        v1 = scene.place_new_component("dc_voltage", QPointF(-200.0, 0.0), rotation_deg=90)
+        gnd1 = scene.place_new_component("ground", QPointF(-200.0, 100.0))
+        r1 = scene.place_new_component("resistor", QPointF(-80.0, -80.0), rotation_deg=0)
+        r2 = scene.place_new_component("resistor", QPointF(0.0, -20.0), rotation_deg=90)
+        r3 = scene.place_new_component("resistor", QPointF(120.0, -20.0), rotation_deg=90)
+
+        scene.edit_component_parameters(v1, {"dc_voltage": 12.0})
+        assert math.isclose(r1.component.resistance, 1000.0, rel_tol=1e-9)
+        scene.edit_component_parameters(r2, {"resistance": 2000.0})
+        scene.edit_component_parameters(r3, {"resistance": 2000.0})
+
+        r1_terms = r1.terminal_scene_positions_px()
+        r1_left_t, _ = min(r1_terms.items(), key=lambda kv: kv[1][0])
+        r1_right_t, _ = max(r1_terms.items(), key=lambda kv: kv[1][0])
+        r2_terms = r2.terminal_scene_positions_px()
+        r2_top_t, _ = min(r2_terms.items(), key=lambda kv: kv[1][1])
+        r2_bot_t, _ = max(r2_terms.items(), key=lambda kv: kv[1][1])
+        r3_terms = r3.terminal_scene_positions_px()
+        r3_top_t, _ = min(r3_terms.items(), key=lambda kv: kv[1][1])
+        r3_bot_t, _ = max(r3_terms.items(), key=lambda kv: kv[1][1])
+
+        w_gnd = scene.add_wire(
+            TerminalRef("V1", "neg"), TerminalRef(gnd1.component.name, "gnd")
+        )
+        assert w_gnd is not None
+        assert scene.toggle_junction_at(QPointF(-200.0, 60.0)) is True
+
+        w_v1_r1 = scene.add_wire(
+            TerminalRef("V1", "pos"),
+            TerminalRef("R1", r1_left_t),
+            hints=((-200, -80),),
+        )
+        w_r1_r3 = scene.add_wire(
+            TerminalRef("R1", r1_right_t),
+            TerminalRef("R3", r3_top_t),
+            hints=((120, -80),),
+        )
+        w_bot1 = scene.add_wire(
+            TerminalRef("V1", "neg"),
+            TerminalRef("R2", r2_bot_t),
+            hints=((0, 40),),
+        )
+        w_bot2 = scene.add_wire(
+            TerminalRef("R2", r2_bot_t),
+            TerminalRef("R3", r3_bot_t),
+            hints=((0, 60), (120, 60)),
+        )
+        assert all(w is not None for w in (w_v1_r1, w_r1_r3, w_bot1, w_bot2))
+        assert scene.wire_graph.wire(w_v1_r1.wire_id).hints == ((-200, -80),)
+
+        split_res = scene.wire_graph.split_wire_at(w_r1_r3.wire_id, (0, -80))
+        j1_id = split_res.junction_id
+        split_g = split_res.graph.add_wire(
+            TerminalRef("R2", r2_top_t),
+            JunctionRef(j1_id),
+            wire_id=split_res.graph.new_wire_id(),
+        )
+        scene.set_wire_graph(split_g)
+        qapp.processEvents()
+
+        assert len(scene.junction_items) == 2
+        orig_comp_names = {c.component.name for c in scene.placed_items}
+        orig_wire_ids = {w.id for w in scene.wire_graph.wires}
+        orig_junc_ids = {j.id for j in scene.wire_graph.junctions}
+        assert len(orig_comp_names) == 5
+        assert len(orig_junc_ids) == 2
+
+        # Select entire subcircuit (components, wires, and both degree-3 and explicit junctions).
+        scene.clearSelection()
+        for it in [*scene.placed_items, *scene.placed_wires, *scene.junction_items]:
+            it.setSelected(True)
+
+        idx0 = scene.undo_stack.index()
+        orig_graph = scene.wire_graph
+
+        assert scene.copy_selected() is True
+        assert scene.paste_clipboard(offset_px=(480.0, 0.0)) is True
+        assert scene.undo_stack.index() == idx0 + 1
+
+        new_comp_items = [
+            c for c in scene.placed_items if c.component.name not in orig_comp_names
+        ]
+        new_comp_names = {c.component.name for c in new_comp_items}
+        assert new_comp_names == {"V2", "GND2", "R4", "R5", "R6"}
+
+        new_wires = [w for w in scene.wire_graph.wires if w.id not in orig_wire_ids]
+        new_juncs = [j for j in scene.wire_graph.junctions if j.id not in orig_junc_ids]
+        assert len(new_wires) == len(orig_wire_ids)
+        assert len(new_juncs) == 2
+
+        # Check hints preserved and shifted by (+480, 0) on pasted V2 -> R4 wire.
+        pasted_v2_r4 = [
+            w
+            for w in new_wires
+            if {w.end_a, w.end_b}
+            == {TerminalRef("V2", "pos"), TerminalRef("R4", r1_left_t)}
+        ]
+        assert len(pasted_v2_r4) == 1
+        assert pasted_v2_r4[0].hints == ((280, -80),)
+
+        # Check degree-3 junction cloned with new ID, position (480, -80), 3 incident wires, visible dot.
+        deg3_juncs = [j for j in new_juncs if scene.wire_graph.junction_degree(j.id) == 3]
+        assert len(deg3_juncs) == 1
+        pasted_j1 = deg3_juncs[0]
+        assert pasted_j1.pos == (480, -80)
+        assert len(scene.wire_graph.attached_wires(JunctionRef(pasted_j1.id))) == 3
+
+        # Check explicit degree-2 junction dot also visible after paste.
+        deg2_juncs = [j for j in new_juncs if scene.wire_graph.junction_degree(j.id) == 2]
+        assert len(deg2_juncs) == 1
+        assert deg2_juncs[0].pos == (280, 60)
+        visible_jids = {j.junction_id for j in scene.junction_items}
+        assert pasted_j1.id in visible_jids
+        assert deg2_juncs[0].id in visible_jids
+        selected_jids = {
+            j.junction_id for j in scene.junction_items if j.isSelected()
+        }
+        assert selected_jids == {pasted_j1.id, deg2_juncs[0].id}
+
+        # Hand calc: V = 12 V, R1 = 1 kOhm, R2 || R3 = 2 kOhm || 2 kOhm = 1 kOhm -> V_mid = 6.0 V.
+        conn_pasted = scene.extract_connectivity_result()
+        sol_pasted = MNASolver(conn_pasted.circuit).solve_dc()
+        assert math.isclose(
+            sol_pasted.node_voltages[conn_pasted.component_nodes["R2"][r2_top_t]],
+            6.0,
+            rel_tol=1e-6,
+        )
+        assert math.isclose(
+            sol_pasted.node_voltages[conn_pasted.component_nodes["R5"][r2_top_t]],
+            6.0,
+            rel_tol=1e-6,
+        )
+
+        # Single undo restores original circuit; single redo restores the pasted copy.
+        scene.undo_stack.undo()
+        assert scene.undo_stack.index() == idx0
+        assert len(scene.placed_items) == 5
+        assert scene.wire_graph == orig_graph
+
+        scene.undo_stack.redo()
+        assert scene.undo_stack.index() == idx0 + 1
+        assert len(scene.placed_items) == 10
+        assert len(scene.wire_graph.junctions) == 4
+
+        # Verify Ctrl+C / Ctrl+V via QTest keyboard shortcuts works in 1 undo step.
+        scene.clearSelection()
+        for it in [
+            v1,
+            gnd1,
+            r1,
+            r2,
+            r3,
+            *[scene._wire_items_by_id[wid] for wid in orig_wire_ids],
+            *[j for j in scene.junction_items if j.junction_id in orig_junc_ids],
+        ]:
+            it.setSelected(True)
+
+        QTest.keyClick(view, Qt.Key.Key_C, Qt.KeyboardModifier.ControlModifier)
+        QTest.keyClick(view, Qt.Key.Key_V, Qt.KeyboardModifier.ControlModifier)
+        qapp.processEvents()
+        assert scene.undo_stack.index() == idx0 + 2
+        assert len(scene.placed_items) == 15
+        assert len(scene.wire_graph.junctions) == 6
+
+        scene.undo_stack.undo()
+        assert scene.undo_stack.index() == idx0 + 1
+        assert len(scene.placed_items) == 10
+        assert len(scene.wire_graph.junctions) == 4
+    finally:
+        win.circuit_scene.undo_stack.setClean()
+        win.close()

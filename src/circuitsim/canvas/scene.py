@@ -62,12 +62,15 @@ from circuitsim.engine.simulation_session import (
 from circuitsim.io.circ_serializer import CircuitDocument, CircuitFileError, ViewState
 from circuitsim.wiring.model import (
     Attachment,
+    CopiedSubgraph,
     FreeEnd,
     JunctionRef,
     TerminalRef,
     Wire,
     WireGraph,
     WireGraphError,
+    extract_subgraph,
+    paste_subgraph,
     snap_px as wire_snap_px,
 )
 from circuitsim.wiring.netlist import build_circuit as wiring_build_circuit
@@ -91,8 +94,8 @@ class _ClipboardComponentEntry:
 @dataclass(frozen=True)
 class _ClipboardData:
     components: tuple[_ClipboardComponentEntry, ...]
-    wires: tuple[tuple[PointPx, ...], ...]
-    junctions: tuple[PointPx, ...]
+    subgraph: CopiedSubgraph
+    explicit_junctions: tuple[PointPx, ...] = ()
 
 
 class CircuitScene(QGraphicsScene):
@@ -2439,34 +2442,34 @@ class CircuitScene(QGraphicsScene):
         return True
 
     def copy_selected(self) -> bool:
-        """Copy selected components and wires to the internal clipboard."""
-        selected_comps = [
-            it for it in self.selectedItems() if isinstance(it, ComponentItem)
-        ]
+        """Copy selected components, wires, and junctions to the internal clipboard."""
+        placed_order = {id(it): idx for idx, it in enumerate(self._placed_items)}
+        selected_comps = sorted(
+            (it for it in self.selectedItems() if isinstance(it, ComponentItem)),
+            key=lambda it: placed_order.get(id(it), 0),
+        )
         selected_wires = [
             it for it in self.selectedItems() if isinstance(it, WireItem)
         ]
-        if not selected_comps and not selected_wires:
+        selected_junctions = [
+            it for it in self.selectedItems() if isinstance(it, JunctionItem)
+        ]
+        if not selected_comps and not selected_wires and not selected_junctions:
             return False
 
-        # Also include wires whose both endpoints sit on terminals of selected_comps
-        selected_term_pts: set[PointPx] = set()
-        for comp in selected_comps:
-            selected_term_pts.update(comp.terminal_scene_positions_px().values())
-
-        wires_to_copy: list[tuple[PointPx, ...]] = []
-        seen_ids: set[str] = set()
-        for w in self._wire_items:
-            pts = w.points
-            both_on_selected = (
-                len(pts) >= 2
-                and pts[0] in selected_term_pts
-                and pts[-1] in selected_term_pts
-            )
-            if w in selected_wires or both_on_selected:
-                if w.wire_id not in seen_ids:
-                    wires_to_copy.append(pts)
-                    seen_ids.add(w.wire_id)
+        comp_names = [it.component.name for it in selected_comps]
+        wire_ids = [w.wire_id for w in selected_wires]
+        junc_ids = [j.junction_id for j in selected_junctions if j.junction_id]
+        subgraph = extract_subgraph(
+            self._wire_graph,
+            comp_names,
+            wire_ids,
+            junc_ids,
+            self._terminal_pos_map(),
+        )
+        explicit_junctions = tuple(
+            j.pos for j in subgraph.junctions if j.pos in self._explicit_junctions
+        )
 
         comp_entries = tuple(
             _ClipboardComponentEntry(
@@ -2479,8 +2482,8 @@ class CircuitScene(QGraphicsScene):
         )
         self._clipboard = _ClipboardData(
             components=comp_entries,
-            wires=tuple(wires_to_copy),
-            junctions=(),
+            subgraph=subgraph,
+            explicit_junctions=explicit_junctions,
         )
         self._paste_serial = 0
         return True
@@ -2499,20 +2502,23 @@ class CircuitScene(QGraphicsScene):
             return False
 
         self._paste_serial += 1
-        if offset_px is None:
+        if offset_px is None or isinstance(offset_px, bool):
             step = float(GRID_PITCH_PX * 2 * self._paste_serial)
             dx, dy = step, step
         else:
             dx, dy = snap_to_grid(offset_px[0], offset_px[1], GRID_PITCH_PX)
 
         new_comps: list[ComponentItem] = []
+        component_name_map: dict[str, str] = {}
         assigned_names: set[str] = set()
         for entry in self._clipboard.components:
             cloned = copy.deepcopy(entry.component_snapshot)
+            old_name = cloned.name
             new_name = self.next_component_name(
                 cloned.component_type, extra_taken=assigned_names
             )
             assigned_names.add(new_name)
+            component_name_map[old_name] = new_name
             cloned.name = new_name
             cloned.label = new_name
             item = ComponentItem(
@@ -2529,44 +2535,71 @@ class CircuitScene(QGraphicsScene):
             item.set_flipped_h(entry.flipped_h)
             new_comps.append(item)
 
-        new_wires: list[WireItem] = []
         id_x = int(round(dx))
         id_y = int(round(dy))
-        working_graph = self._wire_graph
-        pasted_term_map: dict[PointPx, TerminalRef] = {}
+        working_graph, new_wire_ids, new_junction_ids = paste_subgraph(
+            self._wire_graph,
+            self._clipboard.subgraph,
+            component_name_map,
+            (id_x, id_y),
+        )
+        combined_term_map = self._terminal_pos_map()
+        combined_dir_map = self._terminal_dir_map()
+        combined_obstacles = list(self._component_obstacles_px())
         for comp_item in new_comps:
             cname = comp_item.component.name
+            cx = int(round(comp_item.pos().x()))
+            cy = int(round(comp_item.pos().y()))
             for tname, tpt in comp_item.terminal_scene_positions_px().items():
-                pasted_term_map.setdefault(tpt, TerminalRef(cname, tname))
-
-        for pts in self._clipboard.wires:
-            shifted_pts = tuple((px + id_x, py + id_y) for px, py in pts)
-            wid = self._next_unused_wire_id(working_graph)
-            att_a: Attachment = pasted_term_map.get(shifted_pts[0], FreeEnd(*shifted_pts[0]))
-            att_b: Attachment = pasted_term_map.get(shifted_pts[-1], FreeEnd(*shifted_pts[-1]))
-            hints_pts = shifted_pts[1:-1]
-            if att_a != att_b:
-                working_graph = working_graph.add_wire(
-                    att_a, att_b, hints=hints_pts, wire_id=wid
+                combined_term_map[(cname, tname)] = tpt
+                combined_dir_map[(cname, tname)] = wire_normalize_dir(
+                    (tpt[0] - cx, tpt[1] - cy)
                 )
+            rect = comp_item.scene_body_rect()
+            combined_obstacles.append(
+                (
+                    int(round(rect.left())),
+                    int(round(rect.top())),
+                    int(round(rect.right())),
+                    int(round(rect.bottom())),
+                )
+            )
+        obstacles_tuple = tuple(combined_obstacles)
+
+        new_wires: list[WireItem] = []
+        for wid in new_wire_ids:
+            wire_obj = working_graph.wire(wid)
+            pts = self._compute_wire_points_from_graph(
+                wire_obj,
+                working_graph,
+                term_map=combined_term_map,
+                dir_map=combined_dir_map,
+                obstacles=obstacles_tuple,
+            )
             new_wires.append(
                 WireItem(
                     wid,
-                    shifted_pts,
+                    pts,
                     theme=self.theme,
-                    end_a=att_a,
-                    end_b=att_b,
-                    hints=hints_pts,
+                    end_a=wire_obj.end_a,
+                    end_b=wire_obj.end_b,
+                    hints=wire_obj.hints,
                 )
             )
+
+        explicit_pts = tuple(
+            (jx + id_x, jy + id_y) for jx, jy in self._clipboard.explicit_junctions
+        )
 
         self.undo_stack.push(
             PasteItemsCommand(
                 self,
                 new_comps,
                 new_wires,
+                junctions=explicit_pts,
                 old_graph=self._wire_graph,
                 new_graph=working_graph,
+                select_junction_ids=set(new_junction_ids),
             )
         )
         return True
