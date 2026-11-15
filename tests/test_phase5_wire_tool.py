@@ -622,3 +622,314 @@ def test_phase5_3_wire_segment_dragging_updates_hints_and_undo_redo(
     finally:
         win.circuit_scene.undo_stack.setClean()
         win.close()
+
+
+def test_phase5_4_wire_endpoint_editing_acceptance_s3_and_snap_orientations(
+    tmp_path, qapp
+) -> None:
+    """Phase 5.4: Acceptance S3 endpoint drag/detach/reattach, 8-orientation 10px snap, junction merge, rejections & cancel."""
+    from circuitsim.wiring.model import WireGraphError
+
+    # 1. Unit tests for WireGraph.reconnect_wire_end (including degree-3 -> 2 junction merge).
+    g = WireGraph()
+    g = g.add_junction((100, 100), junction_id="J1")
+    g = g.add_wire(TerminalRef("R1", "a"), JunctionRef("J1"), wire_id="W1")
+    g = g.add_wire(JunctionRef("J1"), TerminalRef("R2", "a"), wire_id="W2")
+    g = g.add_wire(JunctionRef("J1"), TerminalRef("R3", "a"), wire_id="W3")
+    assert g.junction_degree("J1") == 3
+
+    # Reconnect W3 from J1 to FreeEnd(200, 200) -> J1 drops to degree 2 and merges W1+W2 cleanly.
+    g2 = g.reconnect_wire_end("W3", "end_a", FreeEnd(200, 200))
+    assert not g2.has_junction("J1")
+    assert g2.has_wire("W1") and not g2.has_wire("W2") and g2.has_wire("W3")
+    assert g2.wire("W1").end_a == TerminalRef("R1", "a")
+    assert g2.wire("W1").end_b == TerminalRef("R2", "a")
+    assert g2.wire("W1").hints == ((100, 100),)
+    assert g2.wire("W3").end_a == FreeEnd(200, 200)
+
+    # Reject same-end and duplicate reconnection.
+    try:
+        g2.reconnect_wire_end("W1", "end_b", TerminalRef("R1", "a"))
+        raise AssertionError("Expected WireGraphError on same-end reconnect")
+    except WireGraphError:
+        pass
+    g_dup = g2.add_wire(TerminalRef("R1", "a"), TerminalRef("R3", "a"), wire_id="W4")
+    try:
+        g_dup.reconnect_wire_end("W1", "end_b", TerminalRef("R3", "a"))
+        raise AssertionError("Expected WireGraphError on duplicate reconnect")
+    except WireGraphError:
+        pass
+
+    # 2. Synthetic QTest Acceptance S3 in MainWindow:
+    # Divider: 12 V source + R1=1kOhm + R2=1kOhm -> V_mid = 12 * 1k / (1k + 1k) = 6.0 V.
+    # Reattach to R3=3kOhm -> V_mid = 12 * 3k / (1k + 3k) = 9.0 V.
+    settings = AppSettings(data_dir=tmp_path / "settings_54")
+    win = MainWindow(settings=settings)
+    win.resize(1200, 860)
+    win.show()
+    qapp.processEvents()
+    view = win.circuit_view
+    scene = win.circuit_scene
+    vp = view.viewport()
+
+    try:
+        view.reset_zoom()
+        qapp.processEvents()
+        assert not view.wire_mode_enabled
+
+        v1 = scene.place_new_component("dc_voltage", QPointF(-200.0, 20.0), rotation_deg=90)
+        r1 = scene.place_new_component("resistor", QPointF(-40.0, -60.0))
+        r2a = scene.place_new_component("resistor", QPointF(80.0, 40.0), rotation_deg=90)
+        r2b = scene.place_new_component("resistor", QPointF(160.0, 40.0), rotation_deg=90)
+        r3a = scene.place_new_component("resistor", QPointF(260.0, 40.0), rotation_deg=90)
+        r3b = scene.place_new_component("resistor", QPointF(340.0, 40.0), rotation_deg=90)
+        gnd = scene.place_new_component("ground", QPointF(-200.0, 140.0))
+        scene.edit_component_parameters(v1, {"dc_voltage": 12.0})
+        scene.edit_component_parameters(r1, {"resistance": 1000.0})
+        # R2a || R2b = 2k || 2k = 1 kOhm -> V_mid = 12 * 1k / (1k + 1k) = 6.0 V
+        scene.edit_component_parameters(r2a, {"resistance": 2000.0})
+        scene.edit_component_parameters(r2b, {"resistance": 2000.0})
+        # R3a || R3b = 6k || 6k = 3 kOhm -> V_mid = 12 * 3k / (1k + 3k) = 9.0 V
+        scene.edit_component_parameters(r3a, {"resistance": 6000.0})
+        scene.edit_component_parameters(r3b, {"resistance": 6000.0})
+
+        w_top = scene.add_wire(TerminalRef("V1", "pos"), TerminalRef("R1", "a"))
+        w_mid = scene.add_wire(TerminalRef("R1", "b"), TerminalRef("R2", "a"))
+        w_2top = scene.add_wire(TerminalRef("R2", "a"), TerminalRef("R3", "a"))
+        w_2a_g = scene.add_wire(TerminalRef("R2", "b"), TerminalRef("V1", "neg"))
+        w_2b_g = scene.add_wire(TerminalRef("R3", "b"), TerminalRef("V1", "neg"))
+        w_3top = scene.add_wire(TerminalRef("R4", "a"), TerminalRef("R5", "a"))
+        w_3a_g = scene.add_wire(TerminalRef("R4", "b"), TerminalRef("V1", "neg"))
+        w_3b_g = scene.add_wire(TerminalRef("R5", "b"), TerminalRef("V1", "neg"))
+        w_gnd = scene.add_wire(TerminalRef("V1", "neg"), TerminalRef("GND1", "gnd"))
+        assert all(
+            w is not None
+            for w in (w_top, w_mid, w_2top, w_2a_g, w_2b_g, w_3top, w_3a_g, w_3b_g, w_gnd)
+        )
+        assert w_mid is not None
+
+        conn_init = scene.extract_connectivity_result()
+        sol_init = MNASolver(conn_init.circuit).solve_dc()
+        assert math.isclose(
+            sol_init.node_voltages[conn_init.component_nodes["R1"]["b"]], 6.0, rel_tol=1e-6
+        )
+
+        p_r1b = r1.terminal_scene_positions_px()["b"]
+        p_r2a = r2a.terminal_scene_positions_px()["a"]
+        p_r3a = r3a.terminal_scene_positions_px()["a"]
+
+        # Select w_mid so its endpoint handle at R2.a wins unambiguously over w_2top.
+        scene._wire_items_by_id[w_mid.wire_id].setSelected(True)
+
+        # Drag w_mid end off R2.a into empty space (120, -120) -> FreeEnd in 1 undo step.
+        QTest.mouseMove(vp, _vpos(win, *p_r2a))
+        assert scene.hovered_wire_end_pt == p_r2a
+        assert view.cursor().shape() == Qt.CursorShape.CrossCursor
+
+        undo_s3 = scene.undo_stack.count()
+        QTest.mousePress(
+            vp, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier, _vpos(win, *p_r2a)
+        )
+        assert scene.is_dragging_wire_endpoint is True
+        QTest.mouseMove(vp, _vpos(win, 120, -120))
+        live_w_mid = scene._wire_items_by_id[w_mid.wire_id]
+        assert live_w_mid.end_b == FreeEnd(120, -120)
+        assert scene.undo_stack.count() == undo_s3
+
+        QTest.mouseRelease(
+            vp, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier, _vpos(win, 120, -120)
+        )
+        assert scene.is_dragging_wire_endpoint is False
+        assert scene.undo_stack.count() == undo_s3 + 1
+        assert scene.wire_graph.wire(w_mid.wire_id).end_b == FreeEnd(120, -120)
+
+        # Open wire: R1.b is disconnected from R2.a & R4.a and w_mid appears in open_wire_ids.
+        conn_open = scene.extract_connectivity_result()
+        assert (
+            conn_open.component_nodes["R1"]["b"] != conn_open.component_nodes["R2"]["a"]
+        )
+        assert w_mid.wire_id in conn_open.open_wire_ids
+
+        # Drag FreeEnd(120, -120) onto R4.a (offset +5, -4 => dist ~= 6.4 <= 10 px).
+        QTest.mousePress(
+            vp, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier, _vpos(win, 120, -120)
+        )
+        assert scene.is_dragging_wire_endpoint is True
+        QTest.mouseMove(vp, _vpos(win, p_r3a[0] + 5, p_r3a[1] - 4))
+        assert scene.wire_graph.wire(w_mid.wire_id).end_b == TerminalRef(
+            r3a.component.name, "a"
+        )
+        QTest.mouseRelease(
+            vp,
+            Qt.MouseButton.LeftButton,
+            Qt.KeyboardModifier.NoModifier,
+            _vpos(win, p_r3a[0] + 5, p_r3a[1] - 4),
+        )
+        assert scene.undo_stack.count() == undo_s3 + 2
+        assert scene.wire_graph.wire(w_mid.wire_id).end_b == TerminalRef(
+            r3a.component.name, "a"
+        )
+
+        # Hand calculation: V_mid = 12 * 3000 / (1000 + 3000) = 9.0 V.
+        conn_r3 = scene.extract_connectivity_result()
+        sol_r3 = MNASolver(conn_r3.circuit).solve_dc()
+        assert math.isclose(
+            sol_r3.node_voltages[conn_r3.component_nodes["R1"]["b"]], 9.0, rel_tol=1e-6
+        )
+
+        # Undo/redo Acceptance S3 checks.
+        scene.undo_stack.undo()
+        assert scene.wire_graph.wire(w_mid.wire_id).end_b == FreeEnd(120, -120)
+        scene.undo_stack.undo()
+        assert scene.wire_graph.wire(w_mid.wire_id).end_b == TerminalRef("R2", "a")
+        conn_u2 = scene.extract_connectivity_result()
+        sol_u2 = MNASolver(conn_u2.circuit).solve_dc()
+        assert math.isclose(
+            sol_u2.node_voltages[conn_u2.component_nodes["R1"]["b"]], 6.0, rel_tol=1e-6
+        )
+
+        scene.undo_stack.redo()
+        scene.undo_stack.redo()
+        assert scene.wire_graph.wire(w_mid.wire_id).end_b == TerminalRef(
+            r3a.component.name, "a"
+        )
+        scene._wire_items_by_id[w_mid.wire_id].setSelected(True)
+
+        # 3. Snap radius (<= 10 px snaps, 11 px misses) across all 8 orientations.
+        rx = scene.place_new_component("resistor", QPointF(-200.0, 320.0))
+        w_probe = scene.add_wire(FreeEnd(-360, 420), FreeEnd(-280, 420))
+        assert w_probe is not None
+
+        for rot in (0, 90, 180, 270):
+            for flip in (False, True):
+                rx.set_rotation_deg(rot)
+                rx.set_flipped_h(flip)
+                scene.refresh_connectivity_visuals()
+                pa = rx.terminal_scene_positions_px()["a"]
+                for dx, dy in ((0, 0), (1, 0), (3, 4), (8, 0), (9, 0)):
+                    undo_n = scene.undo_stack.index()
+                    QTest.mousePress(
+                        vp,
+                        Qt.MouseButton.LeftButton,
+                        Qt.KeyboardModifier.NoModifier,
+                        _vpos(win, -280, 420),
+                    )
+                    QTest.mouseMove(vp, _vpos(win, pa[0] + dx, pa[1] + dy))
+                    QTest.mouseRelease(
+                        vp,
+                        Qt.MouseButton.LeftButton,
+                        Qt.KeyboardModifier.NoModifier,
+                        _vpos(win, pa[0] + dx, pa[1] + dy),
+                    )
+                    assert scene.wire_graph.wire(w_probe.wire_id).end_b == TerminalRef(
+                        rx.component.name, "a"
+                    )
+                    assert scene.undo_stack.index() == undo_n + 1
+                    scene.undo_stack.undo()
+                    assert scene.undo_stack.index() == undo_n
+
+                # 11 px away -> misses snap and lands on FreeEnd.
+                undo_miss = scene.undo_stack.index()
+                QTest.mousePress(
+                    vp,
+                    Qt.MouseButton.LeftButton,
+                    Qt.KeyboardModifier.NoModifier,
+                    _vpos(win, -280, 420),
+                )
+                QTest.mouseMove(vp, _vpos(win, pa[0] + 11, pa[1]))
+                QTest.mouseRelease(
+                    vp,
+                    Qt.MouseButton.LeftButton,
+                    Qt.KeyboardModifier.NoModifier,
+                    _vpos(win, pa[0] + 11, pa[1]),
+                )
+                assert isinstance(
+                    scene.wire_graph.wire(w_probe.wire_id).end_b, FreeEnd
+                )
+                assert scene.undo_stack.index() == undo_miss + 1
+                scene.undo_stack.undo()
+                assert scene.undo_stack.index() == undo_miss
+
+        # 4. Rejections & cancel (0 undo steps, original wire preserved).
+        scene._wire_items_by_id[w_mid.wire_id].setSelected(True)
+        undo_rej = scene.undo_stack.count()
+        # 4a. Same wire end (drag w_mid.end_b onto R1.b == w_mid.end_a)
+        QTest.mousePress(
+            vp, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier, _vpos(win, *p_r3a)
+        )
+        QTest.mouseMove(vp, _vpos(win, *p_r1b))
+        QTest.mouseRelease(
+            vp, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier, _vpos(win, *p_r1b)
+        )
+        assert scene.undo_stack.count() == undo_rej
+        assert "terminal to itself" in scene.last_status_notice.lower()
+        assert scene.wire_graph.wire(w_mid.wire_id).end_b == TerminalRef(
+            r3a.component.name, "a"
+        )
+
+        # 4b. Duplicate wire: add wire R1.b <-> R2.a, then drag w_mid end_b onto R2.a -> rejected.
+        w_dup = scene.add_wire(TerminalRef("R1", "b"), TerminalRef("R2", "a"))
+        assert w_dup is not None
+        scene.clearSelection()
+        scene._wire_items_by_id[w_mid.wire_id].setSelected(True)
+        undo_dup = scene.undo_stack.count()
+        QTest.mousePress(
+            vp, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier, _vpos(win, *p_r3a)
+        )
+        QTest.mouseMove(vp, _vpos(win, *p_r2a))
+        QTest.mouseRelease(
+            vp, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier, _vpos(win, *p_r2a)
+        )
+        assert scene.undo_stack.count() == undo_dup
+        assert "already exists" in scene.last_status_notice.lower()
+        assert scene.wire_graph.wire(w_mid.wire_id).end_b == TerminalRef(
+            r3a.component.name, "a"
+        )
+
+        # 4c. Esc cancel & Right-click cancel mid-drag
+        QTest.mousePress(
+            vp, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier, _vpos(win, *p_r3a)
+        )
+        QTest.mouseMove(vp, _vpos(win, 240, -140))
+        assert scene.is_dragging_wire_endpoint is True
+        QTest.keyClick(view, Qt.Key.Key_Escape)
+        assert scene.is_dragging_wire_endpoint is False
+        assert scene.undo_stack.count() == undo_dup
+        assert scene.wire_graph.wire(w_mid.wire_id).end_b == TerminalRef(
+            r3a.component.name, "a"
+        )
+
+        QTest.mousePress(
+            vp, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier, _vpos(win, *p_r3a)
+        )
+        QTest.mouseMove(vp, _vpos(win, 240, -140))
+        QTest.mousePress(
+            vp, Qt.MouseButton.RightButton, Qt.KeyboardModifier.NoModifier, _vpos(win, 240, -140)
+        )
+        assert scene.is_dragging_wire_endpoint is False
+        assert scene.undo_stack.count() == undo_dup
+        ctx = QContextMenuEvent(
+            QContextMenuEvent.Reason.Mouse,
+            _vpos(win, 240, -140),
+            vp.mapToGlobal(_vpos(win, 240, -140)),
+        )
+        view.contextMenuEvent(ctx)
+        assert ctx.isAccepted() is True
+
+        # 4d. Dropping FreeEnd on interior of another wire emits junctions-next-update notice.
+        assert w_top is not None and len(w_top.points) >= 2
+        top_mid = (
+            (w_top.points[0][0] + w_top.points[1][0]) // 2,
+            (w_top.points[0][1] + w_top.points[1][1]) // 2,
+        )
+        QTest.mousePress(
+            vp, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier, _vpos(win, -280, 420)
+        )
+        QTest.mouseMove(vp, _vpos(win, *top_mid))
+        QTest.mouseRelease(
+            vp, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier, _vpos(win, *top_mid)
+        )
+        assert "junctions come in the next update" in scene.last_status_notice.lower()
+    finally:
+        win.circuit_scene.undo_stack.setClean()
+        win.close()

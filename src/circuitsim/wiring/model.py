@@ -322,6 +322,49 @@ class WireGraph:
         wires = tuple(updated if w.id == wire_id else w for w in self.wires)
         return WireGraph(wires, self.junctions)
 
+    def reconnect_wire_end(
+        self,
+        wire_id: str,
+        which_end: str,
+        new_att: Attachment,
+        *,
+        hints: Iterable[tuple[float, float]] = (),
+    ) -> WireGraph:
+        """Return a new graph with `which_end` (`'end_a'` or `'end_b'`) attached to `new_att`.
+
+        Validates distinct endpoints, existing junction targets, and duplicate wires,
+        replaces the wire's hints with `hints`, and normalizes any junction that lost
+        this wire.
+        """
+        if which_end not in ("end_a", "end_b"):
+            raise WireGraphError(
+                f"Invalid wire end {which_end!r}; expected 'end_a' or 'end_b'."
+            )
+        old = self.wire(wire_id)
+        old_att = old.end_a if which_end == "end_a" else old.end_b
+        other_att = old.end_b if which_end == "end_a" else old.end_a
+        if new_att == other_att:
+            raise WireGraphError("A wire needs two different ends.")
+        if isinstance(new_att, JunctionRef) and not self.has_junction(new_att.id):
+            raise WireGraphError(f"There is no junction {new_att.id}.")
+
+        other_wires = [w for w in self.wires if w.id != wire_id]
+        new_a = new_att if which_end == "end_a" else old.end_a
+        new_b = new_att if which_end == "end_b" else old.end_b
+        if _find_duplicate(other_wires, new_a, new_b) is not None:
+            raise WireGraphError(
+                f"Wire already exists between {new_a} and {new_b}."
+            )
+
+        updated = Wire(old.id, new_a, new_b, _snap_hints(hints))
+        wires = [updated if w.id == wire_id else w for w in self.wires]
+        junctions = list(self.junctions)
+        affected: list[str] = []
+        if old_att != new_att:
+            _queue_ends(affected, old_att)
+        _normalize(wires, junctions, affected)
+        return WireGraph(tuple(wires), tuple(junctions))
+
     def add_junction(self, pos: tuple[float, float], junction_id: str | None = None) -> WireGraph:
         """Add a junction object (position snapped to the grid). It starts with no wires."""
         if junction_id is None:

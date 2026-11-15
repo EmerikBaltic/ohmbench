@@ -153,6 +153,14 @@ class CircuitScene(QGraphicsScene):
         self._seg_drag_orig_pts: tuple[PointPx, ...] = ()
         self._seg_drag_orig_hints: tuple[PointPx, ...] = ()
 
+        # Interactive wire endpoint editing state
+        self._end_drag_old_graph: WireGraph | None = None
+        self._end_drag_wire_id: str | None = None
+        self._end_drag_which: str = ""
+        self._end_drag_orig_att: Attachment | None = None
+        self._end_drag_orig_pts: tuple[PointPx, ...] = ()
+        self._hovered_wire_end_pt: PointPx | None = None
+
         # Component drag-move tracking for live attached-wire re-routing & QUndoStack
         self._move_tracking_active: bool = False
         self._suppress_live_reroute: bool = False
@@ -762,9 +770,13 @@ class CircuitScene(QGraphicsScene):
         self.status_notice.emit(message)
 
     def _resolve_wire_attachment(
-        self, pos: QPointF | tuple[float, float]
+        self,
+        pos: QPointF | tuple[float, float],
+        *,
+        graph: WireGraph | None = None,
     ) -> tuple[Attachment, PointPx]:
         """Resolve cursor `pos` to `(TerminalRef | JunctionRef | FreeEnd, point_px)`."""
+        g = graph if graph is not None else self._wire_graph
         sx = pos.x() if isinstance(pos, QPointF) else float(pos[0])
         sy = pos.y() if isinstance(pos, QPointF) else float(pos[1])
         term_hit = self.find_terminal_near(
@@ -774,11 +786,11 @@ class CircuitScene(QGraphicsScene):
             return (TerminalRef(term_hit[0].component.name, term_hit[1]), term_hit[2])
         j_ref = self._find_junction_at(
             (sx, sy),
-            self._wire_graph,
+            g,
             tolerance_px=self.TERMINAL_SNAP_RADIUS_PX,
         )
         if j_ref is not None:
-            return (j_ref, self._wire_graph.junction(j_ref.id).pos)
+            return (j_ref, g.junction(j_ref.id).pos)
         snapped = wire_snap_px((sx, sy))
         return (FreeEnd(*snapped), snapped)
 
@@ -842,10 +854,18 @@ class CircuitScene(QGraphicsScene):
         self.cancel_wire_preview()
         return False
 
-    def _point_hits_existing_wire(self, pt: PointPx, graph: WireGraph) -> bool:
+    def _point_hits_existing_wire(
+        self,
+        pt: PointPx,
+        graph: WireGraph,
+        *,
+        exclude_wire_id: str | None = None,
+    ) -> bool:
         """Return True if `pt` lies anywhere on an existing wire polyline in `graph`."""
         term_map = self._terminal_pos_map()
         for w in graph.wires:
+            if exclude_wire_id is not None and w.id == exclude_wire_id:
+                continue
             item = self._wire_items_by_id.get(w.id)
             if item is not None and item.scene() is self and len(item.points) >= 2:
                 pts = item.points
@@ -855,8 +875,16 @@ class CircuitScene(QGraphicsScene):
                 return True
         return False
 
-    def update_hover_highlight(self, scene_pos: QPointF) -> PointPx | None:
-        """Update the highlighted terminal or junction snap target under `scene_pos`."""
+    @property
+    def hovered_wire_end_pt(self) -> PointPx | None:
+        """Return the hovered wire endpoint snap coordinate, if any."""
+        return self._hovered_wire_end_pt
+
+    def update_hover_highlight(
+        self, scene_pos: QPointF, *, graph: WireGraph | None = None
+    ) -> PointPx | None:
+        """Update the highlighted terminal, junction, or wire endpoint under `scene_pos`."""
+        g = graph if graph is not None else self._wire_graph
         term_hit = self.find_terminal_near(scene_pos)
         new_hover: PointPx | None = None
         if term_hit is not None:
@@ -864,14 +892,30 @@ class CircuitScene(QGraphicsScene):
         else:
             j_ref = self._find_junction_at(
                 scene_pos,
-                self._wire_graph,
+                g,
                 tolerance_px=self.TERMINAL_SNAP_RADIUS_PX,
             )
             if j_ref is not None:
-                new_hover = self._wire_graph.junction(j_ref.id).pos
+                new_hover = g.junction(j_ref.id).pos
 
-        if new_hover != self._hovered_terminal_pt:
+        new_end_hover: PointPx | None = None
+        if (
+            not self.is_drawing_wire
+            and not self.is_dragging_wire_endpoint
+            and not self.is_dragging_wire_segment
+        ):
+            end_hit = self.find_wire_endpoint_near(
+                scene_pos, tolerance_px=self.TERMINAL_SNAP_RADIUS_PX
+            )
+            if end_hit is not None:
+                new_end_hover = end_hit[2]
+
+        if (
+            new_hover != self._hovered_terminal_pt
+            or new_end_hover != self._hovered_wire_end_pt
+        ):
             self._hovered_terminal_pt = new_hover
+            self._hovered_wire_end_pt = new_end_hover
             self.update()
         return self._hovered_terminal_pt
 
@@ -1189,6 +1233,243 @@ class CircuitScene(QGraphicsScene):
         self._seg_drag_orient = ""
         self._seg_drag_orig_pts = ()
         self._seg_drag_orig_hints = ()
+
+    # ------------------------------------------------------------------
+    # Interactive wire endpoint editing (Acceptance S3: detach/reattach)
+    # ------------------------------------------------------------------
+
+    @property
+    def is_dragging_wire_endpoint(self) -> bool:
+        """Return whether an existing wire's endpoint is currently being dragged."""
+        return self._end_drag_wire_id is not None
+
+    def find_wire_endpoint_near(
+        self,
+        scene_pos: QPointF | tuple[float, float],
+        *,
+        tolerance_px: float = 10.0,
+    ) -> tuple[WireItem, str, PointPx] | None:
+        """Find the nearest wire endpoint `(wire_item, 'end_a'|'end_b', pt)` within `tolerance_px`.
+
+        Prioritizes selected wires first, then `FreeEnd` handles, then closest distance.
+        """
+        sx = scene_pos.x() if isinstance(scene_pos, QPointF) else float(scene_pos[0])
+        sy = scene_pos.y() if isinstance(scene_pos, QPointF) else float(scene_pos[1])
+
+        best: tuple[WireItem, str, PointPx] | None = None
+        best_key: tuple[int, int, float] | None = None
+        for wire in self._wire_items:
+            if wire.scene() is not self or len(wire.points) < 2:
+                continue
+            if not self._wire_graph.has_wire(wire.wire_id):
+                continue
+            w_obj = self._wire_graph.wire(wire.wire_id)
+            candidates = (
+                ("end_a", w_obj.end_a, wire.points[0]),
+                ("end_b", w_obj.end_b, wire.points[-1]),
+            )
+            sel_rank = 0 if wire.isSelected() else 1
+            for which, att, pt in candidates:
+                dist = math.hypot(sx - pt[0], sy - pt[1])
+                if dist > tolerance_px:
+                    continue
+                free_rank = 0 if isinstance(att, FreeEnd) else 1
+                key = (sel_rank, free_rank, round(dist, 6))
+                if best_key is None or key < best_key:
+                    best_key = key
+                    best = (wire, which, pt)
+        return best
+
+    def begin_wire_endpoint_drag(self, wire_item: WireItem, which_end: str) -> bool:
+        """Start interactively detaching and dragging `which_end` of `wire_item`."""
+        if (
+            which_end not in ("end_a", "end_b")
+            or not self._wire_graph.has_wire(wire_item.wire_id)
+        ):
+            return False
+        w_obj = self._wire_graph.wire(wire_item.wire_id)
+        self._end_drag_old_graph = self._wire_graph
+        self._end_drag_wire_id = wire_item.wire_id
+        self._end_drag_which = which_end
+        self._end_drag_orig_att = (
+            w_obj.end_a if which_end == "end_a" else w_obj.end_b
+        )
+        self._end_drag_orig_pts = tuple(wire_item.points)
+        self._hovered_wire_end_pt = (
+            wire_item.points[0] if which_end == "end_a" else wire_item.points[-1]
+        )
+        return True
+
+    def update_wire_endpoint_drag(
+        self, scene_pos: QPointF | tuple[float, float]
+    ) -> tuple[PointPx, ...]:
+        """Update the live routed preview while dragging a wire endpoint."""
+        wid = self._end_drag_wire_id
+        which = self._end_drag_which
+        old_graph = self._end_drag_old_graph
+        orig_att = self._end_drag_orig_att
+        if wid is None or old_graph is None or not old_graph.has_wire(wid):
+            return ()
+
+        target_att, target_pt = self._resolve_wire_attachment(
+            scene_pos, graph=old_graph
+        )
+        old_wire = old_graph.wire(wid)
+        other_att = old_wire.end_b if which == "end_a" else old_wire.end_a
+        item = self._wire_items_by_id.get(wid)
+        pref = {wid: item} if item is not None else None
+
+        if target_att == orig_att:
+            self.set_wire_graph(old_graph, refresh=False, preferred_wire_items=pref)
+            self.update_hover_highlight(
+                QPointF(float(target_pt[0]), float(target_pt[1])), graph=old_graph
+            )
+            self.update()
+            updated = self._wire_items_by_id.get(wid)
+            return updated.points if updated is not None else ()
+
+        try:
+            preview_graph = old_graph.reconnect_wire_end(
+                wid, which, target_att, hints=()
+            )
+            self.set_wire_graph(
+                preview_graph, refresh=False, preferred_wire_items=pref
+            )
+            self.update_hover_highlight(
+                QPointF(float(target_pt[0]), float(target_pt[1])), graph=old_graph
+            )
+            self.update()
+            updated = self._wire_items_by_id.get(wid)
+            return updated.points if updated is not None else ()
+        except WireGraphError:
+            self.set_wire_graph(old_graph, refresh=False, preferred_wire_items=pref)
+            item = self._wire_items_by_id.get(wid)
+            p_fixed = self._attachment_pos_px(other_att, old_graph)
+            if item is not None and p_fixed is not None:
+                dmap = self._terminal_dir_map()
+                dir_fixed = self._attachment_outward_dir(other_att, dmap)
+                dir_target = self._attachment_outward_dir(target_att, dmap)
+                p_a_prev, p_b_prev = (
+                    (target_pt, p_fixed) if which == "end_a" else (p_fixed, target_pt)
+                )
+                d_a_prev, d_b_prev = (
+                    (dir_target, dir_fixed)
+                    if which == "end_a"
+                    else (dir_fixed, dir_target)
+                )
+                pts = (
+                    (p_a_prev,)
+                    if p_a_prev == p_b_prev
+                    else wire_route(
+                        p_a_prev,
+                        p_b_prev,
+                        start_dir=d_a_prev,
+                        end_dir=d_b_prev,
+                        obstacles=self._component_obstacles_px(),
+                    )
+                )
+                item.end_a = target_att if which == "end_a" else other_att
+                item.end_b = target_att if which == "end_b" else other_att
+                item.hints = ()
+                item.set_points(pts)
+            else:
+                pts = ()
+            self.update_hover_highlight(
+                QPointF(float(target_pt[0]), float(target_pt[1])), graph=old_graph
+            )
+            self.update()
+            return pts
+
+    def commit_wire_endpoint_drag(
+        self, scene_pos: QPointF | tuple[float, float]
+    ) -> bool:
+        """Commit wire endpoint reattachment in 1 undo step, or reject with 0 steps."""
+        wid = self._end_drag_wire_id
+        which = self._end_drag_which
+        old_graph = self._end_drag_old_graph
+        orig_att = self._end_drag_orig_att
+        self._clear_wire_endpoint_drag_state()
+        if wid is None or old_graph is None or not old_graph.has_wire(wid):
+            return False
+
+        old_wire = old_graph.wire(wid)
+        other_att = old_wire.end_b if which == "end_a" else old_wire.end_a
+        target_att, _target_pt = self._resolve_wire_attachment(
+            scene_pos, graph=old_graph
+        )
+        item = self._wire_items_by_id.get(wid)
+        pref = {wid: item} if item is not None else None
+
+        # Restore old_graph cleanly before deciding commit vs rejection.
+        self.set_wire_graph(old_graph, refresh=False, preferred_wire_items=pref)
+
+        if target_att == orig_att:
+            self.refresh_connectivity_visuals()
+            return False
+
+        if target_att == other_att:
+            if isinstance(target_att, TerminalRef):
+                self._emit_status_notice("Cannot connect a terminal to itself")
+            elif isinstance(target_att, JunctionRef):
+                self._emit_status_notice("Cannot connect a junction to itself")
+            else:
+                self._emit_status_notice("Zero-length wire ignored")
+            self.refresh_connectivity_visuals()
+            return False
+
+        new_a = target_att if which == "end_a" else old_wire.end_a
+        new_b = target_att if which == "end_b" else old_wire.end_b
+        for other_w in old_graph.wires:
+            if other_w.id == wid:
+                continue
+            if (other_w.end_a == new_a and other_w.end_b == new_b) or (
+                other_w.end_a == new_b and other_w.end_b == new_a
+            ):
+                self._emit_status_notice("Wire already exists between these points")
+                self.refresh_connectivity_visuals()
+                return False
+
+        try:
+            new_graph = old_graph.reconnect_wire_end(wid, which, target_att, hints=())
+        except WireGraphError as exc:
+            self._emit_status_notice(str(exc))
+            self.refresh_connectivity_visuals()
+            return False
+
+        self.undo_stack.push(
+            SetWireGraphCommand(
+                self,
+                old_graph,
+                new_graph,
+                preferred_wire_items=pref,
+                description=f"Edit Wire {wid} End",
+            )
+        )
+        if isinstance(target_att, FreeEnd) and self._point_hits_existing_wire(
+            (target_att.x, target_att.y), new_graph, exclude_wire_id=wid
+        ):
+            self._emit_status_notice(
+                "Wire ends on another wire: junctions come in the next update"
+            )
+        return True
+
+    def cancel_wire_endpoint_drag(self) -> None:
+        """Cancel an active wire endpoint drag and restore the original graph."""
+        wid = self._end_drag_wire_id
+        old_graph = self._end_drag_old_graph
+        self._clear_wire_endpoint_drag_state()
+        if old_graph is not None:
+            item = self._wire_items_by_id.get(wid) if wid is not None else None
+            pref = {wid: item} if wid is not None and item is not None else None
+            self.set_wire_graph(old_graph, refresh=True, preferred_wire_items=pref)
+
+    def _clear_wire_endpoint_drag_state(self) -> None:
+        self._end_drag_old_graph = None
+        self._end_drag_wire_id = None
+        self._end_drag_which = ""
+        self._end_drag_orig_att = None
+        self._end_drag_orig_pts = ()
+        self._hovered_wire_end_pt = None
 
     def _terminals_at_point(self, pt: PointPx) -> list[TerminalRef]:
         refs: list[TerminalRef] = []
@@ -2395,7 +2676,30 @@ class CircuitScene(QGraphicsScene):
                     continue
                 painter.drawEllipse(QPointF(float(jx), float(jy)), 4.2, 4.2)
 
-            # 2. Draw glowing highlight ring around hovered terminal or wire snap target
+            # 2. Draw subtle endpoint handles on selected wires or hovered wire endpoint
+            handle_pts: set[PointPx] = set()
+            if not self.is_drawing_wire:
+                for witem in self._wire_items:
+                    if (
+                        witem is not self._preview_wire_item
+                        and witem.scene() is self
+                        and witem.isSelected()
+                        and len(witem.points) >= 2
+                    ):
+                        handle_pts.add(witem.points[0])
+                        handle_pts.add(witem.points[-1])
+                if self._hovered_wire_end_pt is not None:
+                    handle_pts.add(self._hovered_wire_end_pt)
+            if handle_pts:
+                h_col = QColor(palette.terminal_hover)
+                h_fill = QColor(palette.terminal_hover)
+                h_fill.setAlpha(45)
+                painter.setPen(QPen(h_col, 1.5))
+                painter.setBrush(QBrush(h_fill))
+                for hx, hy in handle_pts:
+                    painter.drawEllipse(QPointF(float(hx), float(hy)), 4.5, 4.5)
+
+            # 3. Draw glowing highlight ring around hovered terminal or wire snap target
             if self._hovered_terminal_pt is not None:
                 hx, hy = self._hovered_terminal_pt
                 hover_col = QColor(palette.terminal_hover)
