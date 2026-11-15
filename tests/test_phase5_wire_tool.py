@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import math
+import os
+import statistics
+import time
 
 from PySide6.QtCore import QPointF, Qt
 from PySide6.QtGui import QContextMenuEvent
@@ -12,7 +15,7 @@ from circuitsim.app.main_window import MainWindow
 from circuitsim.app.settings import AppSettings
 from circuitsim.engine import MNASolver, SimulationSession, SimulationState
 from circuitsim.wiring.model import FreeEnd, Junction, JunctionRef, TerminalRef, WireGraph
-from circuitsim.wiring.router import slide_segment_hints
+from circuitsim.wiring.router import route as wire_route, slide_segment_hints
 
 
 def _vpos(win: MainWindow, sx: float, sy: float):
@@ -933,3 +936,97 @@ def test_phase5_4_wire_endpoint_editing_acceptance_s3_and_snap_orientations(
     finally:
         win.circuit_scene.undo_stack.setClean()
         win.close()
+
+
+def test_phase5_5_router_and_50_component_drag_step_benchmark(qapp) -> None:
+    """Phase 5.5: router micro-benchmark and 50-component drag-step latency benchmark."""
+    from circuitsim.canvas.scene import CircuitScene
+    from circuitsim.canvas.symbol_renderer import SymbolLibrary
+
+    # 1. Qt-free router benchmark: analytic (0/1/2-bend) + obstacle-avoiding A*.
+    obstacles = (
+        (100, -40, 180, 40),
+        (240, -60, 320, 20),
+        (160, 80, 260, 140),
+    )
+    analytic_cases = (
+        ((0, 0), (400, 0), (1, 0), (-1, 0), ()),  # 0-bend straight
+        ((0, 0), (120, 100), (1, 0), (0, -1), ()),  # 1-bend L
+        ((0, 0), (200, 120), (1, 0), (1, 0), ()),  # 2-bend Z
+    )
+    astar_cases = (
+        ((0, 0), (200, 0), (-1, 0), (-1, 0), obstacles[:1]),  # obstacle U/detour
+        ((40, 0), (380, 0), (1, 0), (-1, 0), obstacles),  # multi-obstacle A*
+    )
+    # Warm-up 1 pass
+    for p0, p1, d0, d1, obs in analytic_cases + astar_cases:
+        wire_route(p0, p1, start_dir=d0, end_dir=d1, obstacles=obs)
+
+    t_r0 = time.perf_counter()
+    for i in range(100):
+        p0, p1, d0, d1, obs = analytic_cases[i % len(analytic_cases)]
+        pts = wire_route(p0, p1, start_dir=d0, end_dir=d1, obstacles=obs)
+        assert len(pts) >= 2
+    route_analytic_ms = ((time.perf_counter() - t_r0) * 1000.0) / 100.0
+    max_analytic_ms = float(os.environ.get("OHMBENCH_ROUTE_AVG_MAX_MS", "2.0"))
+    assert route_analytic_ms <= max_analytic_ms, (
+        f"analytic route() avg {route_analytic_ms:.3f} ms exceeded {max_analytic_ms} ms"
+    )
+
+    t_a0 = time.perf_counter()
+    for i in range(20):
+        p0, p1, d0, d1, obs = astar_cases[i % len(astar_cases)]
+        pts = wire_route(p0, p1, start_dir=d0, end_dir=d1, obstacles=obs)
+        assert len(pts) >= 2
+    route_astar_ms = ((time.perf_counter() - t_a0) * 1000.0) / 20.0
+    max_astar_ms = float(os.environ.get("OHMBENCH_ROUTE_ASTAR_MAX_MS", "15.0"))
+    assert route_astar_ms <= max_astar_ms, (
+        f"A* route() avg {route_astar_ms:.3f} ms exceeded {max_astar_ms} ms"
+    )
+
+    # 2. 50-component schematic drag-step benchmark.
+    scene = CircuitScene(SymbolLibrary())
+    items = []
+    # 5 rows x 10 cols = 50 resistors spaced comfortably on a 20 px grid
+    for row in range(5):
+        for col in range(10):
+            comp = scene.place_new_component(
+                "resistor", QPointF(col * 160.0, row * 120.0)
+            )
+            items.append(comp)
+            if col > 0:
+                prev = items[-2]
+                scene.add_wire(
+                    TerminalRef(prev.component.name, "b"),
+                    TerminalRef(comp.component.name, "a"),
+                )
+    assert len(scene.placed_items) == 50
+    assert len(scene.placed_wires) == 45
+
+    target = items[25]  # row 2, col 5 (middle wired component)
+    orig_x, orig_y = target.pos().x(), target.pos().y()
+    scene.clearSelection()
+    target.setSelected(True)
+
+    # Warm-up 1 step so lazy caches / Qt font metrics are already warm
+    scene.begin_component_move_tracking()
+    target.setPos(orig_x + 20.0, orig_y)
+    scene.commit_component_move_tracking()
+
+    step_times_ms: list[float] = []
+    cur_x = orig_x + 20.0
+    scene.begin_component_move_tracking()
+    for k in range(1, 6):
+        t0 = time.perf_counter()
+        target.setPos(cur_x + 20.0 * k, orig_y)
+        qapp.processEvents()
+        elapsed_ms = (time.perf_counter() - t0) * 1000.0
+        step_times_ms.append(elapsed_ms)
+    scene.commit_component_move_tracking()
+
+    median_step_ms = statistics.median(step_times_ms)
+    max_step_ms = float(os.environ.get("OHMBENCH_DRAG_STEP_MAX_MS", "30.0"))
+    assert median_step_ms <= max_step_ms, (
+        f"50-part drag step median {median_step_ms:.2f} ms (samples={step_times_ms}) "
+        f"exceeded {max_step_ms} ms"
+    )
