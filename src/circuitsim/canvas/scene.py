@@ -368,10 +368,14 @@ class CircuitScene(QGraphicsScene):
         )
 
     def _sync_junction_items_from_wire_graph(self) -> None:
-        """Create, update, or remove `JunctionItem` objects matching `graph.junction_dot_visible(jid)`."""
+        """Create, update, or remove `JunctionItem` objects matching visible or explicit junctions."""
         graph = self._wire_graph
+        graph_junc_positions = {j.pos for j in graph.junctions}
+        self._explicit_junctions.intersection_update(graph_junc_positions)
         visible_junctions = {
-            j.id: j for j in graph.junctions if graph.junction_dot_visible(j.id)
+            j.id: j
+            for j in graph.junctions
+            if graph.junction_dot_visible(j.id) or j.pos in self._explicit_junctions
         }
         for old_jid in list(self._junction_items_by_id):
             if old_jid not in visible_junctions:
@@ -1847,19 +1851,120 @@ class CircuitScene(QGraphicsScene):
         )
         return self.add_wire(pts)
 
+    def _nearest_point_on_wire_segments(
+        self, raw: tuple[float, float], graph: WireGraph, max_dist_px: float
+    ) -> PointPx | None:
+        rx, ry = raw
+        term_map = self._terminal_pos_map()
+        best_dist = max_dist_px
+        best_pt: PointPx | None = None
+        for w in graph.wires:
+            pts = self._wire_polyline_in_graph(w, graph, term_map)
+            for i in range(len(pts) - 1):
+                ax, ay = pts[i]
+                bx, by = pts[i + 1]
+                if ax == bx:
+                    lo, hi = min(ay, by), max(ay, by)
+                    cy = min(max(ry, float(lo)), float(hi))
+                    cx = float(ax)
+                elif ay == by:
+                    lo, hi = min(ax, bx), max(ax, bx)
+                    cx = min(max(rx, float(lo)), float(hi))
+                    cy = float(ay)
+                else:
+                    continue
+                dist = math.hypot(rx - cx, ry - cy)
+                if dist <= best_dist:
+                    cand = wire_snap_px((cx, cy))
+                    if cand != pts[0] and cand != pts[-1]:
+                        best_dist = dist
+                        best_pt = cand
+        return best_pt
+
     def toggle_junction_at(
         self, pos: QPointF | tuple[float, float] | PointPx
     ) -> bool:
-        """Toggle an explicit junction dot at the snapped grid position via `QUndoStack`."""
+        """Toggle an explicit junction on a wire at the snapped cursor via `QUndoStack`."""
+        from circuitsim.canvas.connectivity import point_strictly_inside_wire
+
         raw = (
             (pos.x(), pos.y())
             if isinstance(pos, QPointF)
             else (float(pos[0]), float(pos[1]))
         )
-        pt = normalize_point_px(raw, snap=True)
-        adding = pt not in self._explicit_junctions
-        self.undo_stack.push(ToggleJunctionCommand(self, pt, adding=adding))
-        return adding
+        old_graph = self._wire_graph
+        pt = wire_snap_px(raw)
+
+        # Check existing junction at snapped point (or within snap radius of cursor).
+        j_ref = self._find_junction_at(pt, old_graph, tolerance_px=0.5)
+        if j_ref is None:
+            j_ref = self._find_junction_at(
+                raw, old_graph, tolerance_px=self.TERMINAL_SNAP_RADIUS_PX
+            )
+        if j_ref is not None:
+            junc = old_graph.junction(j_ref.id)
+            if (
+                old_graph.junction_degree(junc.id) <= 2
+                or junc.pos in self._explicit_junctions
+            ):
+                new_graph = old_graph.collapse_junction(junc.id)
+                self.undo_stack.push(
+                    ToggleJunctionCommand(
+                        self,
+                        junc.pos,
+                        adding=False,
+                        old_graph=old_graph,
+                        new_graph=new_graph,
+                    )
+                )
+                return False
+            return False
+
+        # Find all wires whose interior passes strictly through snapped `pt`.
+        term_map = self._terminal_pos_map()
+        matching: list[tuple[Wire, tuple[PointPx, ...]]] = []
+        for w in old_graph.wires:
+            pts = self._wire_polyline_in_graph(w, old_graph, term_map)
+            if len(pts) >= 2 and point_strictly_inside_wire(pt, pts):
+                matching.append((w, pts))
+
+        if not matching:
+            projected = self._nearest_point_on_wire_segments(
+                raw, old_graph, self.TERMINAL_SNAP_RADIUS_PX
+            )
+            if projected is not None:
+                pt = projected
+                for w in old_graph.wires:
+                    pts = self._wire_polyline_in_graph(w, old_graph, term_map)
+                    if len(pts) >= 2 and point_strictly_inside_wire(pt, pts):
+                        matching.append((w, pts))
+
+        if not matching:
+            return False
+
+        working = old_graph
+        shared_jid: str | None = None
+        for w, pts in matching:
+            hb = self._hints_before_point(pt, w, pts)
+            split_res = working.split_wire_at(
+                w.id,
+                pt,
+                junction_id=shared_jid,
+                hints_before=hb,
+            )
+            working = split_res.graph
+            shared_jid = split_res.junction_id
+
+        self.undo_stack.push(
+            ToggleJunctionCommand(
+                self,
+                pt,
+                adding=True,
+                old_graph=old_graph,
+                new_graph=working,
+            )
+        )
+        return True
 
     # ------------------------------------------------------------------
     # Component Move Tracking, Rotate, Flip, Delete, Copy/Cut/Paste

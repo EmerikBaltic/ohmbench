@@ -127,3 +127,136 @@ def test_d1_split_on_drop_inline_and_junction_tap_single_undo(qapp) -> None:
     assert scene.undo_stack.index() == idx_before_drag_tap
     assert len(scene.wire_graph.junctions) == 0
     assert len(scene.wire_graph.attached_wires(TerminalRef(r3.component.name, r3_top_t))) == 0
+
+
+def test_d2_j_key_junction_split_and_third_wire_and_undo(tmp_path, qapp) -> None:
+    """D2: J key splits wire at snapped cursor via split_wire_at, connects 3rd wire, and joins crossings."""
+    settings = AppSettings(data_dir=tmp_path / "settings_d2")
+    win = MainWindow(settings=settings)
+    win.resize(1100, 800)
+    win.show()
+    qapp.processEvents()
+    scene = win.circuit_scene
+    view = win.circuit_view
+    vp = view.viewport()
+
+    try:
+        # Divider: V1(12V) -> R1(1 kOhm) -> w_mid(y=-80) -> R2(2 kOhm) -> GND
+        v1 = scene.place_new_component("dc_voltage", QPointF(-240.0, 0.0), rotation_deg=90)
+        r1 = scene.place_new_component("resistor", QPointF(-100.0, -80.0))
+        r2 = scene.place_new_component("resistor", QPointF(160.0, 0.0), rotation_deg=90)
+        gnd = scene.place_new_component("ground", QPointF(-240.0, 120.0))
+        scene.edit_component_parameters(v1, {"dc_voltage": 12.0})
+        scene.edit_component_parameters(r1, {"resistance": 1000.0})
+        scene.edit_component_parameters(r2, {"resistance": 2000.0})
+
+        r2_terms = r2.terminal_scene_positions_px()
+        r2_top_t, _ = min(r2_terms.items(), key=lambda kv: kv[1][1])
+        r2_bot_t, _ = max(r2_terms.items(), key=lambda kv: kv[1][1])
+
+        w_top = scene.add_wire(TerminalRef("V1", "pos"), TerminalRef("R1", "a"))
+        w_mid = scene.add_wire(
+            TerminalRef("R1", "b"),
+            TerminalRef("R2", r2_top_t),
+            hints=((-40, -80), (140, -80)),
+        )
+        w_bot = scene.add_wire(
+            TerminalRef("V1", "neg"),
+            TerminalRef("R2", r2_bot_t),
+            hints=((-200, 80), (140, 80)),
+        )
+        w_gnd = scene.add_wire(TerminalRef("V1", "neg"), TerminalRef("GND1", "gnd"))
+        assert all(w is not None for w in (w_top, w_mid, w_bot, w_gnd))
+        assert len(scene.wire_graph.junctions) == 0
+
+        # Ensure pressing J in empty space creates 0 junctions and 0 undo steps.
+        idx0 = scene.undo_stack.index()
+        QTest.mouseMove(vp, view.mapFromScene(QPointF(300.0, 300.0)))
+        QTest.keyClick(view, Qt.Key.Key_J)
+        qapp.processEvents()
+        assert scene.undo_stack.index() == idx0
+        assert len(scene.wire_graph.junctions) == 0
+
+        # Move cursor near (0, -80) on w_mid and press J -> splits w_mid at (0, -80).
+        QTest.mouseMove(vp, view.mapFromScene(QPointF(3.0, -82.0)))
+        QTest.keyClick(view, Qt.Key.Key_J)
+        qapp.processEvents()
+        assert scene.undo_stack.index() == idx0 + 1
+        assert len(scene.wire_graph.junctions) == 1
+        j1 = scene.wire_graph.junctions[0]
+        assert j1.pos == (0, -80)
+        assert len(scene.junction_items) == 1
+        assert scene.wire_graph.junction_degree(j1.id) == 2
+
+        # Base divider solve through J1: V_mid = 12 * 2000 / (1000 + 2000) = 8.0 V.
+        conn_split = scene.extract_connectivity_result()
+        sol_split = MNASolver(conn_split.circuit).solve_dc()
+        assert math.isclose(
+            sol_split.node_voltages[conn_split.component_nodes["R2"][r2_top_t]],
+            8.0,
+            rel_tol=1e-6,
+        )
+
+        # Pressing J again on the degree-2 junction collapses/merges it back in 1 undo step,
+        # and undo() brings J1 back cleanly.
+        QTest.mouseMove(vp, view.mapFromScene(QPointF(2.0, -81.0)))
+        QTest.keyClick(view, Qt.Key.Key_J)
+        qapp.processEvents()
+        assert len(scene.wire_graph.junctions) == 0
+        assert len(scene.junction_items) == 0
+        scene.undo_stack.undo()
+        assert len(scene.wire_graph.junctions) == 1
+        assert len(scene.junction_items) == 1
+
+        # Add parallel load R3 = 2 kOhm and draw a 3rd wire from J1 to R3 top terminal.
+        r_tap = scene.place_new_component("resistor", QPointF(0.0, 20.0), rotation_deg=90)
+        scene.edit_component_parameters(r_tap, {"resistance": 2000.0})
+        rt_terms = r_tap.terminal_scene_positions_px()
+        rt_top_t, rt_top_pos = min(rt_terms.items(), key=lambda kv: kv[1][1])
+        rt_bot_t, _ = max(rt_terms.items(), key=lambda kv: kv[1][1])
+        w_rt_bot = scene.add_wire(TerminalRef("R3", rt_bot_t), TerminalRef("V1", "neg"))
+        assert w_rt_bot is not None
+
+        scene.start_wire_preview((2.0, -79.0))
+        w_branch = scene.finish_wire_preview(rt_top_pos)
+        assert w_branch is not None
+        assert scene.wire_graph.junction_degree(j1.id) == 3
+
+        # Hand calc: V1 = 12 V, R1 = 1 kOhm, parallel branch = R2 (2 kOhm) || R3 (2 kOhm) = 1 kOhm.
+        # V_mid = 12 * 1000 / (1000 + 1000) = 6.0 V.
+        conn_3 = scene.extract_connectivity_result()
+        sol_3 = MNASolver(conn_3.circuit).solve_dc()
+        assert math.isclose(
+            sol_3.node_voltages[conn_3.component_nodes["R2"][r2_top_t]],
+            6.0,
+            rel_tol=1e-6,
+        )
+
+        # Undo 3rd wire -> R3 detaches while J1 still bridges R1.b and R2; undo back to idx0 restores unbroken w_mid.
+        scene.undo_stack.undo()
+        conn_2 = scene.extract_connectivity_result()
+        assert conn_2.component_nodes["R1"]["b"] == conn_2.component_nodes["R2"][r2_top_t]
+        assert conn_2.component_nodes["R3"][rt_top_t] != conn_2.component_nodes["R2"][r2_top_t]
+        while scene.undo_stack.index() > idx0:
+            scene.undo_stack.undo()
+        assert len(scene.wire_graph.junctions) == 0
+        assert len(scene.junction_items) == 0
+
+        # Pressing J at the crossing of two isolated wires joins them into a degree-4 junction.
+        w_cross_h = scene.add_wire(FreeEnd(-60, 200), FreeEnd(60, 200))
+        w_cross_v = scene.add_wire(FreeEnd(0, 140), FreeEnd(0, 260))
+        assert w_cross_h is not None and w_cross_v is not None
+        assert len(scene.wire_graph.junctions) == 0
+
+        QTest.mouseMove(vp, view.mapFromScene(QPointF(2.0, 198.0)))
+        QTest.keyClick(view, Qt.Key.Key_J)
+        qapp.processEvents()
+        assert len(scene.wire_graph.junctions) == 1
+        j_cross = scene.wire_graph.junctions[0]
+        assert j_cross.pos == (0, 200)
+        assert scene.wire_graph.junction_degree(j_cross.id) == 4
+        scene.undo_stack.undo()
+        assert len(scene.wire_graph.junctions) == 0
+    finally:
+        win.circuit_scene.undo_stack.setClean()
+        win.close()

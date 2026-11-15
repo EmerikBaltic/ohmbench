@@ -474,6 +474,16 @@ class WireGraph:
             _normalize(new_wires, junctions, affected)
         return WireGraph(tuple(new_wires), tuple(junctions))
 
+    def collapse_junction(self, junction_id: str) -> WireGraph:
+        """Merge a degree<=2 junction back into one wire, or remove a degree>=3 junction."""
+        self.junction(junction_id)
+        if self.junction_degree(junction_id) >= 3:
+            return self.remove_junction(junction_id)
+        wires = list(self.wires)
+        junctions = list(self.junctions)
+        _normalize(wires, junctions, [junction_id])
+        return WireGraph(tuple(wires), tuple(junctions))
+
     def remove_component(self, component: str) -> WireGraph:
         """Delete every wire attached to `component`, then clean up the junctions."""
         wires: list[Wire] = []
