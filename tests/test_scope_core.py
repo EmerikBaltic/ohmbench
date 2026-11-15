@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import math
 import pickle
+import subprocess
 import sys
 
 import numpy as np
@@ -76,7 +77,22 @@ def test_scope_package_has_no_qt_imports() -> None:
         "circuitsim.scope.math_fft",
         "circuitsim.scope.core",
     )
-    assert "circuitsim.tools.scope_demo" not in sys.modules
+    # Verify in a clean subprocess that importing `circuitsim.scope` never pulls in `tools.scope_demo`
+    res = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            (
+                "import sys, circuitsim.scope, circuitsim.scope.core; "
+                "assert 'circuitsim.tools.scope_demo' not in sys.modules"
+            ),
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=20,
+    )
+    assert res.returncode == 0, res.stderr
 
 
 def test_sample_block_and_scope_frame_immutability_and_pickling() -> None:
