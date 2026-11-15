@@ -28,7 +28,7 @@ It is designed for electrical engineering students and hobbyists who want both a
 
 1. **Place Parts**: Click or drag a part from the left **Component Palette** onto the schematic canvas (or double-click a palette item to place it at the center). Always include a **Ground** part wired to your circuit.
 2. **Rotate & Flip**: Select one or more parts and press **`R`** to rotate $90^\circ$ clockwise or **`F`** to flip horizontally. Labels and values stay upright and readable at any angle.
-3. **Draw Wires**: Click directly on any component terminal dot to start a right-angle wire, or press **`W`** to enter Wire Mode (`Esc` returns to Select Mode). Crossing wires do *not* connect unless they form a T-junction or you place a **Junction Dot** (**`J`**).
+3. **Draw & Edit Wires**: Drag from any component terminal dot or press **`W`** for Wire Mode (**`Esc`** returns to Select Mode). Click empty grid intersections to place orthogonal waypoints (**`Backspace`** removes the last waypoint; double-click or click a terminal/junction finishes). Drag any wire segment orthogonally to slide it, or drag a wire endpoint handle to detach (`FreeEnd` hollow marker) or reattach to another terminal/junction (10 px snap radius). Crossing wires do *not* connect unless connected through an explicit **Junction Dot**.
 4. **Edit Component Values**: **Double-click** any component on the canvas to open its value editor. Type values using engineering prefixes (`4.7k`, `5,65 G`, `100n`, `10K`)—a live preview (`= 4.7 kΩ`) appears below the input, and changes apply immediately even while the simulation is running (and can be undone with **`Ctrl+Z`**).
 5. **Run / Pause / Stop**: Use the top toolbar or keyboard shortcuts—**Run (`F5`)**, **Pause / Resume (`F6` or `Space`)**, and **Stop (`F7`)**—and choose simulation speed (`1x Real-Time`, `0.1x Slow`, `10x Fast`).
 6. **Toggle Switches Live**: Click directly on any **Switch** on the canvas while running to animate its lever open/closed and watch meter readings and lightbulb brightness respond in real time.
@@ -83,7 +83,7 @@ python -m venv .venv
 
 ### 3. Run the Unit Test Suite
 
-Run all 290 tests (uses a shared offscreen `QApplication` for Qt tests and clean subprocesses for Qt-free module import checks so `sys.modules` is verified without Qt already loaded):
+Run the full automated test suite (uses a shared offscreen `QApplication` for Qt tests and clean subprocesses for Qt-free module import checks so `sys.modules` is verified without Qt already loaded):
 
 ```powershell
 .\.venv\Scripts\python.exe -m pytest

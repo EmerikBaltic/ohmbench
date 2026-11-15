@@ -43,9 +43,9 @@
 - [x] `C2` (`done` `258e8cd`, 379 fast): HYDROGEN QUEUE `5.2` — Waypoint clicks while drawing + `Backspace` removes last waypoint + double-click finish + readable zero-undo rejections (same terminal/junction, duplicate wire, zero-length wire).
 - [x] `C3` (`done` `e594c34`, 380 fast): HYDROGEN QUEUE `5.3` — Interactive wire segment dragging (parallel slide updating `hints`, live preview via `route()`, 1 undo step). Acceptance: dragging an interior/movable horizontal or vertical wire segment slides it orthogonally, updates `Wire.hints` and reroutes cleanly via `route()`, and pushes 1 undo step on release (0 if unchanged).
 - [x] `C4` (`done` `875b03f`, 381 fast): HYDROGEN QUEUE `5.4` — Editing wire ends (`Acceptance S3`: drag handle, detach, reattach to terminal/junction/wire-split/`FreeEnd`, 1 undo step) + synthetic `QTest` mouse tests.
-- [x] `C5` (`done`, 382 fast): HYDROGEN QUEUE `5.5` — Update/audit existing wire tests (document any replaced coordinate-mechanism test in `PROGRESS.md`) + performance benchmark (`route()` + 50-part drag step <= ~30 ms).
-- [ ] `C6` (`in_progress`): HYDROGEN QUEUE `6.1` — Verification matrix S1–S5, golden circuit round-trips, update `PROGRESS.md` and `README.md`.
-- [ ] `GATE C` (`todo`): Full test suite + tag `checkpoint/C-done`.
+- [x] `C5` (`done` `4d552ec`, 382 fast): HYDROGEN QUEUE `5.5` — Update/audit existing wire tests (document any replaced coordinate-mechanism test in `PROGRESS.md`) + performance benchmark (`route()` + 50-part drag step <= ~30 ms).
+- [x] `C6` (`done`, 383 fast): HYDROGEN QUEUE `6.1` — Verification matrix S1–S5, golden circuit round-trips, update `PROGRESS.md` and `README.md`.
+- [ ] `GATE C` (`in_progress`): Full test suite + tag `checkpoint/C-done`.
 
 ### PART D — WIRE REDESIGN STEP 4B (branch `wire-redesign`)
 - [ ] `D1` (`todo`): Split-on-drop (dropping component onto wire splits inline or taps junction in one undo step).
@@ -92,10 +92,10 @@
 - [x] 5.2 Rejections (same terminal, duplicate wire, zero-length wire) + waypoints/`Backspace` - *done (`258e8cd`, 379 fast)*
 - [x] 5.3 Interactive wire segment dragging (`hints` parallel slide, live preview via `route()`, 1 undo step) - *done (`e594c34`, 380 fast)*
 - [x] 5.4 Editing wire ends (`Acceptance S3`: handle, detach, reattach/`FreeEnd`, 1 undo step) + synthetic `QTest` mouse tests - *done (`875b03f`, 381 fast)*
-- [x] 5.5 Wire test audit (`test_wire_snapping.py` [2], `test_rotation_and_moving_wires.py` [8], `test_connectivity_and_editing.py` [9] all pass unchanged on top of `WireGraph`; supplemented by `test_phase5_wire_tool.py`) + performance benchmark (`route()` analytic <= 2 ms / A* <= 15 ms, 50-part drag step median <= 30 ms, env-configurable) - *done (382 fast)*
+- [x] 5.5 Wire test audit (`test_wire_snapping.py` [2], `test_rotation_and_moving_wires.py` [8], `test_connectivity_and_editing.py` [9] all pass unchanged on top of `WireGraph`; supplemented by `test_phase5_wire_tool.py`) + performance benchmark (`route()` analytic <= 2 ms / A* <= 15 ms, 50-part drag step median <= 30 ms, env-configurable) - *done (`4d552ec`, 382 fast)*
 
 ### Phase 6: Documentation & Report (branch `wire-redesign`)
-- [ ] 6.1 Update `PROGRESS.md` (built, rewritten tests, next tasks S4/S5) and `README.md` if usage changed - *in_progress*
+- [x] 6.1 Update `PROGRESS.md` (built, audited tests, next tasks S4/S5 & Step 4B `D1`–`D5`) and `README.md` (`test_phase6_1_golden_roundtrips_and_s1_s5_matrix` S1–S5 + Schema v2 & bundled example round-trips; zero existing tests weakened or replaced) - *done (383 fast)*
 
 ## Current Status: Milestone 2 & Milestone 3 Step 3A Complete, Phase 1 Quick Wins Tasks 1-10 Done, Startup & Shutdown Fixes Done, LED Lifecycle Complete, Paint Safety & Crash Handler Hardening Complete, Meter Loading & Ideal Modes Complete (289 Passing Tests)
 

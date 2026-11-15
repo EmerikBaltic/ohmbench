@@ -1030,3 +1030,144 @@ def test_phase5_5_router_and_50_component_drag_step_benchmark(qapp) -> None:
         f"50-part drag step median {median_step_ms:.2f} ms (samples={step_times_ms}) "
         f"exceeded {max_step_ms} ms"
     )
+
+
+def test_phase6_1_golden_roundtrips_and_s1_s5_matrix(tmp_path, qapp) -> None:
+    """Phase 6.1: S1-S5 matrix + Schema v2 save/load & bundled golden circuit round-trips."""
+    from pathlib import Path
+    from circuitsim.wiring.serializer import (
+        CircuitDocumentV2,
+        load_document_v2 as load_document,
+        save_document_v2 as save_document,
+    )
+
+    settings = AppSettings(data_dir=tmp_path / "settings_61")
+    win = MainWindow(settings=settings)
+    win.resize(1100, 800)
+    win.show()
+    qapp.processEvents()
+    scene = win.circuit_scene
+
+    try:
+        # Build base 12 V / 1 kOhm / 2 kOhm divider -> V_mid = 12 * 2k / (1k + 2k) = 8.0 V.
+        v1 = scene.place_new_component("dc_voltage", QPointF(-160.0, 20.0), rotation_deg=90)
+        r1 = scene.place_new_component("resistor", QPointF(0.0, -60.0))
+        r2 = scene.place_new_component("resistor", QPointF(160.0, 20.0), rotation_deg=90)
+        gnd = scene.place_new_component("ground", QPointF(-160.0, 140.0))
+        scene.edit_component_parameters(v1, {"dc_voltage": 12.0})
+        scene.edit_component_parameters(r1, {"resistance": 1000.0})
+        scene.edit_component_parameters(r2, {"resistance": 2000.0})
+
+        w_top = scene.add_wire(TerminalRef("V1", "pos"), TerminalRef("R1", "a"))
+        w_mid = scene.add_wire(TerminalRef("R1", "b"), TerminalRef("R2", "a"))
+        w_bot = scene.add_wire(TerminalRef("R2", "b"), TerminalRef("V1", "neg"))
+        w_gnd = scene.add_wire(TerminalRef("V1", "neg"), TerminalRef("GND1", "gnd"))
+        assert all(w is not None for w in (w_top, w_mid, w_bot, w_gnd))
+
+        # S1: moving, rotating, and flipping keeps TerminalRef connectivity & 8.0 V DC solve.
+        scene.move_components_by([r1], 60.0, -40.0)
+        scene.clearSelection()
+        r1.setSelected(True)
+        scene.rotate_selected()
+        scene.flip_selected()
+        conn_s1 = scene.extract_connectivity_result()
+        sol_s1 = MNASolver(conn_s1.circuit).solve_dc()
+        assert math.isclose(
+            sol_s1.node_voltages[conn_s1.component_nodes["R1"]["b"]], 8.0, rel_tol=1e-6
+        )
+
+        # S2: crossing wires without an explicit Junction remain electrically isolated.
+        # Wire 1: V_aux(24V) -> R_load -> GND crossing horizontally at y = 260
+        # Wire 2: Free branch crossing vertically at x = 40 from y = 200 to y = 320 -> V2(5V)
+        v2 = scene.place_new_component("dc_voltage", QPointF(260.0, 260.0), rotation_deg=90)
+        r_aux = scene.place_new_component("resistor", QPointF(140.0, 200.0))
+        scene.edit_component_parameters(v2, {"dc_voltage": 24.0})
+        scene.edit_component_parameters(r_aux, {"resistance": 1000.0})
+        w_cross_h = scene.add_wire(
+            FreeEnd(-40, 260), FreeEnd(120, 260), hints=()
+        )
+        w_cross_v = scene.add_wire(
+            FreeEnd(40, 200), FreeEnd(40, 320), hints=()
+        )
+        assert w_cross_h is not None and w_cross_v is not None
+        assert len(scene.wire_graph.junctions) == 0
+
+        # S3: detach w_mid to FreeEnd and undo back in 1 undo step.
+        assert w_mid is not None
+        assert scene.begin_wire_endpoint_drag(scene._wire_items_by_id[w_mid.wire_id], "end_b")
+        assert scene.commit_wire_endpoint_drag((180, -100))
+        assert scene.wire_graph.wire(w_mid.wire_id).end_b == FreeEnd(180, -100)
+        assert w_mid.wire_id in scene.extract_connectivity_result().open_wire_ids
+        scene.undo_stack.undo()
+        assert scene.wire_graph.wire(w_mid.wire_id).end_b == TerminalRef("R2", "a")
+
+        # S4: add hints & Schema v2 golden save/load round-trip preserves WireGraph + DC operating point.
+        w_hinted = scene.add_wire(
+            FreeEnd(220, -100),
+            FreeEnd(320, -40),
+            hints=((320, -100),),
+        )
+        assert w_hinted is not None
+        scene.add_wire(TerminalRef("V2", "pos"), TerminalRef(r_aux.component.name, "a"))
+        scene.add_wire(TerminalRef(r_aux.component.name, "b"), TerminalRef("V1", "neg"))
+        scene.add_wire(TerminalRef("V2", "neg"), TerminalRef("V1", "neg"))
+
+        # S5: degree-3 junction dot + automatic merge to degree-2 hint when 3rd branch deleted.
+        assert w_mid is not None
+        split_res = scene.wire_graph.split_wire_at(w_mid.wire_id, (100, -100))
+        g_j3 = split_res.graph.add_wire(
+            JunctionRef(split_res.junction_id), FreeEnd(100, -160)
+        )
+        scene.set_wire_graph(g_j3)
+        assert split_res.junction_id in scene._junction_items_by_id
+        # Remove the 3rd branch -> junction disappears and remaining pair keeps (100, -100) hint.
+        branch_id = g_j3.wires[-1].id
+        scene.set_wire_graph(g_j3.remove_wire(branch_id))
+        assert split_res.junction_id not in scene._junction_items_by_id
+        assert (100, -100) in scene.wire_graph.wire(split_res.first_wire_id).hints
+
+        golden_path = tmp_path / "golden_v2_matrix.circ"
+        doc_v2 = scene.to_document_v2()
+        assert isinstance(doc_v2, CircuitDocumentV2)
+        save_document(golden_path, doc_v2)
+
+        loaded_doc = load_document(golden_path)
+        assert isinstance(loaded_doc, CircuitDocumentV2)
+        win2 = MainWindow(settings=AppSettings(data_dir=tmp_path / "settings_61_b"))
+        try:
+            win2.circuit_scene.load_document(loaded_doc)
+            assert win2.circuit_scene.wire_graph == scene.wire_graph
+            conn_rt = win2.circuit_scene.extract_connectivity_result()
+            sol_rt = MNASolver(conn_rt.circuit).solve_dc()
+            assert math.isclose(
+                sol_rt.node_voltages[conn_rt.component_nodes["R1"]["b"]], 8.0, rel_tol=1e-6
+            )
+            assert math.isclose(
+                sol_rt.node_voltages[conn_rt.component_nodes["V2"]["pos"]], 24.0, rel_tol=1e-6
+            )
+        finally:
+            win2.circuit_scene.undo_stack.setClean()
+            win2.close()
+
+        # Round-trip bundled examples through v2 serialization and compare DC solve before/after.
+        examples_dir = (
+            Path(__file__).resolve().parents[1]
+            / "src"
+            / "circuitsim"
+            / "resources"
+            / "examples"
+        )
+        for ex_name in ("voltage_divider.circ", "series_sources.circ", "led_resistor.circ"):
+            ex_doc = load_document(examples_dir / ex_name)
+            scene.load_document(ex_doc)
+            sol_before = MNASolver(scene.extract_connectivity_result().circuit).solve_dc()
+            rt_path = tmp_path / f"rt_{ex_name}"
+            save_document(rt_path, scene.to_document_v2())
+            scene.load_document(load_document(rt_path))
+            sol_after = MNASolver(scene.extract_connectivity_result().circuit).solve_dc()
+            assert sol_after.node_voltages.keys() == sol_before.node_voltages.keys()
+            for node, volt in sol_before.node_voltages.items():
+                assert math.isclose(sol_after.node_voltages[node], volt, rel_tol=1e-9, abs_tol=1e-9)
+    finally:
+        win.circuit_scene.undo_stack.setClean()
+        win.close()
