@@ -14,6 +14,41 @@
 - Phase 2: Step 3C Full Properties Dialog (Identity, parameters, live readout, inductor helpers) - [todo]
 - Phase 3: Oscilloscope Plan (measure solver step rate, plan max 50 lines, wait for approval) - [todo]
 
+## MASTER QUEUE
+### PART A — HARDENING (branch `main`)
+- [ ] `A1` (`todo`): Delete accidental untracked file `"pytest.exe -q"` after reporting first 10 lines (no commit needed).
+- [ ] `A2` (`todo`): Make `tests/test_scope_performance.py` robust on shared CI runners (`os.environ.get("CI")`) while keeping local thresholds strict.
+- [ ] `A3` (`todo`): Diagnose and fix the intermittent Windows Qt teardown access violation (`MainWindow.closeEvent`, `SimulationWorkerController.shutdown`, `tests/conftest.py`).
+- [ ] `A4` (`todo`): Add exact-value Qt-free scope tests in `tests/test_scope_core_exact.py` (`roll`, `single`, `auto_set` [skip & report undocumented], `hysteresis`, `holdoff`, `10x probe`, `NOT gate`).
+- [ ] `GATE A` (`todo`): Run `.\.venv\Scripts\pytest.exe -q` 3 times consecutively (0 failures, 0 access violations) and tag `checkpoint/A-done`.
+
+### PART B — WIRE REDESIGN PHASE 4 (branch `wire-redesign`)
+- [ ] `B0` (`todo`): Switch to `wire-redesign`, fast-forward merge `main`, write `OLD CODE MAP`, inspect & discard `stash@{0}` without dropping stash entry.
+- [ ] `B1` (`todo`): HYDROGEN QUEUE `4.1` — `CircuitScene` owns `WireGraph`; `WireItem(wire_id)` renders routed segments & junction dots; `AddWireCommand` / `RemoveWireCommand` operate on `WireGraph`.
+- [ ] `B2` (`todo`): HYDROGEN QUEUE `4.2` — Wire drawing tool creates `TerminalAttachment` / `JunctionAttachment` / `FreeAttachment`, live preview via `route()`, Esc cancels, `DeleteSelectionCommand` handles wires + components + junctions.
+- [ ] `B3` (`todo`): HYDROGEN QUEUE `4.3` — Component move (`MoveComponentsCommand`) re-routes all incident wires and cascades through attached junctions; live reroute during drag.
+- [ ] `B4` (`todo`): HYDROGEN QUEUE `4.4` — Component rotate/flip (`RotateComponentCommand`, `FlipComponentCommand`) updates terminal positions via shared transform and re-routes incident wires.
+- [ ] `B5` (`todo`): HYDROGEN QUEUE `4.5` — Segment dragging (`EditWireRoutingCommand`) inserts/updates `locked_elbow`, live preview, double-click resets `locked_elbow=None`.
+- [ ] `B6` (`todo`): HYDROGEN QUEUE `4.6` — Simulation netlist extraction in `CircuitScene` / `MainWindow` uses `circuitsim.wiring.netlist.build_netlist`; DC/AC/transient/probes/scope work identically.
+- [ ] `GATE B` (`todo`): Full test suite + offscreen `10 V` / `1 kΩ` / `2 kΩ` voltage divider smoke test (`6.667 V`), tag `checkpoint/B-done`.
+
+### PART C — WIRE REDESIGN PHASE 5 & 6 (branch `wire-redesign`)
+- [ ] `C1` (`todo`): `5.1` — Polarity & orientation audit (all 8 orientations `(0,90,180,270) x (no-flip, h-flip)`).
+- [ ] `C2` (`todo`): `5.2` — Save/load integration (`CircuitScene.to_dict` / `from_dict` using `circuitsim.wiring.serializer` schema v2 + v1 auto-migration).
+- [ ] `C3` (`todo`): `5.3` — View & zoom stability regression tests.
+- [ ] `C4` (`todo`): `5.4` — Paint safety & theme palette regression tests for new `WireItem` & junction dot rendering.
+- [ ] `C5` (`todo`): `5.5` — Full regression & cleanup of old tests (documenting any replaced geometric-wire test in `PROGRESS.md`).
+- [ ] `C6` (`todo`): `6.1` — Documentation & `PROGRESS.md` update.
+- [ ] `GATE C` (`todo`): Full test suite + tag `checkpoint/C-done`.
+
+### PART D — WIRE REDESIGN STEP 4B (branch `wire-redesign`)
+- [ ] `D1` (`todo`): Split-on-drop (dropping component pin onto wire segment or wire endpoint onto component pin splits wire at junction in one undo macro).
+- [ ] `D2` (`todo`): Explicit `J` key junction placement at snapped cursor on wire segment.
+- [ ] `D3` (`todo`): Junction dragging (`MoveJunctionCommand(junction_id, old_pos, new_pos)`).
+- [ ] `D4` (`todo`): Copy/paste of selections containing components, wires, and junctions (`Ctrl+C` / `Ctrl+V`).
+- [ ] `D5` (`todo`): Remove dead old wire routing/endpoint code listed in `OLD CODE MAP`.
+- [ ] `GATE D` (`todo`): Full test suite + `python -m pytest -q` + tag `checkpoint/D-done`.
+
 ## HYDROGEN QUEUE (Last Commit: phase-3)
 ### Phase 0: Verify
 - [x] Verify branch `main`, clean status, full suite baseline (`290 passed in 28.08s`), check prior work - *done*
