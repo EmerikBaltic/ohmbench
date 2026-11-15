@@ -18,7 +18,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from enum import Enum
 import time
-from typing import TYPE_CHECKING, Iterable, Protocol, Sequence
+from typing import TYPE_CHECKING, Callable, Iterable, Protocol, Sequence
 
 if TYPE_CHECKING:
     from circuitsim.canvas.connectivity import (
@@ -184,6 +184,7 @@ class SimulationSpeed(str, Enum):
     REAL_TIME = "1x"
     SLOW_MOTION = "0.1x"
     FAST = "10x"
+    AS_FAST_AS_POSSIBLE = "max"
 
     @property
     def multiplier(self) -> float:
@@ -191,6 +192,8 @@ class SimulationSpeed(str, Enum):
             return 0.1
         if self == SimulationSpeed.FAST:
             return 10.0
+        if self == SimulationSpeed.AS_FAST_AS_POSSIBLE:
+            return 1000.0
         return 1.0
 
 
@@ -252,6 +255,7 @@ class SimulationFrame:
     node_voltages: dict[str, float] = field(default_factory=dict)
     components: dict[str, ComponentTelemetry] = field(default_factory=dict)
     diagnostics: tuple[ProblemDiagnostic, ...] = ()
+    overflow: bool = False
 
 
 def format_component_canvas_text(comp: Component) -> str:
@@ -315,6 +319,7 @@ class SimulationSession:
         *,
         connectivity: ConnectivityResult | None = None,
         default_dt: float | None = None,
+        clock: Callable[[], float] | None = None,
     ) -> None:
         self._connectivity: ConnectivityResult | None = connectivity
         self.circuit: Circuit = (
@@ -325,12 +330,16 @@ class SimulationSession:
         self.solver: MNASolver = MNASolver(self.circuit)
         self.state: SimulationState = SimulationState.STOPPED
         self.speed: SimulationSpeed = SimulationSpeed.REAL_TIME
+        self._clock: Callable[[], float] = clock if clock is not None else time.perf_counter
+        self._scope_timebase_s_per_div: float | None = None
+        self._scope_points_per_div: int = 100
         self._dt: float = (
             default_dt
             if (default_dt is not None and default_dt > 0.0)
             else self._compute_step_dt()
         )
         self._last_speed_ratio: float = 0.0
+        self._last_overflow: bool = False
         self._active_diagnostics: list[ProblemDiagnostic] = []
         self._latched_warnings: dict[tuple[str, tuple[str, ...]], CircuitWarning] = {}
 
@@ -377,14 +386,54 @@ class SimulationSession:
     def dt(self) -> float:
         return self._dt
 
+    @property
+    def overflow(self) -> bool:
+        return self._last_overflow
+
+    def set_timebase(
+        self,
+        seconds_per_div: float | None,
+        *,
+        points_per_div: int = 100,
+    ) -> float:
+        """Couple solver dt to the scope timebase without resetting solver state."""
+        if points_per_div < 1:
+            raise ValueError(f"points_per_div must be >= 1, got {points_per_div!r}")
+        if seconds_per_div is None:
+            self._scope_timebase_s_per_div = None
+            self._scope_points_per_div = int(points_per_div)
+        else:
+            from circuitsim.scope.timebase import TimebaseConfig
+
+            cfg = TimebaseConfig(
+                seconds_per_div=float(seconds_per_div),
+                points_per_div=int(points_per_div),
+            )
+            self._scope_timebase_s_per_div = cfg.seconds_per_div
+            self._scope_points_per_div = cfg.points_per_div
+        self._dt = self._compute_step_dt()
+        return self._dt
+
     def _compute_step_dt(self) -> float:
         if not self.circuit.components:
+            if self._scope_timebase_s_per_div is not None:
+                return self._scope_timebase_s_per_div / self._scope_points_per_div
             return 1e-4
         try:
             chosen = self.solver.choose_default_dt(0.02)
+            if self._scope_timebase_s_per_div is not None:
+                from circuitsim.scope.timebase import compute_coupled_solver_dt
+
+                return compute_coupled_solver_dt(
+                    self._scope_timebase_s_per_div,
+                    min(chosen, 2e-4),
+                    points_per_div=self._scope_points_per_div,
+                )
             # Clamp default real-time step between 1 us and 200 us for smooth interactive stepping
             return min(max(chosen, 1e-6), 2e-4)
         except Exception:
+            if self._scope_timebase_s_per_div is not None:
+                return self._scope_timebase_s_per_div / self._scope_points_per_div
             return 5e-5
 
     def _components_and_wires_for_node(
@@ -659,6 +708,7 @@ class SimulationSession:
                 )
                 node_v = res_step.node_voltages
             self.state = SimulationState.RUNNING
+            self._last_overflow = False
             self._last_speed_ratio = self.speed.multiplier
             return self.build_frame(node_voltages=node_v)
         except CircuitError as exc:
@@ -680,46 +730,101 @@ class SimulationSession:
         self.solver.reset_transient()
         self.circuit.reset_state()
         self._last_speed_ratio = 0.0
+        self._last_overflow = False
         self._active_diagnostics.clear()
         self._latched_warnings.clear()
         return self.build_frame()
 
-    def step_chunk(
+    def _run_step_loop(
         self,
-        steps: int = 10,
-        dt: float | None = None,
+        max_steps: int | None,
+        step_dt: float,
+        *,
+        max_wall_budget_s: float | None = None,
+        mark_overflow_on_budget: bool = False,
     ) -> SimulationFrame:
-        """Advance the transient solver by `steps` time steps and return a `SimulationFrame`."""
         if self.state != SimulationState.RUNNING:
             frame = self.start()
             if self.state != SimulationState.RUNNING:
                 return frame
 
-        step_dt = dt if (dt is not None and dt > 0.0) else self._dt
-        n_steps = max(1, int(steps))
-        t_wall_start = time.perf_counter()
-
+        t_wall_start = self._clock()
         last_node_voltages: dict[str, float] = {}
         collected_warnings: list[CircuitWarning] = []
+        steps_done = 0
 
         try:
-            for _ in range(n_steps):
+            while True:
                 res = self.solver.step_transient(step_dt)
                 last_node_voltages = res.node_voltages
                 if res.warnings:
                     collected_warnings.extend(res.warnings)
+                steps_done += 1
+                if max_steps is not None and steps_done >= max_steps:
+                    break
+                if (
+                    max_wall_budget_s is not None
+                    and (self._clock() - t_wall_start) >= max_wall_budget_s
+                ):
+                    break
         except CircuitError as exc:
             self.state = SimulationState.ERROR
+            self._last_overflow = False
             self._active_diagnostics = [self._convert_error_to_diagnostic(exc)]
             return self.build_frame()
 
-        t_wall_elapsed = max(1e-9, time.perf_counter() - t_wall_start)
-        sim_advanced = n_steps * step_dt
+        t_wall_elapsed = max(1e-9, self._clock() - t_wall_start)
+        sim_advanced = steps_done * step_dt
         self._last_speed_ratio = sim_advanced / t_wall_elapsed
+        self._last_overflow = bool(
+            mark_overflow_on_budget and max_steps is not None and steps_done < max_steps
+        )
         self._active_diagnostics = self._collect_warnings_diagnostics(
             collected_warnings
         )
         return self.build_frame(node_voltages=last_node_voltages)
+
+    def step_chunk(
+        self,
+        steps: int = 10,
+        dt: float | None = None,
+        *,
+        max_wall_budget_s: float | None = None,
+    ) -> SimulationFrame:
+        """Advance the transient solver by `steps` time steps and return a `SimulationFrame`."""
+        step_dt = dt if (dt is not None and dt > 0.0) else self._dt
+        n_steps = max(1, int(steps))
+        return self._run_step_loop(
+            n_steps,
+            step_dt,
+            max_wall_budget_s=max_wall_budget_s,
+            mark_overflow_on_budget=max_wall_budget_s is not None,
+        )
+
+    def step_for_wall_elapsed(
+        self,
+        wall_dt: float,
+        *,
+        max_wall_budget_s: float = 0.02,
+        dt: float | None = None,
+    ) -> SimulationFrame:
+        """Advance simulated time according to `self.speed` without blocking past `max_wall_budget_s`."""
+        step_dt = dt if (dt is not None and dt > 0.0) else self._dt
+        if self.speed == SimulationSpeed.AS_FAST_AS_POSSIBLE:
+            return self._run_step_loop(
+                None,
+                step_dt,
+                max_wall_budget_s=max_wall_budget_s,
+                mark_overflow_on_budget=False,
+            )
+        target_sim = max(0.0, float(wall_dt)) * self.speed.multiplier
+        target_steps = max(1, int(round(target_sim / step_dt)))
+        return self._run_step_loop(
+            target_steps,
+            step_dt,
+            max_wall_budget_s=max_wall_budget_s,
+            mark_overflow_on_budget=True,
+        )
 
     def toggle_switch(self, switch_name: str) -> SimulationFrame:
         """Toggle a `Switch` by name and immediately update the simulation if active."""
@@ -840,4 +945,5 @@ class SimulationSession:
             node_voltages=dict(node_voltages) if node_voltages else {},
             components=comp_map,
             diagnostics=tuple(self._active_diagnostics),
+            overflow=self._last_overflow,
         )

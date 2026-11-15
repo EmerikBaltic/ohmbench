@@ -446,8 +446,8 @@ When ready to perform Stage 2 (internal/package rename after Stage 1 settles):
 
 | Item | Description | Status | Commit |
 | --- | --- | --- | --- |
-| 1 | Orientation, step-rate benchmarks & design note | `[x]` | pending |
-| 2 | Decoupled simulation time, `SimulationSpeed.AS_FAST_AS_POSSIBLE` & step coupling (`timebase.py`, `simulation_session.py`) | `[ ]` | - |
+| 1 | Orientation, step-rate benchmarks & design note | `[x]` | `b41cab4` |
+| 2 | Decoupled simulation time, `SimulationSpeed.AS_FAST_AS_POSSIBLE` & step coupling (`timebase.py`, `simulation_session.py`) | `[x]` | pending |
 | 3 | Qt-free sample sink, immutable `SampleBlock` & vectorized `RingBuffer` (`capture.py`, `simulation_session.py`) | `[ ]` | - |
 | 4 | Vectorized trigger engine (`trigger.py`) | `[ ]` | - |
 | 5 | 4-channel vertical scaling, 1x/10x probe & DC/AC/GND coupling (`channels.py`) | `[ ]` | - |
