@@ -453,8 +453,8 @@ When ready to perform Stage 2 (internal/package rename after Stage 1 settles):
 | 5 | 4-channel vertical scaling, 1x/10x probe & DC/AC/GND coupling (`channels.py`) | `[x]` | `c652bcf` |
 | 6 | Automated waveform measurements & phase lag (`measurements.py`) | `[x]` | `bc4024c` |
 | 7 | Math traces (`CH1-CH2`, `CH1+CH2`, `CH1*CH2`), periodic-Hann FFT, XY & cursors (`math_fft.py`) | `[x]` | `80ea01c` |
-| 8 | `ScopeCore` state machine, Roll mode, Single & Auto Set (`core.py`, `__init__.py`) | `[x]` | pending |
-| 9 | Comprehensive Qt-free analytical & circuit test suite (`tests/test_scope_core.py`) | `[ ]` | - |
+| 8 | `ScopeCore` state machine, Roll mode, Single & Auto Set (`core.py`, `__init__.py`) | `[x]` | `3fd9cde` |
+| 9 | Comprehensive Qt-free analytical & circuit test suite (`tests/test_scope_core.py`) | `[x]` | pending |
 | 10 | Offscreen Qt waveform debug tool & PNG exports (`tools/scope_demo.py`, `docs/design/scope_*.png`) | `[ ]` | - |
 | 11 | Performance benchmarks, sink overhead (<5%) & UI responsiveness check (`tests/test_scope_performance.py`) | `[ ]` | - |
 | 12 | Scope core API & Next-Chat UI requirements in `PROGRESS.md` | `[ ]` | - |
