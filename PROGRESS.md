@@ -521,5 +521,8 @@ When ready to perform Stage 2 (internal/package rename after Stage 1 settles):
   1. **UI Chat 1 (Canvas Symbol + Connectivity + Modeless Bench Window Skeleton + Graticule Canvas)**: `oscilloscope` part & IEC SVG/JSON, palette category (`Instruments`), `.circ` save/load, live net binding into `ScopeCore`, modeless `OscilloscopeDialog`, dark 10x8 `QPainter` display + offscreen render tests in both themes.
   2. **UI Chat 2 (Controls, Cursors, Math/FFT/XY Views & CSV/PNG Export)**: Interactive controls wired to `ScopeCore` + `SimulationWorkerController.set_timebase`, drag cursors, measurements panel, FFT/XY mode toggle, Save CSV / Export PNG, and end-to-end Qt GUI workflow tests.
 
+## KNOWN ISSUES / FIXED
+- **Plain `pytest` collection error on `tests/test_app_info.py` (`ModuleNotFoundError: No module named 'tests'`)**: **Cause**: `[tool.pytest.ini_options]` in `pyproject.toml` only listed `pythonpath = ["src"]`, omitting the project root `.` when invoked as `pytest` rather than `python -m pytest`. **Fix**: Updated `pythonpath = [".", "src"]` in `pyproject.toml` so both `pytest` and `python -m pytest` resolve `tests.conftest` consistently.
+
 
 
