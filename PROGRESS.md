@@ -451,8 +451,8 @@ When ready to perform Stage 2 (internal/package rename after Stage 1 settles):
 | 3 | Qt-free sample sink, immutable `SampleBlock` & vectorized `RingBuffer` (`capture.py`, `simulation_session.py`) | `[x]` | `ba653aa` |
 | 4 | Vectorized trigger engine (`trigger.py`) | `[x]` | `ec2c624` |
 | 5 | 4-channel vertical scaling, 1x/10x probe & DC/AC/GND coupling (`channels.py`) | `[x]` | `c652bcf` |
-| 6 | Automated waveform measurements & phase lag (`measurements.py`) | `[x]` | pending |
-| 7 | Math traces (`CH1-CH2`, `CH1+CH2`, `CH1*CH2`), periodic-Hann FFT, XY & cursors (`math_fft.py`) | `[ ]` | - |
+| 6 | Automated waveform measurements & phase lag (`measurements.py`) | `[x]` | `bc4024c` |
+| 7 | Math traces (`CH1-CH2`, `CH1+CH2`, `CH1*CH2`), periodic-Hann FFT, XY & cursors (`math_fft.py`) | `[x]` | pending |
 | 8 | `ScopeCore` state machine, Roll mode, Single & Auto Set (`core.py`, `__init__.py`) | `[ ]` | - |
 | 9 | Comprehensive Qt-free analytical & circuit test suite (`tests/test_scope_core.py`) | `[ ]` | - |
 | 10 | Offscreen Qt waveform debug tool & PNG exports (`tools/scope_demo.py`, `docs/design/scope_*.png`) | `[ ]` | - |
