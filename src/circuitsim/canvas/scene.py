@@ -125,6 +125,7 @@ class CircuitScene(QGraphicsScene):
         self._wire_graph: WireGraph = WireGraph()
         self._wire_items_by_id: dict[str, WireItem] = {}
         self._junction_items_by_id: dict[str, JunctionItem] = {}
+        self._pin_to_pin_bonds: list[tuple[ComponentItem, str, ComponentItem, str]] = []
         self._explicit_junctions: set[PointPx] = set()
         self._active_junction_dots: set[PointPx] = set()
 
@@ -143,6 +144,7 @@ class CircuitScene(QGraphicsScene):
         self._move_start_positions: dict[ComponentItem, tuple[float, float]] = {}
         self._move_start_terminals: dict[str, dict[str, PointPx]] = {}
         self._move_start_wires: dict[WireItem, tuple[PointPx, ...]] = {}
+        self._move_start_graph: WireGraph = self._wire_graph
 
         # Internal clipboard for Copy / Cut / Paste
         self._clipboard: _ClipboardData | None = None
@@ -668,8 +670,25 @@ class CircuitScene(QGraphicsScene):
         if flipped_h:
             item.set_flipped_h(flipped_h)
 
+        self._record_pin_to_pin_bonds_for(item, self._placed_items)
         self.undo_stack.push(AddComponentCommand(self, item))
         return item
+
+    def _record_pin_to_pin_bonds_for(
+        self,
+        item: ComponentItem,
+        against: Sequence[ComponentItem],
+    ) -> None:
+        """Record initial co-located pin contacts created at placement or legacy load."""
+        item_terms = item.terminal_scene_positions_px()
+        for other in against:
+            if other is item:
+                continue
+            other_terms = other.terminal_scene_positions_px()
+            for t_a, pt_a in item_terms.items():
+                for t_b, pt_b in other_terms.items():
+                    if pt_a == pt_b:
+                        self._pin_to_pin_bonds.append((item, t_a, other, t_b))
 
     # ------------------------------------------------------------------
     # Wiring, Terminal Hit-Testing, Live Wire Preview & Junction Dots
@@ -1082,6 +1101,39 @@ class CircuitScene(QGraphicsScene):
     # Component Move Tracking, Rotate, Flip, Delete, Copy/Cut/Paste
     # ------------------------------------------------------------------
 
+    def _update_graph_for_transformed_components(
+        self,
+        graph: WireGraph,
+        comp_names: set[str],
+        *,
+        uniform_delta: tuple[int, int] | None = None,
+    ) -> WireGraph:
+        """Clear stale hints on wires incident to transformed components (or translate rigid moves)."""
+        if not comp_names:
+            return graph
+        new_wires: list[Wire] = []
+        changed = False
+        for w in graph.wires:
+            if not w.hints:
+                new_wires.append(w)
+                continue
+            a_hit = isinstance(w.end_a, TerminalRef) and w.end_a.component in comp_names
+            b_hit = isinstance(w.end_b, TerminalRef) and w.end_b.component in comp_names
+            if uniform_delta is not None and a_hit and b_hit:
+                dx_i, dy_i = uniform_delta
+                shifted_hints = tuple((hx + dx_i, hy + dy_i) for hx, hy in w.hints)
+                if shifted_hints != w.hints:
+                    changed = True
+                new_wires.append(Wire(w.id, w.end_a, w.end_b, shifted_hints))
+            elif a_hit or b_hit:
+                changed = True
+                new_wires.append(Wire(w.id, w.end_a, w.end_b, ()))
+            else:
+                new_wires.append(w)
+        if not changed:
+            return graph
+        return WireGraph(wires=tuple(new_wires), junctions=graph.junctions)
+
     def begin_component_move_tracking(self) -> None:
         """Snapshot component positions, terminal positions, and wire polylines before drag."""
         self._move_tracking_active = True
@@ -1093,12 +1145,40 @@ class CircuitScene(QGraphicsScene):
         self._move_start_wires = {
             wire: wire.points for wire in self._wire_items
         }
+        self._move_start_graph = self._wire_graph
+
+    def _moved_graph_from_drag_start(
+        self,
+        moved_items: Sequence[tuple[ComponentItem, tuple[float, float], tuple[float, float]]],
+    ) -> WireGraph:
+        if not moved_items:
+            return self._move_start_graph
+        deltas = {
+            (
+                int(round(new_pos[0] - old_pos[0])),
+                int(round(new_pos[1] - old_pos[1])),
+            )
+            for _item, old_pos, new_pos in moved_items
+        }
+        uniform_delta = next(iter(deltas)) if len(deltas) == 1 else None
+        moved_names = {item.component.name for item, _o, _n in moved_items}
+        return self._update_graph_for_transformed_components(
+            self._move_start_graph,
+            moved_names,
+            uniform_delta=uniform_delta,
+        )
 
     def on_component_position_changed(self, item: ComponentItem) -> None:
         """Re-route wires attached to moved components in real time during mouse drag."""
         _ = item
         if self._suppress_live_reroute or not self._move_tracking_active:
             return
+        moved_items = [
+            (comp, old_pos, (comp.pos().x(), comp.pos().y()))
+            for comp, old_pos in self._move_start_positions.items()
+            if (comp.pos().x(), comp.pos().y()) != old_pos
+        ]
+        self._wire_graph = self._moved_graph_from_drag_start(moved_items)
         self._sync_graphics_from_wire_graph()
         self.refresh_connectivity_visuals()
 
@@ -1110,14 +1190,22 @@ class CircuitScene(QGraphicsScene):
 
         moved_old: dict[ComponentItem, tuple[float, float]] = {}
         moved_new: dict[ComponentItem, tuple[float, float]] = {}
+        moved_items: list[tuple[ComponentItem, tuple[float, float], tuple[float, float]]] = []
         for item, old_pos in self._move_start_positions.items():
             cur_pos = (item.pos().x(), item.pos().y())
             if cur_pos != old_pos:
                 moved_old[item] = old_pos
                 moved_new[item] = cur_pos
+                moved_items.append((item, old_pos, cur_pos))
 
         if not moved_new:
+            self._wire_graph = self._move_start_graph
             return False
+
+        target_graph = self._moved_graph_from_drag_start(moved_items)
+        if target_graph != self._wire_graph:
+            self._wire_graph = target_graph
+            self._sync_graphics_from_wire_graph()
 
         old_wires: dict[WireItem, tuple[PointPx, ...]] = {}
         new_wires: dict[WireItem, tuple[PointPx, ...]] = {}
@@ -1133,7 +1221,7 @@ class CircuitScene(QGraphicsScene):
                 moved_new,
                 old_wires,
                 new_wires,
-                old_graph=self._wire_graph,
+                old_graph=self._move_start_graph,
                 new_graph=self._wire_graph,
             )
         )
@@ -1171,6 +1259,21 @@ class CircuitScene(QGraphicsScene):
         if not new_positions:
             return False
 
+        old_graph = self._wire_graph
+        deltas = {
+            (
+                int(round(new_positions[it][0] - old_positions[it][0])),
+                int(round(new_positions[it][1] - old_positions[it][1])),
+            )
+            for it in new_positions
+        }
+        uniform_delta = next(iter(deltas)) if len(deltas) == 1 else None
+        new_graph = self._update_graph_for_transformed_components(
+            old_graph,
+            {it.component.name for it in new_positions},
+            uniform_delta=uniform_delta,
+        )
+        self._wire_graph = new_graph
         self._sync_graphics_from_wire_graph()
         old_wires: dict[WireItem, tuple[PointPx, ...]] = {}
         new_wires: dict[WireItem, tuple[PointPx, ...]] = {}
@@ -1187,8 +1290,8 @@ class CircuitScene(QGraphicsScene):
                 new_positions,
                 old_wires,
                 new_wires,
-                old_graph=self._wire_graph,
-                new_graph=self._wire_graph,
+                old_graph=old_graph,
+                new_graph=new_graph,
                 mergeable=merge,
             )
         )
@@ -1209,6 +1312,11 @@ class CircuitScene(QGraphicsScene):
         for it, deg in new_rotations.items():
             it.set_rotation_deg(deg)
 
+        old_graph = self._wire_graph
+        new_graph = self._update_graph_for_transformed_components(
+            old_graph, {it.component.name for it in selected}
+        )
+        self._wire_graph = new_graph
         self._sync_graphics_from_wire_graph()
         old_wires: dict[WireItem, tuple[PointPx, ...]] = {}
         new_wires: dict[WireItem, tuple[PointPx, ...]] = {}
@@ -1226,8 +1334,8 @@ class CircuitScene(QGraphicsScene):
                 new_rotations,
                 old_wires,
                 new_wires,
-                old_graph=self._wire_graph,
-                new_graph=self._wire_graph,
+                old_graph=old_graph,
+                new_graph=new_graph,
             )
         )
         return True
@@ -1247,6 +1355,11 @@ class CircuitScene(QGraphicsScene):
         for it, flipped in new_flips.items():
             it.set_flipped_h(flipped)
 
+        old_graph = self._wire_graph
+        new_graph = self._update_graph_for_transformed_components(
+            old_graph, {it.component.name for it in selected}
+        )
+        self._wire_graph = new_graph
         self._sync_graphics_from_wire_graph()
         old_wires: dict[WireItem, tuple[PointPx, ...]] = {}
         new_wires: dict[WireItem, tuple[PointPx, ...]] = {}
@@ -1264,21 +1377,24 @@ class CircuitScene(QGraphicsScene):
                 new_flips,
                 old_wires,
                 new_wires,
-                old_graph=self._wire_graph,
-                new_graph=self._wire_graph,
+                old_graph=old_graph,
+                new_graph=new_graph,
             )
         )
         return True
 
     def delete_selected(self, *, description: str = "Delete Selection") -> bool:
-        """Delete selected components and wires (plus all wires attached to deleted components)."""
+        """Delete selected components, wires, and junctions (plus wires attached to deleted components)."""
         selected_comps = [
             it for it in self.selectedItems() if isinstance(it, ComponentItem)
         ]
         selected_wires = [
             it for it in self.selectedItems() if isinstance(it, WireItem)
         ]
-        if not selected_comps and not selected_wires:
+        selected_junctions = [
+            it for it in self.selectedItems() if isinstance(it, JunctionItem)
+        ]
+        if not selected_comps and not selected_wires and not selected_junctions:
             return False
 
         old_graph = self._wire_graph
@@ -1288,6 +1404,9 @@ class CircuitScene(QGraphicsScene):
         for w in selected_wires:
             if new_graph.has_wire(w.wire_id):
                 new_graph = new_graph.remove_wire(w.wire_id)
+        for jitem in selected_junctions:
+            if jitem.junction_id and new_graph.has_junction(jitem.junction_id):
+                new_graph = new_graph.remove_junction(jitem.junction_id)
 
         remaining_ids = {w.id for w in new_graph.wires}
         wires_to_delete = [w for w in self._wire_items if w.wire_id not in remaining_ids]
@@ -1446,37 +1565,42 @@ class CircuitScene(QGraphicsScene):
         components = [item.component for item in self._placed_items]
         effective_graph = self._wire_graph
 
-        # Preserve pin-to-pin contact where co-located terminals share the exact same pixel.
-        pos_groups: dict[PointPx, list[TerminalRef]] = {}
-        for item in self._placed_items:
-            cname = item.component.name
-            for tname, tpt in item.terminal_scene_positions_px().items():
-                pos_groups.setdefault(tpt, []).append(TerminalRef(cname, tname))
-
+        # Preserve pin-to-pin contact recorded when co-located components were placed/loaded.
+        placed_by_id = {id(item): item for item in self._placed_items}
+        term_pos_by_id = {
+            id(item): item.terminal_scene_positions_px()
+            for item in self._placed_items
+        }
         existing_pairs: set[frozenset[Attachment]] = {
             frozenset((w.end_a, w.end_b)) for w in effective_graph.wires
         }
         bond_idx = 0
-        for pt in sorted(pos_groups):
-            refs = pos_groups[pt]
-            if len(refs) < 2:
+        for item_a, term_a, item_b, term_b in self._pin_to_pin_bonds:
+            if (
+                placed_by_id.get(id(item_a)) is not item_a
+                or placed_by_id.get(id(item_b)) is not item_b
+            ):
                 continue
-            primary = refs[0]
-            for other in refs[1:]:
-                if other == primary:
-                    continue
-                pair = frozenset((primary, other))
-                if pair in existing_pairs:
-                    continue
-                existing_pairs.add(pair)
-                while True:
-                    bond_idx += 1
-                    bid = f"__pin_bond_{bond_idx}"
-                    if not effective_graph.has_wire(bid):
-                        break
-                effective_graph = effective_graph.add_wire(
-                    primary, other, wire_id=bid
-                )
+            pt_a = term_pos_by_id[id(item_a)].get(term_a)
+            pt_b = term_pos_by_id[id(item_b)].get(term_b)
+            if pt_a is None or pt_a != pt_b:
+                continue
+            ref_a = TerminalRef(item_a.component.name, term_a)
+            ref_b = TerminalRef(item_b.component.name, term_b)
+            if ref_a == ref_b:
+                continue
+            pair = frozenset((ref_a, ref_b))
+            if pair in existing_pairs:
+                continue
+            existing_pairs.add(pair)
+            while True:
+                bond_idx += 1
+                bid = f"__pin_bond_{bond_idx}"
+                if not effective_graph.has_wire(bid):
+                    break
+            effective_graph = effective_graph.add_wire(
+                ref_a, ref_b, wire_id=bid
+            )
 
         wnet = wiring_build_circuit(
             effective_graph,
@@ -1740,11 +1864,13 @@ class CircuitScene(QGraphicsScene):
         self._wire_items = []
         self._wire_items_by_id = {}
         self._placed_items = []
+        self._pin_to_pin_bonds.clear()
         self._counters.clear()
         self._explicit_junctions = set()
-        for item in new_items:
+        for idx, item in enumerate(new_items):
             self._placed_items.append(item)
             self.addItem(item)
+            self._record_pin_to_pin_bonds_for(item, new_items[:idx])
 
         self._wire_counter = 0
         self._wire_graph = migrated_v2.graph
@@ -1771,6 +1897,7 @@ class CircuitScene(QGraphicsScene):
         self._wire_items_by_id.clear()
         self._wire_graph = WireGraph()
         self._placed_items.clear()
+        self._pin_to_pin_bonds.clear()
         self._explicit_junctions.clear()
         self._active_junction_dots.clear()
         self._counters.clear()

@@ -764,19 +764,16 @@ class SimulationSession:
         # Report any wires with an open FreeEnd termination as a non-blocking amber warning
         if self._connectivity is not None:
             open_ids = getattr(self._connectivity, "open_wire_ids", ())
-            if open_ids:
-                ids_tuple = tuple(open_ids)
-                joined = ", ".join(ids_tuple)
+            for wid in open_ids:
                 diags.append(
                     ProblemDiagnostic(
                         code="open_wire",
                         severity="warning",
                         message=DiagnosticMessage(
-                            f"Open wire end ({joined}): one end is not connected to a terminal or junction; "
-                            "attach it to a terminal/junction or delete the wire",
-                            f"Open wire end ({joined})",
+                            f"{wid} has an unconnected end: attach it to a terminal/junction or delete the wire",
+                            f"{wid} has an unconnected end",
                         ),
-                        wire_ids=ids_tuple,
+                        wire_ids=(wid,),
                     )
                 )
         return diags

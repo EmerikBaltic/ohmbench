@@ -314,6 +314,7 @@ class JunctionItem(QGraphicsObject):
         self.junction_id: str | None = junction_id
         self._paint_error_logged: bool = False
         self.setZValue(6.0)
+        self.setFlags(QGraphicsItem.GraphicsItemFlag.ItemIsSelectable)
 
     def set_theme(self, theme: ThemeMode | str) -> None:
         """Update theme color and repaint."""
@@ -321,7 +322,7 @@ class JunctionItem(QGraphicsObject):
         self.update()
 
     def boundingRect(self) -> QRectF:
-        return QRectF(-6.0, -6.0, 12.0, 12.0)
+        return QRectF(-7.0, -7.0, 14.0, 14.0)
 
     def paint(
         self,
@@ -369,6 +370,10 @@ class JunctionItem(QGraphicsObject):
         _ = (option, widget)
         palette = get_theme_palette(self.theme)
         painter.save()
+        if self.isSelected():
+            painter.setPen(QPen(QColor(palette.selection_accent), 1.5))
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            painter.drawEllipse(QPointF(0.0, 0.0), 5.8, 5.8)
         junc_color = QColor(palette.symbol_stroke)
         painter.setPen(QPen(junc_color, 1.2))
         painter.setBrush(QBrush(junc_color))
