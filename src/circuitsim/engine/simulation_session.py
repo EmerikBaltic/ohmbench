@@ -18,7 +18,9 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from enum import Enum
 import time
-from typing import TYPE_CHECKING, Callable, Iterable, Protocol, Sequence
+from typing import TYPE_CHECKING, Any, Callable, Iterable, Protocol, Sequence
+
+import numpy as np
 
 if TYPE_CHECKING:
     from circuitsim.canvas.connectivity import (
@@ -340,6 +342,8 @@ class SimulationSession:
         )
         self._last_speed_ratio: float = 0.0
         self._last_overflow: bool = False
+        self._scope_sinks: list[Any] = []
+        self._has_scope_sink: bool = False
         self._active_diagnostics: list[ProblemDiagnostic] = []
         self._latched_warnings: dict[tuple[str, tuple[str, ...]], CircuitWarning] = {}
 
@@ -389,6 +393,44 @@ class SimulationSession:
     @property
     def overflow(self) -> bool:
         return self._last_overflow
+
+    def attach_scope_sink(self, sink: Any) -> None:
+        """Register a Qt-free oscilloscope sample sink (callable or ``on_sample_block``)."""
+        if sink not in self._scope_sinks:
+            self._scope_sinks.append(sink)
+        self._has_scope_sink = bool(self._scope_sinks)
+
+    def detach_scope_sink(self, sink: Any | None = None) -> None:
+        """Remove a specific scope sink, or all sinks when ``sink is None``."""
+        if sink is None:
+            self._scope_sinks.clear()
+        else:
+            self._scope_sinks = [s for s in self._scope_sinks if s is not sink]
+        self._has_scope_sink = bool(self._scope_sinks)
+
+    def _emit_scope_block(
+        self,
+        t0: float,
+        dt: float,
+        node_names: tuple[str, ...],
+        rows: list[list[float]],
+    ) -> None:
+        if not rows or not self._scope_sinks:
+            return
+        from circuitsim.scope.capture import SampleBlock
+
+        block = SampleBlock(
+            t0=t0,
+            dt=dt,
+            node_names=node_names,
+            data=np.asarray(rows, dtype=np.float64),
+        )
+        for sink in tuple(self._scope_sinks):
+            handler = getattr(sink, "on_sample_block", None)
+            if handler is not None:
+                handler(block)
+            else:
+                sink(block)
 
     def set_timebase(
         self,
@@ -710,6 +752,14 @@ class SimulationSession:
             self.state = SimulationState.RUNNING
             self._last_overflow = False
             self._last_speed_ratio = self.speed.multiplier
+            if self._has_scope_sink:
+                n_names = tuple(node_v.keys())
+                self._emit_scope_block(
+                    res_step.sim_time,
+                    self._dt,
+                    n_names,
+                    [list(node_v.values())],
+                )
             return self.build_frame(node_voltages=node_v)
         except CircuitError as exc:
             self.state = SimulationState.ERROR
@@ -752,11 +802,27 @@ class SimulationSession:
         last_node_voltages: dict[str, float] = {}
         collected_warnings: list[CircuitWarning] = []
         steps_done = 0
+        sink_active = self._has_scope_sink
+        captured_rows: list[list[float]] = []
+        captured_names: tuple[str, ...] | None = None
+        captured_keys = None
+        captured_t0 = 0.0
 
         try:
             while True:
                 res = self.solver.step_transient(step_dt)
                 last_node_voltages = res.node_voltages
+                if sink_active:
+                    if captured_names is None:
+                        captured_names = tuple(last_node_voltages.keys())
+                        captured_keys = last_node_voltages.keys()
+                        captured_t0 = res.sim_time
+                    if last_node_voltages.keys() == captured_keys:
+                        captured_rows.append(list(last_node_voltages.values()))
+                    else:
+                        captured_rows.append(
+                            [last_node_voltages.get(n, 0.0) for n in captured_names]
+                        )
                 if res.warnings:
                     collected_warnings.extend(res.warnings)
                 steps_done += 1
@@ -772,6 +838,9 @@ class SimulationSession:
             self._last_overflow = False
             self._active_diagnostics = [self._convert_error_to_diagnostic(exc)]
             return self.build_frame()
+
+        if sink_active and captured_rows and captured_names is not None:
+            self._emit_scope_block(captured_t0, step_dt, captured_names, captured_rows)
 
         t_wall_elapsed = max(1e-9, self._clock() - t_wall_start)
         sim_advanced = steps_done * step_dt
