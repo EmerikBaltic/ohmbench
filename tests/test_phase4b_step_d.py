@@ -569,3 +569,95 @@ def test_d4_copy_paste_components_wires_and_junctions_undo_redo(qapp) -> None:
     finally:
         win.circuit_scene.undo_stack.setClean()
         win.close()
+
+
+def test_d5_scene_and_commands_use_wire_graph_without_legacy_wire_helpers(qapp) -> None:
+    """D5: legacy coordinate-only helpers and command wire dicts are removed; WireGraph handles all ops."""
+    from circuitsim.canvas.commands import (
+        FlipComponentsCommand,
+        MoveComponentsCommand,
+        RotateComponentsCommand,
+    )
+
+    scene = CircuitScene(SymbolLibrary())
+    for legacy_attr in (
+        "_insert_wire_item",
+        "_remove_wire_item",
+        "_set_explicit_junction",
+        "_move_start_wires",
+        "_move_start_terminals",
+    ):
+        assert not hasattr(scene, legacy_attr)
+
+    v1 = scene.place_new_component("dc_voltage", QPointF(-160.0, 0.0), rotation_deg=90)
+    r1 = scene.place_new_component("resistor", QPointF(0.0, -80.0), rotation_deg=0)
+    r2 = scene.place_new_component("resistor", QPointF(160.0, 0.0), rotation_deg=90)
+    gnd = scene.place_new_component("ground", QPointF(-160.0, 120.0))
+
+    scene.edit_component_parameters(v1, {"dc_voltage": 12.0})
+    assert math.isclose(r1.component.resistance, 1000.0, rel_tol=1e-9)
+    scene.edit_component_parameters(r2, {"resistance": 2000.0})
+
+    r2_terms = r2.terminal_scene_positions_px()
+    r2_top_t, _ = min(r2_terms.items(), key=lambda kv: kv[1][1])
+
+    w1 = scene.add_routed_wire((-160, -40), (-40, -80), prefer_horizontal_first=False)
+    w2 = scene.add_routed_wire((40, -80), (160, -40), prefer_horizontal_first=True)
+    w3 = scene.add_routed_wire((-160, 40), (160, 40), prefer_horizontal_first=True)
+    w4 = scene.add_routed_wire((-160, 40), (-160, 100))
+    assert all(w is not None for w in (w1, w2, w3, w4))
+
+    # Hand calc: V1 = 12 V, R1 = 1 kOhm, R2 = 2 kOhm -> V_mid = 12 * 2000 / 3000 = 8.0 V.
+    conn0 = scene.extract_connectivity_result()
+    sol0 = MNASolver(conn0.circuit).solve_dc()
+    assert math.isclose(
+        sol0.node_voltages[conn0.component_nodes["R2"][r2_top_t]], 8.0, rel_tol=1e-6
+    )
+
+    assert scene.move_components_by([r1], 0.0, -40.0, merge=False) is True
+    move_cmd = scene.undo_stack.command(scene.undo_stack.index() - 1)
+    assert isinstance(move_cmd, MoveComponentsCommand)
+    assert not hasattr(move_cmd, "old_wire_points")
+    assert not hasattr(move_cmd, "new_wire_points")
+
+    scene.clearSelection()
+    r1.setSelected(True)
+    assert scene.rotate_selected() is True
+    rot_cmd = scene.undo_stack.command(scene.undo_stack.index() - 1)
+    assert isinstance(rot_cmd, RotateComponentsCommand)
+    assert not hasattr(rot_cmd, "old_wire_points")
+    assert not hasattr(rot_cmd, "new_wire_points")
+    scene.undo_stack.undo()
+
+    scene.clearSelection()
+    r1.setSelected(True)
+    assert scene.flip_selected() is True
+    flip_cmd = scene.undo_stack.command(scene.undo_stack.index() - 1)
+    assert isinstance(flip_cmd, FlipComponentsCommand)
+    assert not hasattr(flip_cmd, "old_wire_points")
+    assert not hasattr(flip_cmd, "new_wire_points")
+
+    assert scene.toggle_junction_at(QPointF(0.0, 60.0)) is True
+    assert len(scene.junction_items) == 1
+    scene.undo_stack.undo()
+    assert len(scene.junction_items) == 0
+    scene.undo_stack.redo()
+    assert len(scene.junction_items) == 1
+
+    conn1 = scene.extract_connectivity_result()
+    sol1 = MNASolver(conn1.circuit).solve_dc()
+    assert math.isclose(
+        sol1.node_voltages[conn1.component_nodes["R2"][r2_top_t]], 8.0, rel_tol=1e-6
+    )
+
+    scene.clearSelection()
+    r2.setSelected(True)
+    assert scene.delete_selected() is True
+    assert len(scene.placed_items) == 3
+    scene.undo_stack.undo()
+    assert len(scene.placed_items) == 4
+    conn2 = scene.extract_connectivity_result()
+    sol2 = MNASolver(conn2.circuit).solve_dc()
+    assert math.isclose(
+        sol2.node_voltages[conn2.component_nodes["R2"][r2_top_t]], 8.0, rel_tol=1e-6
+    )

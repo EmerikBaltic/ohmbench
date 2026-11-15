@@ -41,11 +41,8 @@ from circuitsim.canvas.connectivity import (
     PointPx,
     WireSpec,
     extract_connectivity,
-    find_wires_attached_to_components,
     normalize_point_px,
     point_on_wire,
-    reroute_wires_for_updated_terminals,
-    route_orthogonal_wire,
     simplify_orthogonal_points,
 )
 from circuitsim.canvas.symbol_geometry import GRID_PITCH_PX, snap_to_grid
@@ -173,8 +170,6 @@ class CircuitScene(QGraphicsScene):
         self._move_tracking_active: bool = False
         self._suppress_live_reroute: bool = False
         self._move_start_positions: dict[ComponentItem, tuple[float, float]] = {}
-        self._move_start_terminals: dict[str, dict[str, PointPx]] = {}
-        self._move_start_wires: dict[WireItem, tuple[PointPx, ...]] = {}
         self._move_start_graph: WireGraph = self._wire_graph
 
         # Internal clipboard for Copy / Cut / Paste
@@ -520,50 +515,6 @@ class CircuitScene(QGraphicsScene):
             self._placed_items.remove(item)
         if item.scene() is self:
             self.removeItem(item)
-        if refresh:
-            self.refresh_connectivity_visuals()
-
-    def _insert_wire_item(
-        self,
-        wire: WireItem,
-        *,
-        select: bool = False,
-        refresh: bool = True,
-    ) -> None:
-        if wire not in self._wire_items:
-            self._wire_items.append(wire)
-        if wire.scene() is not self:
-            self.addItem(wire)
-        if select:
-            wire.setSelected(True)
-        if refresh:
-            self.refresh_connectivity_visuals()
-
-    def _remove_wire_item(
-        self,
-        wire: WireItem,
-        *,
-        refresh: bool = True,
-    ) -> None:
-        if wire in self._wire_items:
-            self._wire_items.remove(wire)
-        if wire.scene() is self:
-            self.removeItem(wire)
-        if refresh:
-            self.refresh_connectivity_visuals()
-
-    def _set_explicit_junction(
-        self,
-        pt: PointPx,
-        *,
-        present: bool,
-        refresh: bool = True,
-    ) -> None:
-        norm = normalize_point_px(pt, snap=True)
-        if present:
-            self._explicit_junctions.add(norm)
-        else:
-            self._explicit_junctions.discard(norm)
         if refresh:
             self.refresh_connectivity_visuals()
 
@@ -1988,10 +1939,10 @@ class CircuitScene(QGraphicsScene):
         prefer_horizontal_first: bool = True,
     ) -> WireItem | None:
         """Route a right-angle wire between `start_px` and `end_px` and add it via `QUndoStack`."""
-        pts = route_orthogonal_wire(
-            start_px,
-            end_px,
-            prefer_horizontal_first=prefer_horizontal_first,
+        pts = wire_route(
+            wire_snap_px((float(start_px[0]), float(start_px[1]))),
+            wire_snap_px((float(end_px[0]), float(end_px[1]))),
+            start_dir=(1, 0) if prefer_horizontal_first else (0, 1),
         )
         return self.add_wire(pts)
 
@@ -2148,15 +2099,11 @@ class CircuitScene(QGraphicsScene):
         return WireGraph(wires=tuple(new_wires), junctions=graph.junctions)
 
     def begin_component_move_tracking(self) -> None:
-        """Snapshot component positions, terminal positions, and wire polylines before drag."""
+        """Snapshot component positions and `WireGraph` before drag."""
         self._move_tracking_active = True
         self._move_start_positions = {
             item: (item.pos().x(), item.pos().y())
             for item in self._placed_items
-        }
-        self._move_start_terminals = self.all_component_terminals_px()
-        self._move_start_wires = {
-            wire: wire.points for wire in self._wire_items
         }
         self._move_start_graph = self._wire_graph
 
@@ -2225,20 +2172,11 @@ class CircuitScene(QGraphicsScene):
             self._wire_graph = target_graph
             self._sync_graphics_from_wire_graph()
 
-        old_wires: dict[WireItem, tuple[PointPx, ...]] = {}
-        new_wires: dict[WireItem, tuple[PointPx, ...]] = {}
-        for wire, old_pts in self._move_start_wires.items():
-            if wire.points != old_pts:
-                old_wires[wire] = old_pts
-                new_wires[wire] = wire.points
-
         self.undo_stack.push(
             MoveComponentsCommand(
                 self,
                 moved_old,
                 moved_new,
-                old_wires,
-                new_wires,
                 old_graph=self._move_start_graph,
                 new_graph=self._wire_graph,
             )
@@ -2258,7 +2196,6 @@ class CircuitScene(QGraphicsScene):
         if not target_items:
             return False
 
-        old_wire_map = {w: w.points for w in self._wire_items}
         old_positions: dict[ComponentItem, tuple[float, float]] = {}
         new_positions: dict[ComponentItem, tuple[float, float]] = {}
 
@@ -2293,21 +2230,12 @@ class CircuitScene(QGraphicsScene):
         )
         self._wire_graph = new_graph
         self._sync_graphics_from_wire_graph()
-        old_wires: dict[WireItem, tuple[PointPx, ...]] = {}
-        new_wires: dict[WireItem, tuple[PointPx, ...]] = {}
-        for w in self._wire_items:
-            old_pts = old_wire_map.get(w, w.points)
-            if w.points != old_pts:
-                old_wires[w] = old_pts
-                new_wires[w] = w.points
 
         self.undo_stack.push(
             MoveComponentsCommand(
                 self,
                 old_positions,
                 new_positions,
-                old_wires,
-                new_wires,
                 old_graph=old_graph,
                 new_graph=new_graph,
                 mergeable=merge,
@@ -2323,7 +2251,6 @@ class CircuitScene(QGraphicsScene):
         if not selected:
             return False
 
-        old_wire_map = {w: w.points for w in self._wire_items}
         old_rotations = {it: it.rotation_deg for it in selected}
         new_rotations = {it: (it.rotation_deg + 90) % 360 for it in selected}
 
@@ -2336,13 +2263,6 @@ class CircuitScene(QGraphicsScene):
         )
         self._wire_graph = new_graph
         self._sync_graphics_from_wire_graph()
-        old_wires: dict[WireItem, tuple[PointPx, ...]] = {}
-        new_wires: dict[WireItem, tuple[PointPx, ...]] = {}
-        for w in self._wire_items:
-            old_pts = old_wire_map.get(w, w.points)
-            if w.points != old_pts:
-                old_wires[w] = old_pts
-                new_wires[w] = w.points
 
         self.undo_stack.push(
             RotateComponentsCommand(
@@ -2350,8 +2270,6 @@ class CircuitScene(QGraphicsScene):
                 selected,
                 old_rotations,
                 new_rotations,
-                old_wires,
-                new_wires,
                 old_graph=old_graph,
                 new_graph=new_graph,
             )
@@ -2366,7 +2284,6 @@ class CircuitScene(QGraphicsScene):
         if not selected:
             return False
 
-        old_wire_map = {w: w.points for w in self._wire_items}
         old_flips = {it: it.flipped_h for it in selected}
         new_flips = {it: not it.flipped_h for it in selected}
 
@@ -2379,13 +2296,6 @@ class CircuitScene(QGraphicsScene):
         )
         self._wire_graph = new_graph
         self._sync_graphics_from_wire_graph()
-        old_wires: dict[WireItem, tuple[PointPx, ...]] = {}
-        new_wires: dict[WireItem, tuple[PointPx, ...]] = {}
-        for w in self._wire_items:
-            old_pts = old_wire_map.get(w, w.points)
-            if w.points != old_pts:
-                old_wires[w] = old_pts
-                new_wires[w] = w.points
 
         self.undo_stack.push(
             FlipComponentsCommand(
@@ -2393,8 +2303,6 @@ class CircuitScene(QGraphicsScene):
                 selected,
                 old_flips,
                 new_flips,
-                old_wires,
-                new_wires,
                 old_graph=old_graph,
                 new_graph=new_graph,
             )

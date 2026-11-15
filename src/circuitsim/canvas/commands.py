@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING, Collection, Sequence
 from PySide6.QtCore import QPointF
 from PySide6.QtGui import QUndoCommand
 
-from circuitsim.canvas.connectivity import PointPx
+from circuitsim.canvas.connectivity import PointPx, normalize_point_px
 from circuitsim.components.logic_gate import LogicGate
 
 if TYPE_CHECKING:
@@ -87,29 +87,23 @@ class AddWireCommand(QUndoCommand):
         scene: CircuitScene,
         wire: WireItem,
         *,
-        old_graph: WireGraph | None = None,
-        new_graph: WireGraph | None = None,
+        old_graph: WireGraph,
+        new_graph: WireGraph,
     ) -> None:
         super().__init__(f"Add Wire {wire.wire_id}")
         self.scene: CircuitScene = scene
         self.wire: WireItem = wire
-        self.old_graph: WireGraph | None = old_graph
-        self.new_graph: WireGraph | None = new_graph
+        self.old_graph: WireGraph = old_graph
+        self.new_graph: WireGraph = new_graph
 
     def redo(self) -> None:
-        if self.new_graph is not None:
-            self.scene.set_wire_graph(
-                self.new_graph,
-                preferred_wire_items={self.wire.wire_id: self.wire},
-            )
-        else:
-            self.scene._insert_wire_item(self.wire, select=False)
+        self.scene.set_wire_graph(
+            self.new_graph,
+            preferred_wire_items={self.wire.wire_id: self.wire},
+        )
 
     def undo(self) -> None:
-        if self.old_graph is not None:
-            self.scene.set_wire_graph(self.old_graph)
-        else:
-            self.scene._remove_wire_item(self.wire)
+        self.scene.set_wire_graph(self.old_graph)
 
 
 class ToggleJunctionCommand(QUndoCommand):
@@ -121,32 +115,32 @@ class ToggleJunctionCommand(QUndoCommand):
         pt: PointPx,
         *,
         adding: bool,
-        old_graph: WireGraph | None = None,
-        new_graph: WireGraph | None = None,
+        old_graph: WireGraph,
+        new_graph: WireGraph,
     ) -> None:
         action = "Add" if adding else "Remove"
         super().__init__(f"{action} Junction at {pt}")
         self.scene: CircuitScene = scene
         self.pt: PointPx = pt
         self.adding: bool = adding
-        self.old_graph: WireGraph | None = old_graph
-        self.new_graph: WireGraph | None = new_graph
+        self.old_graph: WireGraph = old_graph
+        self.new_graph: WireGraph = new_graph
 
     def redo(self) -> None:
-        if self.new_graph is not None:
-            self.scene._set_explicit_junction(self.pt, present=self.adding, refresh=False)
-            self.scene.set_wire_graph(self.new_graph)
+        norm = normalize_point_px(self.pt, snap=True)
+        if self.adding:
+            self.scene._explicit_junctions.add(norm)
         else:
-            self.scene._set_explicit_junction(self.pt, present=self.adding)
+            self.scene._explicit_junctions.discard(norm)
+        self.scene.set_wire_graph(self.new_graph)
 
     def undo(self) -> None:
-        if self.old_graph is not None:
-            self.scene._set_explicit_junction(
-                self.pt, present=not self.adding, refresh=False
-            )
-            self.scene.set_wire_graph(self.old_graph)
+        norm = normalize_point_px(self.pt, snap=True)
+        if self.adding:
+            self.scene._explicit_junctions.discard(norm)
         else:
-            self.scene._set_explicit_junction(self.pt, present=not self.adding)
+            self.scene._explicit_junctions.add(norm)
+        self.scene.set_wire_graph(self.old_graph)
 
 
 class MoveComponentsCommand(QUndoCommand):
@@ -157,11 +151,9 @@ class MoveComponentsCommand(QUndoCommand):
         scene: CircuitScene,
         old_positions: dict[ComponentItem, tuple[float, float]],
         new_positions: dict[ComponentItem, tuple[float, float]],
-        old_wire_points: dict[WireItem, tuple[PointPx, ...]],
-        new_wire_points: dict[WireItem, tuple[PointPx, ...]],
         *,
-        old_graph: WireGraph | None = None,
-        new_graph: WireGraph | None = None,
+        old_graph: WireGraph,
+        new_graph: WireGraph,
         mergeable: bool = False,
     ) -> None:
         count = len(new_positions)
@@ -174,10 +166,8 @@ class MoveComponentsCommand(QUndoCommand):
         self.scene: CircuitScene = scene
         self.old_positions = dict(old_positions)
         self.new_positions = dict(new_positions)
-        self.old_wire_points = dict(old_wire_points)
-        self.new_wire_points = dict(new_wire_points)
-        self.old_graph: WireGraph | None = old_graph
-        self.new_graph: WireGraph | None = new_graph
+        self.old_graph: WireGraph = old_graph
+        self.new_graph: WireGraph = new_graph
         self.mergeable: bool = mergeable
 
     def id(self) -> int:
@@ -193,11 +183,7 @@ class MoveComponentsCommand(QUndoCommand):
         if set(other.new_positions.keys()) != set(self.new_positions.keys()):
             return False
         self.new_positions = dict(other.new_positions)
-        if other.new_wire_points:
-            for wire, pts in other.new_wire_points.items():
-                self.new_wire_points[wire] = pts
-        if other.new_graph is not None:
-            self.new_graph = other.new_graph
+        self.new_graph = other.new_graph
         return True
 
     def redo(self) -> None:
@@ -205,13 +191,7 @@ class MoveComponentsCommand(QUndoCommand):
         try:
             for item, (nx, ny) in self.new_positions.items():
                 item.setPos(QPointF(nx, ny))
-            if self.new_graph is not None:
-                self.scene.set_wire_graph(self.new_graph, refresh=False)
-            else:
-                self.scene._sync_graphics_from_wire_graph()
-            for wire, pts in self.new_wire_points.items():
-                if self.new_graph is None:
-                    wire.set_points(pts)
+            self.scene.set_wire_graph(self.new_graph, refresh=False)
         finally:
             self.scene._suppress_live_reroute = False
         self.scene.refresh_connectivity_visuals()
@@ -221,13 +201,7 @@ class MoveComponentsCommand(QUndoCommand):
         try:
             for item, (ox, oy) in self.old_positions.items():
                 item.setPos(QPointF(ox, oy))
-            if self.old_graph is not None:
-                self.scene.set_wire_graph(self.old_graph, refresh=False)
-            else:
-                self.scene._sync_graphics_from_wire_graph()
-            for wire, pts in self.old_wire_points.items():
-                if self.old_graph is None:
-                    wire.set_points(pts)
+            self.scene.set_wire_graph(self.old_graph, refresh=False)
         finally:
             self.scene._suppress_live_reroute = False
         self.scene.refresh_connectivity_visuals()
@@ -282,11 +256,9 @@ class RotateComponentsCommand(QUndoCommand):
         items: Sequence[ComponentItem],
         old_rotations: dict[ComponentItem, int],
         new_rotations: dict[ComponentItem, int],
-        old_wire_points: dict[WireItem, tuple[PointPx, ...]],
-        new_wire_points: dict[WireItem, tuple[PointPx, ...]],
         *,
-        old_graph: WireGraph | None = None,
-        new_graph: WireGraph | None = None,
+        old_graph: WireGraph,
+        new_graph: WireGraph,
     ) -> None:
         label = (
             f"Rotate {items[0].component.name}"
@@ -297,31 +269,19 @@ class RotateComponentsCommand(QUndoCommand):
         self.scene: CircuitScene = scene
         self.old_rotations = dict(old_rotations)
         self.new_rotations = dict(new_rotations)
-        self.old_wire_points = dict(old_wire_points)
-        self.new_wire_points = dict(new_wire_points)
-        self.old_graph: WireGraph | None = old_graph
-        self.new_graph: WireGraph | None = new_graph
+        self.old_graph: WireGraph = old_graph
+        self.new_graph: WireGraph = new_graph
 
     def redo(self) -> None:
         for item, deg in self.new_rotations.items():
             item.set_rotation_deg(deg)
-        if self.new_graph is not None:
-            self.scene.set_wire_graph(self.new_graph, refresh=False)
-        else:
-            self.scene._sync_graphics_from_wire_graph()
-            for wire, pts in self.new_wire_points.items():
-                wire.set_points(pts)
+        self.scene.set_wire_graph(self.new_graph, refresh=False)
         self.scene.refresh_connectivity_visuals()
 
     def undo(self) -> None:
         for item, deg in self.old_rotations.items():
             item.set_rotation_deg(deg)
-        if self.old_graph is not None:
-            self.scene.set_wire_graph(self.old_graph, refresh=False)
-        else:
-            self.scene._sync_graphics_from_wire_graph()
-            for wire, pts in self.old_wire_points.items():
-                wire.set_points(pts)
+        self.scene.set_wire_graph(self.old_graph, refresh=False)
         self.scene.refresh_connectivity_visuals()
 
 
@@ -334,11 +294,9 @@ class FlipComponentsCommand(QUndoCommand):
         items: Sequence[ComponentItem],
         old_flips: dict[ComponentItem, bool],
         new_flips: dict[ComponentItem, bool],
-        old_wire_points: dict[WireItem, tuple[PointPx, ...]],
-        new_wire_points: dict[WireItem, tuple[PointPx, ...]],
         *,
-        old_graph: WireGraph | None = None,
-        new_graph: WireGraph | None = None,
+        old_graph: WireGraph,
+        new_graph: WireGraph,
     ) -> None:
         label = (
             f"Flip {items[0].component.name}"
@@ -349,31 +307,19 @@ class FlipComponentsCommand(QUndoCommand):
         self.scene: CircuitScene = scene
         self.old_flips = dict(old_flips)
         self.new_flips = dict(new_flips)
-        self.old_wire_points = dict(old_wire_points)
-        self.new_wire_points = dict(new_wire_points)
-        self.old_graph: WireGraph | None = old_graph
-        self.new_graph: WireGraph | None = new_graph
+        self.old_graph: WireGraph = old_graph
+        self.new_graph: WireGraph = new_graph
 
     def redo(self) -> None:
         for item, flipped in self.new_flips.items():
             item.set_flipped_h(flipped)
-        if self.new_graph is not None:
-            self.scene.set_wire_graph(self.new_graph, refresh=False)
-        else:
-            self.scene._sync_graphics_from_wire_graph()
-            for wire, pts in self.new_wire_points.items():
-                wire.set_points(pts)
+        self.scene.set_wire_graph(self.new_graph, refresh=False)
         self.scene.refresh_connectivity_visuals()
 
     def undo(self) -> None:
         for item, flipped in self.old_flips.items():
             item.set_flipped_h(flipped)
-        if self.old_graph is not None:
-            self.scene.set_wire_graph(self.old_graph, refresh=False)
-        else:
-            self.scene._sync_graphics_from_wire_graph()
-            for wire, pts in self.old_wire_points.items():
-                wire.set_points(pts)
+        self.scene.set_wire_graph(self.old_graph, refresh=False)
         self.scene.refresh_connectivity_visuals()
 
 
@@ -387,8 +333,8 @@ class DeleteItemsCommand(QUndoCommand):
         wires: Sequence[WireItem],
         junctions: Sequence[PointPx] = (),
         *,
-        old_graph: WireGraph | None = None,
-        new_graph: WireGraph | None = None,
+        old_graph: WireGraph,
+        new_graph: WireGraph,
         description: str = "Delete Selection",
     ) -> None:
         super().__init__(description)
@@ -396,39 +342,27 @@ class DeleteItemsCommand(QUndoCommand):
         self.components: tuple[ComponentItem, ...] = tuple(components)
         self.wires: tuple[WireItem, ...] = tuple(wires)
         self.junctions: tuple[PointPx, ...] = tuple(junctions)
-        self.old_graph: WireGraph | None = old_graph
-        self.new_graph: WireGraph | None = new_graph
+        self.old_graph: WireGraph = old_graph
+        self.new_graph: WireGraph = new_graph
 
     def redo(self) -> None:
-        if self.new_graph is not None:
-            for comp in self.components:
-                self.scene._remove_component_item(comp, refresh=False)
-            for jp in self.junctions:
-                self.scene._set_explicit_junction(jp, present=False, refresh=False)
-            self.scene.set_wire_graph(self.new_graph, refresh=False)
-        else:
-            for wire in self.wires:
-                self.scene._remove_wire_item(wire, refresh=False)
-            for comp in self.components:
-                self.scene._remove_component_item(comp, refresh=False)
-            for jp in self.junctions:
-                self.scene._set_explicit_junction(jp, present=False, refresh=False)
+        for comp in self.components:
+            self.scene._remove_component_item(comp, refresh=False)
+        for jp in self.junctions:
+            self.scene._explicit_junctions.discard(normalize_point_px(jp, snap=True))
+        self.scene.set_wire_graph(self.new_graph, refresh=False)
         self.scene.refresh_connectivity_visuals()
 
     def undo(self) -> None:
         for comp in self.components:
             self.scene._insert_component_item(comp, select=False, refresh=False)
         for jp in self.junctions:
-            self.scene._set_explicit_junction(jp, present=True, refresh=False)
-        if self.old_graph is not None:
-            self.scene.set_wire_graph(
-                self.old_graph,
-                refresh=False,
-                preferred_wire_items={w.wire_id: w for w in self.wires},
-            )
-        else:
-            for wire in self.wires:
-                self.scene._insert_wire_item(wire, select=False, refresh=False)
+            self.scene._explicit_junctions.add(normalize_point_px(jp, snap=True))
+        self.scene.set_wire_graph(
+            self.old_graph,
+            refresh=False,
+            preferred_wire_items={w.wire_id: w for w in self.wires},
+        )
         self.scene.refresh_connectivity_visuals()
 
 
@@ -442,8 +376,8 @@ class PasteItemsCommand(QUndoCommand):
         wires: Sequence[WireItem],
         junctions: Sequence[PointPx] = (),
         *,
-        old_graph: WireGraph | None = None,
-        new_graph: WireGraph | None = None,
+        old_graph: WireGraph,
+        new_graph: WireGraph,
         select_junction_ids: Collection[str] = (),
     ) -> None:
         super().__init__(
@@ -453,8 +387,8 @@ class PasteItemsCommand(QUndoCommand):
         self.components: tuple[ComponentItem, ...] = tuple(components)
         self.wires: tuple[WireItem, ...] = tuple(wires)
         self.junctions: tuple[PointPx, ...] = tuple(junctions)
-        self.old_graph: WireGraph | None = old_graph
-        self.new_graph: WireGraph | None = new_graph
+        self.old_graph: WireGraph = old_graph
+        self.new_graph: WireGraph = new_graph
         self.select_junction_ids: frozenset[str] = frozenset(select_junction_ids)
 
     def redo(self) -> None:
@@ -462,33 +396,25 @@ class PasteItemsCommand(QUndoCommand):
         for comp in self.components:
             self.scene._insert_component_item(comp, select=True, refresh=False)
         for jp in self.junctions:
-            self.scene._set_explicit_junction(jp, present=True, refresh=False)
-        if self.new_graph is not None:
-            self.scene.set_wire_graph(
-                self.new_graph,
-                refresh=False,
-                preferred_wire_items={w.wire_id: w for w in self.wires},
-                select_wire_ids={w.wire_id for w in self.wires},
-            )
-            for jid in self.select_junction_ids:
-                jitem = self.scene._junction_items_by_id.get(jid)
-                if jitem is not None:
-                    jitem.setSelected(True)
-        else:
-            for wire in self.wires:
-                self.scene._insert_wire_item(wire, select=True, refresh=False)
+            self.scene._explicit_junctions.add(normalize_point_px(jp, snap=True))
+        self.scene.set_wire_graph(
+            self.new_graph,
+            refresh=False,
+            preferred_wire_items={w.wire_id: w for w in self.wires},
+            select_wire_ids={w.wire_id for w in self.wires},
+        )
+        for jid in self.select_junction_ids:
+            jitem = self.scene._junction_items_by_id.get(jid)
+            if jitem is not None:
+                jitem.setSelected(True)
         self.scene.refresh_connectivity_visuals()
 
     def undo(self) -> None:
         for comp in self.components:
             self.scene._remove_component_item(comp, refresh=False)
         for jp in self.junctions:
-            self.scene._set_explicit_junction(jp, present=False, refresh=False)
-        if self.old_graph is not None:
-            self.scene.set_wire_graph(self.old_graph, refresh=False)
-        else:
-            for wire in self.wires:
-                self.scene._remove_wire_item(wire, refresh=False)
+            self.scene._explicit_junctions.discard(normalize_point_px(jp, snap=True))
+        self.scene.set_wire_graph(self.old_graph, refresh=False)
         self.scene.refresh_connectivity_visuals()
 
 

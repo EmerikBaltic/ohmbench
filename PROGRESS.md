@@ -32,11 +32,11 @@
 - [x] `B6` (`done` `f0b29dc`, 377 fast): HYDROGEN QUEUE `4.6` — Existing features that touch wires (examples, export PNG/SVG, label collision avoidance, hover tooltips, zoom-to-fit, recent/dirty/undo).
 - [x] `GATE B` (`done` `fa985b2`, 378 full): Full test suite (`378 passed in 74.18s`) + offscreen `10 V` / `1 kΩ` / `2 kΩ` voltage divider smoke test (`6.666667 V`), tagged `checkpoint/B-done`.
 
-### OLD CODE MAP (to remove in D5)
-- `src/circuitsim/canvas/connectivity.py`: `route_orthogonal_wire`, `point_on_wire`, `point_strictly_inside_wire`, `wires_overlap_collinear`, `find_wires_attached_to_components`, `_route_wire_avoiding_body`, `reroute_wires_for_updated_terminals`, and geometric endpoint-clustering / T-junction point-on-segment pass inside `extract_connectivity`.
-- `src/circuitsim/canvas/scene.py`: legacy coordinate wire/junction storage and routing helpers (`_explicit_junctions`, `_active_junction_dots`, `_move_start_wires`, `_suppress_live_reroute`, `_insert_wire_item`, `_remove_wire_item`, `_set_explicit_junction`, `add_routed_wire`, `toggle_junction_at`) once all callers and `D1`–`D4` interactions run on `WireGraph`.
-- `src/circuitsim/canvas/wire_item.py`: legacy coordinate-only mode (`WireSpec`, `to_wire_spec()`) without `wire_id` / `Attachment` metadata.
-- `src/circuitsim/canvas/commands.py`: coordinate-only wire point dicts in `AddWireCommand`, `ToggleJunctionCommand`, `MoveComponentsCommand`, `RotateComponentsCommand`, `FlipComponentsCommand`, `DeleteItemsCommand`, `PasteItemsCommand` once replaced by `WireGraph` transitions.
+### OLD CODE MAP (cleaned in D5)
+- `src/circuitsim/canvas/connectivity.py`: Retained `WireSpec`, `route_orthogonal_wire`, `point_on_wire`, `point_strictly_inside_wire`, `find_wires_attached_to_components`, `reroute_wires_for_updated_terminals`, and `extract_connectivity` for existing unit tests (`test_circ_io.py`, `test_connectivity_and_editing.py`, `test_wire_snapping.py`, `test_rotation_and_moving_wires.py`) and legacy `.circ` v1 serializer compatibility; removed `find_wires_attached_to_components`, `reroute_wires_for_updated_terminals`, and `route_orthogonal_wire` imports from `scene.py`.
+- `src/circuitsim/canvas/scene.py`: Removed `_move_start_terminals`, `_move_start_wires`, `_insert_wire_item`, `_remove_wire_item`, `_set_explicit_junction`, and legacy `old_wire_map`/`old_wires`/`new_wires` snapshots in move/rotate/flip; rewrote `add_routed_wire` to route via `circuitsim.wiring.router.route()` and `WireGraph`. Retained `_explicit_junctions`, `_active_junction_dots`, and `_suppress_live_reroute` where actively used by `WireGraph` visibility and move-command synchronization.
+- `src/circuitsim/canvas/wire_item.py`: Retained `WireSpec` / `to_wire_spec()` for legacy `.circ` v1 serializer compatibility.
+- `src/circuitsim/canvas/commands.py`: Removed coordinate-only `else:` branches and `old_wire_points`/`new_wire_points` dicts from `AddWireCommand`, `ToggleJunctionCommand`, `MoveComponentsCommand`, `RotateComponentsCommand`, `FlipComponentsCommand`, `DeleteItemsCommand`, and `PasteItemsCommand` (requiring `WireGraph` transitions and updating explicit junction sets directly).
 
 ### PART C — WIRE REDESIGN PHASE 5 & 6 (branch `wire-redesign`)
 - [x] `C1` (`done` `70fe674`, 378 fast): HYDROGEN QUEUE `5.1` — Interactive wire drawing tool re-enabled (live preview via `route()`, `10 px` terminal/junction snap, `FreeEnd`, wire-on-wire notice, `Esc`/right-click cancel, 1 undo step).
@@ -51,9 +51,9 @@
 - [x] `D1` (`done` `95685c3`, 384 fast): Split-on-drop (dropping component onto wire splits inline or taps junction in one undo step).
 - [x] `D2` (`done` `00e4dca`, 385 fast): Explicit `J` key junction placement on wire at snapped cursor via `split_wire_at`.
 - [x] `D3` (`done` `ca399f3`, 386 fast): Junction dragging (`MoveJunctionCommand(junction_id, old_pos, new_pos)` updating `Junction.pos` and rerouting incident wires).
-- [x] `D4` (`done`, 387 fast): Copy/paste of selections containing components, wires, and junctions (`Ctrl+C` / `Ctrl+V`).
-- [ ] `D5` (`in_progress`): Remove dead old wire routing/endpoint code listed in `OLD CODE MAP`.
-- [ ] `GATE D` (`todo`): Full test suite + `python -m pytest -q` + tag `checkpoint/D-done`.
+- [x] `D4` (`done` `186ec82`, 387 fast): Copy/paste of selections containing components, wires, and junctions (`Ctrl+C` / `Ctrl+V`).
+- [x] `D5` (`done`, 388 fast): Remove dead old wire routing/endpoint code listed in `OLD CODE MAP`.
+- [ ] `GATE D` (`in_progress`): Full test suite + `python -m pytest -q` + tag `checkpoint/D-done`.
 
 ## HYDROGEN QUEUE (Last Commit: phase-3)
 ### Phase 0: Verify
