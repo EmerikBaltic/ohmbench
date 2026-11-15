@@ -456,8 +456,8 @@ When ready to perform Stage 2 (internal/package rename after Stage 1 settles):
 | 8 | `ScopeCore` state machine, Roll mode, Single & Auto Set (`core.py`, `__init__.py`) | `[x]` | `3fd9cde` |
 | 9 | Comprehensive Qt-free analytical & circuit test suite (`tests/test_scope_core.py`) | `[x]` | `5a7a78e` |
 | 10 | Offscreen Qt waveform debug tool & PNG exports (`tools/scope_demo.py`, `docs/design/scope_*.png`) | `[x]` | `849c7ea` |
-| 11 | Performance benchmarks, sink overhead (<5%) & UI responsiveness check (`tests/test_scope_performance.py`) | `[x]` | pending |
-| 12 | Scope core API & Next-Chat UI requirements in `PROGRESS.md` | `[ ]` | - |
+| 11 | Performance benchmarks, sink overhead (<5%) & UI responsiveness check (`tests/test_scope_performance.py`) | `[x]` | `d2f10be` |
+| 12 | Scope core API & Next-Chat UI requirements in `PROGRESS.md` | `[x]` | pending |
 | 13 | Student `LEARNING_NOTES.md`, final fast suite check & wrap-up | `[ ]` | - |
 
 ## OSCILLOSCOPE ORIENTATION, BENCHMARKS & DESIGN NOTE
@@ -490,5 +490,36 @@ When ready to perform Stage 2 (internal/package rename after Stage 1 settles):
   - (d) Nonlinear LED + R: `29,724` -> `28,958 steps/s` (**+2.64%** overhead)
 - **30-R ladder `MainWindow` UI responsiveness with active scope sink**: `19` timer heartbeats in `300 ms`, `avg_gap = 16.53 ms`, `max_gap = 38.65 ms` (`< 50 ms` limit).
 - **Decision**: Keep the single background `QThread` simulation worker (`SimulationWorkerController`); multiprocessing (`max_gap > 100 ms` threshold) is **not needed**.
+
+---
+
+## OSCILLOSCOPE CORE API & NEXT-CHAT UI REQUIREMENTS
+
+### 1. Public Qt-Free Scope API (`src/circuitsim/scope/`)
+- **`circuitsim.scope.ScopeCore`**: Stateful controller managing channels (`CH1`–`CH4`), `TimebaseConfig`, `TriggerConfig`, `MathConfig`, FFT, XY, cursors, and acquisition state (`ScopeRunState.RUN | STOP | SINGLE`).
+  - Configuration: `assign_probe(channel, node_name, enabled=...)`, `set_channel(name, ...)`, `set_timebase(seconds_per_div, ...)`, `set_trigger(...)`, `set_math(enabled, op, ...)`, `set_fft(channel, window="hann")`, `set_xy(enabled, ...)`, `set_cursors(channel, t1_rel, t2_rel)`.
+  - Controls: `run()`, `stop()`, `single()`, `auto_set()`, `clear()`, `bind_session(session)`, `unbind_session()`, `ingest_block(block)` (`on_sample_block`), `produce_frame() -> ScopeFrame`.
+- **Immutable Transport Types (read-only NumPy arrays, safe before/after `pickle`)**:
+  - `SampleBlock(t0, dt, node_names, data)` — 2D `(n_steps, n_nodes)` float64 snapshot (`data.flags.writeable == False`).
+  - `ScopeFrame` — contains `run_state`, `status` (`TriggerStatus`), `status_message`, `sim_time`, `t_rel`, `t_abs`, `timebase`, `trigger`, `trigger_time_s`, `trigger_edge`, `traces: dict[str, ChannelFrameTrace]` (each carrying `volts`, `volts_min`, `volts_max`, `display_div_y`, `peak_detect`, `measurements: ChannelMeasurements`), `math_trace`, `fft: FFTResult`, `xy: XYTrace`, `phase_lag_ch1_ch2_deg`, `phase_reason`, `cursors: CursorReadout`, `overflow`, `missed_frames`.
+- **Session Integration (`circuitsim.engine.simulation_session.SimulationSession`)**:
+  - `SimulationSpeed.AS_FAST_AS_POSSIBLE` (`"max"`), `SimulationSession(..., clock=...)`, `SimulationFrame.overflow`.
+  - `set_timebase(seconds_per_div, points_per_div=100) -> float`: couples solver `dt = min(dt_scope, dt_circuit)` without resetting transient state (LU rebuilds once on `dt` change).
+  - `attach_scope_sink(sink)` / `detach_scope_sink(sink)` and `step_for_wall_elapsed(wall_dt, max_wall_budget_s=...)`.
+
+### 2. Next-Chat UI & Canvas Part Requirements
+- **`wire-redesign` prerequisite status**: Already merged (`git merge-base main wire-redesign == 50d4016`), so multi-terminal net extraction, explicit nets, and `.circ` persistence are live on `main` with no pending prerequisite branch merge.
+- **4-Terminal `Oscilloscope` Schematic Part**:
+  - New component type `"oscilloscope"` (`X` or `SCOPE` prefix) with 4 passive high-impedance probe terminals `("CH1", "CH2", "CH3", "CH4")` referenced to circuit `"0"`; high input impedance (`R_in >= 10 MOhm` or passive voltage observation) so attaching probes does not load ordinary circuits.
+  - IEC Symbol (`src/circuitsim/resources/symbols/iec/oscilloscope.json` & `.svg`): **`120 x 80 px`** (`6 x 4` grid units, `#000000` strokes, `stroke-width="2"`, `fill="none"`, no `<text>`). IMPORTANT: Align all 4 left-edge pins strictly to the `20 px` grid relative to component center `(60, 40)` — e.g., `y in {0, 20, 60, 80}` (`x = 0`), avoiding half-grid `10, 30, 50, 70` offsets so wires stay 20 px grid-aligned across all 8 `(rotation, flip)` orientations.
+  - Channel Net Mapping: Map canvas pins `"CH1"`..`"CH4"` connected net names dynamically into `ScopeCore.assign_probe(ch, net_name)` when circuit connectivity updates.
+- **Oscilloscope Bench Window (Non-Modal, Never Shifts Canvas)**:
+  - Modeless floating `QDialog` / detachable window (NOT a docked widget that resizes/shifts `CircuitScene` viewport); stays synchronized while `MainWindow` edits components/switches live.
+  - Plot Widget (`QPainter`): dark `#0D1117` 10x8 graticule, fixed trace colors (`#FFD600`, `#00E5FF`, `#FF4081`, `#69F0AE`), peak-detect vertical envelope shading when `peak_detect=True`, trigger markers, interactive drag cursors, and FFT / XY / Time views.
+  - Controls: CH1–CH4 enable/scale (`1 mV`–`1 kV`)/offset/`1x-10x`/DC-AC-GND/invert, Timebase (`10 ns`–`10 s`, Roll >= `100 ms`), Trigger (`source`, `edge`, `level`, `hysteresis`, `holdoff`, `DC/AC`, `Auto/Normal/Single`), `Run/Stop`, `Single`, `Auto Set`, Math (`CH1-CH2`, `CH1+CH2`, `CH1*CH2`), Measurements table & Export CSV/PNG.
+- **Recommended Next-Chat Split**:
+  1. **UI Chat 1 (Canvas Symbol + Connectivity + Modeless Bench Window Skeleton + Graticule Canvas)**: `oscilloscope` part & IEC SVG/JSON, palette category (`Instruments`), `.circ` save/load, live net binding into `ScopeCore`, modeless `OscilloscopeDialog`, dark 10x8 `QPainter` display + offscreen render tests in both themes.
+  2. **UI Chat 2 (Controls, Cursors, Math/FFT/XY Views & CSV/PNG Export)**: Interactive controls wired to `ScopeCore` + `SimulationWorkerController.set_timebase`, drag cursors, measurements panel, FFT/XY mode toggle, Save CSV / Export PNG, and end-to-end Qt GUI workflow tests.
+
 
 
