@@ -25,6 +25,7 @@ from circuitsim.canvas.commands import (
     MoveComponentsCommand,
     PasteItemsCommand,
     RotateComponentsCommand,
+    SetWireGraphCommand,
     ToggleJunctionCommand,
 )
 from circuitsim.canvas.component_item import (
@@ -48,7 +49,7 @@ from circuitsim.canvas.connectivity import (
 )
 from circuitsim.canvas.symbol_geometry import GRID_PITCH_PX, snap_to_grid
 from circuitsim.canvas.symbol_renderer import SymbolLibrary
-from circuitsim.canvas.wire_item import WireItem
+from circuitsim.canvas.wire_item import JunctionItem, WireItem
 from circuitsim.components.base import Component
 from circuitsim.components.switch import Switch
 from circuitsim.dialogs.value_parser import format_engineering_value
@@ -58,6 +59,16 @@ from circuitsim.engine.simulation_session import (
     SimulationState,
 )
 from circuitsim.io.circ_serializer import CircuitDocument, CircuitFileError, ViewState
+from circuitsim.wiring.model import (
+    Attachment,
+    FreeEnd,
+    JunctionRef,
+    TerminalRef,
+    Wire,
+    WireGraph,
+    WireGraphError,
+    snap_px as wire_snap_px,
+)
 
 
 @dataclass(frozen=True)
@@ -104,6 +115,9 @@ class CircuitScene(QGraphicsScene):
         self._wire_counter: int = 0
         self._placed_items: list[ComponentItem] = []
         self._wire_items: list[WireItem] = []
+        self._wire_graph: WireGraph = WireGraph()
+        self._wire_items_by_id: dict[str, WireItem] = {}
+        self._junction_items_by_id: dict[str, JunctionItem] = {}
         self._explicit_junctions: set[PointPx] = set()
         self._active_junction_dots: set[PointPx] = set()
 
@@ -145,6 +159,11 @@ class CircuitScene(QGraphicsScene):
         return list(self._wire_items)
 
     @property
+    def wire_graph(self) -> WireGraph:
+        """Return the immutable `WireGraph` backing all scene wires and junctions."""
+        return self._wire_graph
+
+    @property
     def explicit_junctions(self) -> set[PointPx]:
         """Return copy of user-placed explicit junction dot coordinates."""
         return set(self._explicit_junctions)
@@ -166,6 +185,8 @@ class CircuitScene(QGraphicsScene):
             item.set_theme(theme)
         for wire in self._wire_items:
             wire.set_theme(theme)
+        for junc in self._junction_items_by_id.values():
+            junc.set_theme(theme)
         if self._ghost_item is not None:
             self. _ghost_item.set_theme(theme)
         if self._preview_wire_item is not None:
@@ -192,8 +213,140 @@ class CircuitScene(QGraphicsScene):
 
     def next_wire_id(self) -> str:
         """Generate the next sequential wire identifier ('W1', 'W2', ...)."""
-        self._wire_counter += 1
-        return f"W{self._wire_counter}"
+        while True:
+            self._wire_counter += 1
+            candidate = f"W{self._wire_counter}"
+            if not self._wire_graph.has_wire(candidate):
+                return candidate
+
+    def _terminal_pos_map(self) -> dict[tuple[str, str], PointPx]:
+        mapping: dict[tuple[str, str], PointPx] = {}
+        for item in self._placed_items:
+            cname = item.component.name
+            for tname, pt in item.terminal_scene_positions_px().items():
+                mapping[(cname, tname)] = pt
+        return mapping
+
+    def _attachment_pos_px(
+        self,
+        att: Attachment,
+        graph: WireGraph | None = None,
+        term_map: dict[tuple[str, str], PointPx] | None = None,
+    ) -> PointPx | None:
+        g = graph if graph is not None else self._wire_graph
+        if isinstance(att, TerminalRef):
+            tmap = term_map if term_map is not None else self._terminal_pos_map()
+            return tmap.get((att.component, att.terminal))
+        if isinstance(att, JunctionRef):
+            if g.has_junction(att.id):
+                return g.junction(att.id).pos
+            return None
+        if isinstance(att, FreeEnd):
+            return att.pos
+        return None
+
+    def _compute_wire_points_from_graph(
+        self,
+        wire: Wire,
+        graph: WireGraph,
+        *,
+        term_map: dict[tuple[str, str], PointPx] | None = None,
+        fallback_points: tuple[PointPx, ...] | None = None,
+    ) -> tuple[PointPx, ...]:
+        p_a = self._attachment_pos_px(wire.end_a, graph, term_map)
+        p_b = self._attachment_pos_px(wire.end_b, graph, term_map)
+        if p_a is None or p_b is None:
+            return fallback_points or ()
+        if p_a == p_b:
+            return (p_a,)
+        if wire.hints:
+            waypoints = [p_a, *wire.hints, p_b]
+            full_pts: list[PointPx] = [waypoints[0]]
+            for nxt in waypoints[1:]:
+                prev = full_pts[-1]
+                if prev == nxt:
+                    continue
+                if prev[0] == nxt[0] or prev[1] == nxt[1]:
+                    full_pts.append(nxt)
+                else:
+                    seg = route_orthogonal_wire(prev, nxt)
+                    full_pts.extend(seg[1:])
+            simp = simplify_orthogonal_points(full_pts, snap=True)
+            return simp if simp else (p_a, p_b)
+        return route_orthogonal_wire(p_a, p_b)
+
+    def _sync_graphics_from_wire_graph(
+        self,
+        *,
+        preferred_wire_items: dict[str, WireItem] | None = None,
+        select_wire_ids: set[str] | None = None,
+    ) -> None:
+        graph = self._wire_graph
+        term_map = self._terminal_pos_map()
+        pref = preferred_wire_items or {}
+        want_ids = {w.id for w in graph.wires}
+
+        # Remove graphics items whose wires are no longer in the graph.
+        for old_wid in list(self._wire_items_by_id):
+            if old_wid not in want_ids:
+                old_item = self._wire_items_by_id.pop(old_wid)
+                if old_item.scene() is self:
+                    self.removeItem(old_item)
+
+        new_items: list[WireItem] = []
+        new_by_id: dict[str, WireItem] = {}
+        max_w_num = self._wire_counter
+        for wire in graph.wires:
+            if wire.id.startswith("W") and wire.id[1:].isdigit():
+                max_w_num = max(max_w_num, int(wire.id[1:]))
+            existing = self._wire_items_by_id.get(wire.id) or pref.get(wire.id)
+            fallback = existing.points if existing is not None else None
+            pts = self._compute_wire_points_from_graph(
+                wire, graph, term_map=term_map, fallback_points=fallback
+            )
+            if existing is not None:
+                existing.end_a = wire.end_a
+                existing.end_b = wire.end_b
+                existing.hints = wire.hints
+                existing.set_points(pts)
+                if existing.scene() is not self:
+                    self.addItem(existing)
+                item = existing
+            else:
+                item = WireItem(
+                    wire.id,
+                    pts,
+                    theme=self.theme,
+                    end_a=wire.end_a,
+                    end_b=wire.end_b,
+                    hints=wire.hints,
+                )
+                self.addItem(item)
+            if select_wire_ids and wire.id in select_wire_ids:
+                item.setSelected(True)
+            new_items.append(item)
+            new_by_id[wire.id] = item
+
+        self._wire_counter = max_w_num
+        self._wire_items = new_items
+        self._wire_items_by_id = new_by_id
+
+    def set_wire_graph(
+        self,
+        graph: WireGraph,
+        *,
+        refresh: bool = True,
+        preferred_wire_items: dict[str, WireItem] | None = None,
+        select_wire_ids: set[str] | None = None,
+    ) -> None:
+        """Replace `self._wire_graph`, synchronize canvas items, and optionally refresh visuals."""
+        self._wire_graph = graph
+        self._sync_graphics_from_wire_graph(
+            preferred_wire_items=preferred_wire_items,
+            select_wire_ids=select_wire_ids,
+        )
+        if refresh:
+            self.refresh_connectivity_visuals()
 
     # ------------------------------------------------------------------
     # Low-level item registration (called by QUndoCommand redo/undo)
@@ -570,20 +723,144 @@ class CircuitScene(QGraphicsScene):
             self._preview_wire_item = None
         self.update()
 
+    def _terminals_at_point(self, pt: PointPx) -> list[TerminalRef]:
+        refs: list[TerminalRef] = []
+        for item in self._placed_items:
+            cname = item.component.name
+            for tname, tpt in item.terminal_scene_positions_px().items():
+                if tpt == pt:
+                    refs.append(TerminalRef(cname, tname))
+        return refs
+
+    def _find_junction_at(
+        self, pt: PointPx, graph: WireGraph, *, tolerance_px: float = 0.0
+    ) -> JunctionRef | None:
+        if tolerance_px <= 0.0:
+            for j in graph.junctions:
+                if j.pos == pt:
+                    return JunctionRef(j.id)
+            return None
+        best_id: str | None = None
+        best_dist = tolerance_px
+        for j in graph.junctions:
+            dist = math.hypot(j.pos[0] - pt[0], j.pos[1] - pt[1])
+            if dist <= best_dist:
+                best_dist = dist
+                best_id = j.id
+        return JunctionRef(best_id) if best_id is not None else None
+
+    def _find_wire_interior_at(
+        self, pt: PointPx, graph: WireGraph
+    ) -> str | None:
+        from circuitsim.canvas.connectivity import point_strictly_inside_wire
+
+        term_map = self._terminal_pos_map()
+        for w in graph.wires:
+            item = self._wire_items_by_id.get(w.id)
+            if item is not None:
+                if item.scene() is not self or len(item.points) < 2:
+                    continue
+                pts = item.points
+            else:
+                pts = self._compute_wire_points_from_graph(w, graph, term_map=term_map)
+            if len(pts) >= 2 and point_strictly_inside_wire(pt, pts):
+                return w.id
+        return None
+
+    def _bond_overlapping_terminals(
+        self, graph: WireGraph, pt: PointPx, primary: TerminalRef
+    ) -> WireGraph:
+        for other in self._terminals_at_point(pt):
+            if other != primary:
+                if not any(
+                    (w.end_a == primary and w.end_b == other)
+                    or (w.end_a == other and w.end_b == primary)
+                    for w in graph.wires
+                ):
+                    wid = self._next_unused_wire_id(graph)
+                    graph = graph.add_wire(primary, other, wire_id=wid)
+        return graph
+
+    def _next_unused_wire_id(self, graph: WireGraph) -> str:
+        while True:
+            self._wire_counter += 1
+            candidate = f"W{self._wire_counter}"
+            if not graph.has_wire(candidate):
+                return candidate
+
+    def _find_duplicate_graph_wire(
+        self, graph: WireGraph, end_a: Attachment, end_b: Attachment
+    ) -> Wire | None:
+        for w in graph.wires:
+            if (w.end_a == end_a and w.end_b == end_b) or (
+                w.end_a == end_b and w.end_b == end_a
+            ):
+                return w
+        return None
+
     def add_wire(
         self,
-        points: Sequence[tuple[float, float] | PointPx],
+        points_or_end_a: Sequence[tuple[float, float] | PointPx] | Attachment,
+        end_b: Attachment | None = None,
+        *,
+        hints: Sequence[tuple[float, float] | PointPx] = (),
+        wire_id: str | None = None,
     ) -> WireItem | None:
-        """Add an orthogonal wire polyline via `QUndoStack` (ignoring zero-length/duplicate)."""
+        """Add an orthogonal wire via `QUndoStack`.
+
+        Supports either:
+        - Attachment API: `scene.add_wire(end_a, end_b, hints=(), wire_id=None)`
+        - Coordinate sequence API: `scene.add_wire([(x1, y1), ...])`
+        """
+        if isinstance(points_or_end_a, (TerminalRef, JunctionRef, FreeEnd)):
+            if end_b is None:
+                raise TypeError("add_wire(end_a, end_b) requires end_b when end_a is an Attachment")
+            att_a = points_or_end_a
+            att_b = end_b
+            if att_a == att_b:
+                return None
+            dup = self._find_duplicate_graph_wire(self._wire_graph, att_a, att_b)
+            if dup is not None:
+                return self._wire_items_by_id.get(dup.id)
+            norm_hints = tuple(wire_snap_px(h) for h in hints)
+            wid = wire_id if wire_id is not None else self.next_wire_id()
+            try:
+                new_graph = self._wire_graph.add_wire(
+                    att_a, att_b, hints=norm_hints, wire_id=wid
+                )
+            except WireGraphError:
+                return None
+            wire_obj = new_graph.wire(wid)
+            pts = self._compute_wire_points_from_graph(wire_obj, new_graph)
+            wire_item = WireItem(
+                wid,
+                pts,
+                theme=self.theme,
+                end_a=att_a,
+                end_b=att_b,
+                hints=norm_hints,
+            )
+            self.undo_stack.push(
+                AddWireCommand(
+                    self, wire_item, old_graph=self._wire_graph, new_graph=new_graph
+                )
+            )
+            return wire_item
+
+        points = points_or_end_a
         if len(points) < 2:
             return None
 
         # Snap endpoints to nearest terminal if within snap radius (half a grid cell = 10 px)
         raw_pts = [normalize_point_px(p, snap=False) for p in points]
-        term_start = self.find_terminal_near(raw_pts[0], tolerance_px=self.TERMINAL_SNAP_RADIUS_PX)
+        term_start = self.find_terminal_near(
+            raw_pts[0], tolerance_px=self.TERMINAL_SNAP_RADIUS_PX
+        )
         if term_start is not None:
             raw_pts[0] = term_start[2]
-        term_end = self.find_terminal_near(raw_pts[-1], tolerance_px=self.TERMINAL_SNAP_RADIUS_PX)
+        term_end = self.find_terminal_near(
+            raw_pts[-1], tolerance_px=self.TERMINAL_SNAP_RADIUS_PX
+        )
         if term_end is not None:
             raw_pts[-1] = term_end[2]
 
@@ -597,8 +874,76 @@ class CircuitScene(QGraphicsScene):
             if existing.points == pts or existing.points == rev_pts:
                 return existing
 
-        wire = WireItem(self.next_wire_id(), pts, theme=self.theme)
-        self.undo_stack.push(AddWireCommand(self, wire))
+        working_graph = self._wire_graph
+
+        if term_start is not None:
+            att_a: Attachment = TerminalRef(term_start[0].component.name, term_start[1])
+        else:
+            j_a = self._find_junction_at(pts[0], working_graph)
+            if j_a is not None:
+                att_a = j_a
+            else:
+                split_wid = self._find_wire_interior_at(pts[0], working_graph)
+                if split_wid is not None:
+                    split_res = working_graph.split_wire_at(split_wid, pts[0])
+                    working_graph = split_res.graph
+                    att_a = JunctionRef(split_res.junction_id)
+                else:
+                    att_a = FreeEnd(*pts[0])
+
+        if term_end is not None:
+            att_b: Attachment = TerminalRef(term_end[0].component.name, term_end[1])
+        else:
+            j_b = self._find_junction_at(pts[-1], working_graph)
+            if j_b is not None:
+                att_b = j_b
+            else:
+                split_wid = self._find_wire_interior_at(pts[-1], working_graph)
+                if split_wid is not None:
+                    split_res = working_graph.split_wire_at(split_wid, pts[-1])
+                    working_graph = split_res.graph
+                    att_b = JunctionRef(split_res.junction_id)
+                else:
+                    att_b = FreeEnd(*pts[-1])
+
+        if att_a == att_b:
+            return None
+
+        dup = self._find_duplicate_graph_wire(working_graph, att_a, att_b)
+        if dup is not None:
+            if working_graph != self._wire_graph:
+                self.undo_stack.push(
+                    SetWireGraphCommand(
+                        self,
+                        self._wire_graph,
+                        working_graph,
+                        description=f"Split Wire {dup.id}",
+                    )
+                )
+            return self._wire_items_by_id.get(dup.id)
+
+        norm_hints = tuple(pts[1:-1])
+        wid = wire_id if wire_id is not None else self._next_unused_wire_id(working_graph)
+        try:
+            new_graph = working_graph.add_wire(
+                att_a, att_b, hints=norm_hints, wire_id=wid
+            )
+        except WireGraphError:
+            return None
+
+        wire = WireItem(
+            wid,
+            pts,
+            theme=self.theme,
+            end_a=att_a,
+            end_b=att_b,
+            hints=norm_hints,
+        )
+        self.undo_stack.push(
+            AddWireCommand(
+                self, wire, old_graph=self._wire_graph, new_graph=new_graph
+            )
+        )
         return wire
 
     def add_routed_wire(
@@ -651,21 +996,7 @@ class CircuitScene(QGraphicsScene):
         _ = item
         if self._suppress_live_reroute or not self._move_tracking_active:
             return
-        new_terminals = self.all_component_terminals_px()
-        wire_specs = [
-            WireSpec(wire_id=w.wire_id, points=pts)
-            for w, pts in self._move_start_wires.items()
-        ]
-        updated_map = reroute_wires_for_updated_terminals(
-            self._move_start_terminals, new_terminals, wire_specs
-        )
-        for wire in self._wire_items:
-            if wire.wire_id in updated_map:
-                new_pts = updated_map[wire.wire_id]
-                if len(new_pts) >= 2:
-                    wire.set_points(new_pts)
-            elif wire in self._move_start_wires:
-                wire.set_points(self._move_start_wires[wire])
+        self._sync_graphics_from_wire_graph()
         self.refresh_connectivity_visuals()
 
     def commit_component_move_tracking(self) -> bool:
@@ -694,7 +1025,13 @@ class CircuitScene(QGraphicsScene):
 
         self.undo_stack.push(
             MoveComponentsCommand(
-                self, moved_old, moved_new, old_wires, new_wires
+                self,
+                moved_old,
+                moved_new,
+                old_wires,
+                new_wires,
+                old_graph=self._wire_graph,
+                new_graph=self._wire_graph,
             )
         )
         return True
@@ -704,13 +1041,14 @@ class CircuitScene(QGraphicsScene):
         items: Sequence[ComponentItem],
         dx_px: float,
         dy_px: float,
+        *,
+        merge: bool = True,
     ) -> bool:
         """Programmatically move `items` by `(dx_px, dy_px)` and re-route attached wires via `QUndoStack`."""
         target_items = [it for it in items if it in self._placed_items]
         if not target_items:
             return False
 
-        old_terminals = self.all_component_terminals_px()
         old_wire_map = {w: w.points for w in self._wire_items}
         old_positions: dict[ComponentItem, tuple[float, float]] = {}
         new_positions: dict[ComponentItem, tuple[float, float]] = {}
@@ -730,24 +1068,25 @@ class CircuitScene(QGraphicsScene):
         if not new_positions:
             return False
 
-        new_terminals = self.all_component_terminals_px()
-        wire_specs = [
-            WireSpec(wire_id=w.wire_id, points=pts)
-            for w, pts in old_wire_map.items()
-        ]
-        updated_map = reroute_wires_for_updated_terminals(
-            old_terminals, new_terminals, wire_specs
-        )
+        self._sync_graphics_from_wire_graph()
         old_wires: dict[WireItem, tuple[PointPx, ...]] = {}
         new_wires: dict[WireItem, tuple[PointPx, ...]] = {}
         for w in self._wire_items:
-            if w.wire_id in updated_map and len(updated_map[w.wire_id]) >= 2:
-                old_wires[w] = old_wire_map[w]
-                new_wires[w] = updated_map[w.wire_id]
+            old_pts = old_wire_map.get(w, w.points)
+            if w.points != old_pts:
+                old_wires[w] = old_pts
+                new_wires[w] = w.points
 
         self.undo_stack.push(
             MoveComponentsCommand(
-                self, old_positions, new_positions, old_wires, new_wires
+                self,
+                old_positions,
+                new_positions,
+                old_wires,
+                new_wires,
+                old_graph=self._wire_graph,
+                new_graph=self._wire_graph,
+                mergeable=merge,
             )
         )
         return True
@@ -760,7 +1099,6 @@ class CircuitScene(QGraphicsScene):
         if not selected:
             return False
 
-        old_terminals = self.all_component_terminals_px()
         old_wire_map = {w: w.points for w in self._wire_items}
         old_rotations = {it: it.rotation_deg for it in selected}
         new_rotations = {it: (it.rotation_deg + 90) % 360 for it in selected}
@@ -768,24 +1106,25 @@ class CircuitScene(QGraphicsScene):
         for it, deg in new_rotations.items():
             it.set_rotation_deg(deg)
 
-        new_terminals = self.all_component_terminals_px()
-        wire_specs = [
-            WireSpec(wire_id=w.wire_id, points=pts)
-            for w, pts in old_wire_map.items()
-        ]
-        updated_map = reroute_wires_for_updated_terminals(
-            old_terminals, new_terminals, wire_specs
-        )
+        self._sync_graphics_from_wire_graph()
         old_wires: dict[WireItem, tuple[PointPx, ...]] = {}
         new_wires: dict[WireItem, tuple[PointPx, ...]] = {}
         for w in self._wire_items:
-            if w.wire_id in updated_map and len(updated_map[w.wire_id]) >= 2:
-                old_wires[w] = old_wire_map[w]
-                new_wires[w] = updated_map[w.wire_id]
+            old_pts = old_wire_map.get(w, w.points)
+            if w.points != old_pts:
+                old_wires[w] = old_pts
+                new_wires[w] = w.points
 
         self.undo_stack.push(
             RotateComponentsCommand(
-                self, selected, old_rotations, new_rotations, old_wires, new_wires
+                self,
+                selected,
+                old_rotations,
+                new_rotations,
+                old_wires,
+                new_wires,
+                old_graph=self._wire_graph,
+                new_graph=self._wire_graph,
             )
         )
         return True
@@ -798,7 +1137,6 @@ class CircuitScene(QGraphicsScene):
         if not selected:
             return False
 
-        old_terminals = self.all_component_terminals_px()
         old_wire_map = {w: w.points for w in self._wire_items}
         old_flips = {it: it.flipped_h for it in selected}
         new_flips = {it: not it.flipped_h for it in selected}
@@ -806,24 +1144,25 @@ class CircuitScene(QGraphicsScene):
         for it, flipped in new_flips.items():
             it.set_flipped_h(flipped)
 
-        new_terminals = self.all_component_terminals_px()
-        wire_specs = [
-            WireSpec(wire_id=w.wire_id, points=pts)
-            for w, pts in old_wire_map.items()
-        ]
-        updated_map = reroute_wires_for_updated_terminals(
-            old_terminals, new_terminals, wire_specs
-        )
+        self._sync_graphics_from_wire_graph()
         old_wires: dict[WireItem, tuple[PointPx, ...]] = {}
         new_wires: dict[WireItem, tuple[PointPx, ...]] = {}
         for w in self._wire_items:
-            if w.wire_id in updated_map and len(updated_map[w.wire_id]) >= 2:
-                old_wires[w] = old_wire_map[w]
-                new_wires[w] = updated_map[w.wire_id]
+            old_pts = old_wire_map.get(w, w.points)
+            if w.points != old_pts:
+                old_wires[w] = old_pts
+                new_wires[w] = w.points
 
         self.undo_stack.push(
             FlipComponentsCommand(
-                self, selected, old_flips, new_flips, old_wires, new_wires
+                self,
+                selected,
+                old_flips,
+                new_flips,
+                old_wires,
+                new_wires,
+                old_graph=self._wire_graph,
+                new_graph=self._wire_graph,
             )
         )
         return True
@@ -839,29 +1178,24 @@ class CircuitScene(QGraphicsScene):
         if not selected_comps and not selected_wires:
             return False
 
-        # Rule 2: Deleting a component also deletes all wires attached to its terminals
-        comp_terminals = self.all_component_terminals_px()
-        deleted_names = {it.component.name for it in selected_comps}
-        attached_wire_ids = set(
-            find_wires_attached_to_components(
-                comp_terminals,
-                deleted_names,
-                [w.to_wire_spec() for w in self._wire_items],
-            )
-        )
-        wires_to_delete: list[WireItem] = []
-        seen_wires: set[str] = set()
-        for w in self._wire_items:
-            if w in selected_wires or w.wire_id in attached_wire_ids:
-                if w.wire_id not in seen_wires:
-                    wires_to_delete.append(w)
-                    seen_wires.add(w.wire_id)
+        old_graph = self._wire_graph
+        new_graph = old_graph
+        for comp in selected_comps:
+            new_graph = new_graph.remove_component(comp.component.name)
+        for w in selected_wires:
+            if new_graph.has_wire(w.wire_id):
+                new_graph = new_graph.remove_wire(w.wire_id)
+
+        remaining_ids = {w.id for w in new_graph.wires}
+        wires_to_delete = [w for w in self._wire_items if w.wire_id not in remaining_ids]
 
         self.undo_stack.push(
             DeleteItemsCommand(
                 self,
                 selected_comps,
                 wires_to_delete,
+                old_graph=old_graph,
+                new_graph=new_graph,
                 description=description,
             )
         )
@@ -961,14 +1295,42 @@ class CircuitScene(QGraphicsScene):
         new_wires: list[WireItem] = []
         id_x = int(round(dx))
         id_y = int(round(dy))
+        working_graph = self._wire_graph
+        pasted_term_map: dict[PointPx, TerminalRef] = {}
+        for comp_item in new_comps:
+            cname = comp_item.component.name
+            for tname, tpt in comp_item.terminal_scene_positions_px().items():
+                pasted_term_map.setdefault(tpt, TerminalRef(cname, tname))
+
         for pts in self._clipboard.wires:
             shifted_pts = tuple((px + id_x, py + id_y) for px, py in pts)
+            wid = self._next_unused_wire_id(working_graph)
+            att_a: Attachment = pasted_term_map.get(shifted_pts[0], FreeEnd(*shifted_pts[0]))
+            att_b: Attachment = pasted_term_map.get(shifted_pts[-1], FreeEnd(*shifted_pts[-1]))
+            hints_pts = shifted_pts[1:-1]
+            if att_a != att_b:
+                working_graph = working_graph.add_wire(
+                    att_a, att_b, hints=hints_pts, wire_id=wid
+                )
             new_wires.append(
-                WireItem(self.next_wire_id(), shifted_pts, theme=self.theme)
+                WireItem(
+                    wid,
+                    shifted_pts,
+                    theme=self.theme,
+                    end_a=att_a,
+                    end_b=att_b,
+                    hints=hints_pts,
+                )
             )
 
         self.undo_stack.push(
-            PasteItemsCommand(self, new_comps, new_wires)
+            PasteItemsCommand(
+                self,
+                new_comps,
+                new_wires,
+                old_graph=self._wire_graph,
+                new_graph=working_graph,
+            )
         )
         return True
 
@@ -1192,20 +1554,60 @@ class CircuitScene(QGraphicsScene):
         # ---- point of no return: swap old for new ----
         self.hide_ghost_preview()
         self.cancel_wire_preview()
+        for jitem in list(self._junction_items_by_id.values()):
+            if jitem.scene() is self:
+                self.removeItem(jitem)
+        self._junction_items_by_id.clear()
         for wire in list(self._wire_items):
             self.removeItem(wire)
         for item in list(self._placed_items):
             self.removeItem(item)
         self._wire_items = []
+        self._wire_items_by_id = {}
         self._placed_items = []
         self._counters.clear()
         self._explicit_junctions = new_junctions
         for item in new_items:
             self._placed_items.append(item)
             self.addItem(item)
+
+        # Build WireGraph corresponding to the loaded document while preserving WireItems
+        loaded_term_map: dict[PointPx, TerminalRef] = {}
+        for comp_item in new_items:
+            cname = comp_item.component.name
+            for tname, tpt in comp_item.terminal_scene_positions_px().items():
+                loaded_term_map.setdefault(tpt, TerminalRef(cname, tname))
+
+        loaded_graph = WireGraph()
+        for jp in sorted(new_junctions):
+            loaded_graph = loaded_graph.add_junction(jp)
+        jpos_to_ref: dict[PointPx, JunctionRef] = {
+            j.pos: JunctionRef(j.id) for j in loaded_graph.junctions
+        }
+
         for wire in new_wires:
+            pts = wire.points
+            if len(pts) < 2:
+                continue
+            att_a: Attachment = loaded_term_map.get(
+                pts[0], jpos_to_ref.get(pts[0], FreeEnd(*pts[0]))
+            )
+            att_b: Attachment = loaded_term_map.get(
+                pts[-1], jpos_to_ref.get(pts[-1], FreeEnd(*pts[-1]))
+            )
+            hints_pts = pts[1:-1]
+            wire.end_a = att_a
+            wire.end_b = att_b
+            wire.hints = hints_pts
+            if att_a != att_b and not loaded_graph.has_wire(wire.wire_id):
+                loaded_graph = loaded_graph.add_wire(
+                    att_a, att_b, hints=hints_pts, wire_id=wire.wire_id
+                )
             self._wire_items.append(wire)
+            self._wire_items_by_id[wire.wire_id] = wire
             self.addItem(wire)
+        self._wire_graph = loaded_graph
+
         # Keep future wire ids unique: continue after the highest loaded "W<n>".
         numbers = [
             int(w.wire_id[1:])
@@ -1223,11 +1625,17 @@ class CircuitScene(QGraphicsScene):
         """Remove all placed components, wires, junctions, and clear the undo stack."""
         self.hide_ghost_preview()
         self.cancel_wire_preview()
+        for jitem in list(self._junction_items_by_id.values()):
+            if jitem.scene() is self:
+                self.removeItem(jitem)
+        self._junction_items_by_id.clear()
         for wire in list(self._wire_items):
             self.removeItem(wire)
         for item in list(self._placed_items):
             self.removeItem(item)
         self._wire_items.clear()
+        self._wire_items_by_id.clear()
+        self._wire_graph = WireGraph()
         self._placed_items.clear()
         self._explicit_junctions.clear()
         self._active_junction_dots.clear()

@@ -24,8 +24,8 @@
 
 ### PART B — WIRE REDESIGN PHASE 4 (branch `wire-redesign`)
 - [x] `B0` (`done`): Switch to `wire-redesign`, fast-forward merge `main`, run fast suite (`369 passed, 1 deselected in 49.48s`), inspect & discard `stash@{0}` without dropping stash entry, inspect `backup/stash-4-1`, write `OLD CODE MAP`.
-- [ ] `B1` (`in_progress`): HYDROGEN QUEUE `4.1` — `CircuitScene` backed by `WireGraph` (`scene.wire_graph`), attachment-based & legacy `add_wire`, graph undo/redo & `MoveComponentsCommand` merge (`mergeWith`).
-- [ ] `B2` (`todo`): HYDROGEN QUEUE `4.2` — Display (`WireItem` using `circuitsim.wiring.router.route()`, `JunctionItem` when `junction_dot_visible(jid)` / degree >= 3, `FreeEnd` hollow marker, 10 px hit stroke).
+- [x] `B1` (`done`): HYDROGEN QUEUE `4.1` — `CircuitScene` backed by `WireGraph` (`scene.wire_graph`), attachment-based & legacy `add_wire`, graph undo/redo & `MoveComponentsCommand` merge (`mergeWith`).
+- [ ] `B2` (`in_progress`): HYDROGEN QUEUE `4.2` — Display (`WireItem` using `circuitsim.wiring.router.route()`, `JunctionItem` when `junction_dot_visible(jid)` / degree >= 3, `FreeEnd` hollow marker, 10 px hit stroke).
 - [ ] `B3` (`todo`): HYDROGEN QUEUE `4.3` — Netlist via `circuitsim.wiring.netlist.build_circuit` and diagnostics (including `FreeEnd` amber open-wire note).
 - [ ] `B4` (`todo`): HYDROGEN QUEUE `4.4` — Move, rotate, flip, delete components/wires/junctions preserving `TerminalRef` attachments + 100 random ops + S1 + S2.
 - [ ] `B5` (`todo`): HYDROGEN QUEUE `4.5` — Save and load schema v2 (`CircuitDocumentV2`) + v1 auto-migration in `CircuitScene` and `MainWindow`.
@@ -79,8 +79,8 @@
 - [x] 3e Unguarded `paint()` exception vs `test_paint_safety_guard_on_component_wire_and_junction` - *done (FAILED: exception uncaught, restored cleanly)*
 
 ### Phase 4: Wire Redesign, Step 4A-1 (branch `wire-redesign`)
-- [ ] 4.1 Scene state (`WireGraph`) and undo/redo + move merge + `add_wire` between attachments - *in progress*
-- [ ] 4.2 Display (`WireItem` using `route()`, `JunctionItem` degree >= 3, `FreeEnd` hollow marker, 10 px hit stroke, wire tool notice) - *todo*
+- [x] 4.1 Scene state (`WireGraph`) and undo/redo + move merge + `add_wire` between attachments - *done*
+- [ ] 4.2 Display (`WireItem` using `route()`, `JunctionItem` degree >= 3, `FreeEnd` hollow marker, 10 px hit stroke, wire tool notice) - *in progress*
 - [ ] 4.3 Netlist (`circuitsim.wiring.netlist`) and diagnostics (including `FreeEnd` amber note) - *todo*
 - [ ] 4.4 Moving, rotating, flipping, deleting (100 random ops + S1 + S2) - *todo*
 - [ ] 4.5 Save and load schema v2 + v1 migration - *todo*

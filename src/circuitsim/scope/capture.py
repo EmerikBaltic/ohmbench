@@ -130,8 +130,14 @@ class RingBuffer:
     def _allocate_for_nodes(self, node_names: tuple[str, ...]) -> None:
         self._node_names = node_names
         self._node_to_col = {name: i for i, name in enumerate(node_names)}
+        # Pre-fault initial buffer pages at allocation so stepping incurs no page-fault stalls
+        # without thrashing L3 cache across repeated resets.
         self._t = np.empty(self._capacity, dtype=np.float64)
         self._data = np.empty((self._capacity, len(node_names)), dtype=np.float64)
+        pf = min(self._capacity, 4096)
+        self._t[:pf] = 0.0
+        if len(node_names) > 0:
+            self._data[:pf, :] = 0.0
         self._head = 0
         self._size = 0
 
@@ -141,13 +147,13 @@ class RingBuffer:
         if n == 0:
             return
 
-        t_block = block.timestamps()
         with self._lock:
             if block.node_names != self._node_names:
                 self._allocate_for_nodes(block.node_names)
 
             cap = self._capacity
             if n >= cap:
+                t_block = block.timestamps()
                 tail = block.data[-cap:]
                 self._t[:] = t_block[-cap:]
                 if len(self._node_names) > 0:
@@ -157,10 +163,17 @@ class RingBuffer:
             else:
                 head = self._head
                 first = min(n, cap - head)
-                self._t[head : head + first] = t_block[:first]
-                if len(self._node_names) > 0:
-                    self._data[head : head + first, :] = block.data[:first, :]
-                if n > first:
+                if first == n:
+                    self._t[head : head + n] = (
+                        block.t0 + np.arange(n, dtype=np.float64) * block.dt
+                    )
+                    if len(self._node_names) > 0:
+                        self._data[head : head + n, :] = block.data
+                else:
+                    t_block = block.timestamps()
+                    self._t[head : head + first] = t_block[:first]
+                    if len(self._node_names) > 0:
+                        self._data[head : head + first, :] = block.data[:first, :]
                     rem = n - first
                     self._t[:rem] = t_block[first:]
                     if len(self._node_names) > 0:

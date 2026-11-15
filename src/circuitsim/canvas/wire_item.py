@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
-from typing import Sequence
+from typing import TYPE_CHECKING, Any, Sequence
 
 from PySide6.QtCore import QPointF, QRectF, Qt
 from PySide6.QtGui import (
+    QBrush,
     QColor,
+    QFont,
     QPainter,
     QPainterPath,
     QPainterPathStroker,
@@ -26,13 +28,17 @@ from circuitsim.canvas.connectivity import (
     simplify_orthogonal_points,
 )
 
+if TYPE_CHECKING:
+    from circuitsim.wiring.model import Attachment
+
 
 class WireItem(QGraphicsObject):
     """Orthogonal wire polyline on the schematic canvas.
 
     Stores its vertices in scene pixel coordinates (`points`) while keeping
-    `pos() == (0, 0)`. Supports selection, theme switching, and a dashed
-    live-preview mode while the user is routing a new wire.
+    `pos() == (0, 0)`. Supports selection, theme switching, attachment metadata
+    (`end_a`, `end_b`, `hints`) from `WireGraph`, and a dashed live-preview mode
+    while the user is routing a new wire.
     """
 
     def __init__(
@@ -42,11 +48,17 @@ class WireItem(QGraphicsObject):
         *,
         theme: ThemeMode = ThemeMode.DARK,
         is_preview: bool = False,
+        end_a: Attachment | None = None,
+        end_b: Attachment | None = None,
+        hints: Sequence[tuple[int, int]] = (),
     ) -> None:
         super().__init__()
         self.wire_id: str = wire_id
         self.theme: ThemeMode = theme
         self.is_preview: bool = is_preview
+        self.end_a: Attachment | None = end_a
+        self.end_b: Attachment | None = end_b
+        self.hints: tuple[PointPx, ...] = tuple((int(p[0]), int(p[1])) for p in hints)
         self._points: tuple[PointPx, ...] = simplify_orthogonal_points(
             points, snap=True
         )
@@ -278,11 +290,20 @@ class JunctionItem(QGraphicsObject):
         position: QPointF,
         theme: ThemeMode | str = ThemeMode.DARK,
         parent: Any = None,
+        *,
+        junction_id: str | None = None,
     ) -> None:
         super().__init__(parent)
         self.setPos(position)
         self.theme: ThemeMode | str = theme
+        self.junction_id: str | None = junction_id
         self._paint_error_logged: bool = False
+        self.setZValue(6.0)
+
+    def set_theme(self, theme: ThemeMode | str) -> None:
+        """Update theme color and repaint."""
+        self.theme = theme
+        self.update()
 
     def boundingRect(self) -> QRectF:
         return QRectF(-6.0, -6.0, 12.0, 12.0)
