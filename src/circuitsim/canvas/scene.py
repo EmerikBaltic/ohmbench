@@ -169,6 +169,7 @@ class CircuitScene(QGraphicsScene):
         # Component drag-move tracking for live attached-wire re-routing & QUndoStack
         self._move_tracking_active: bool = False
         self._suppress_live_reroute: bool = False
+        self._suppress_selection_info: bool = False
         self._move_start_positions: dict[ComponentItem, tuple[float, float]] = {}
         self._move_start_graph: WireGraph = self._wire_graph
 
@@ -2309,8 +2310,34 @@ class CircuitScene(QGraphicsScene):
         )
         return True
 
-    def delete_selected(self, *, description: str = "Delete Selection") -> bool:
-        """Delete selected components, wires, and junctions (plus wires attached to deleted components)."""
+    def select_all(self) -> None:
+        """Select all placed components, wires, and visible junctions atomically."""
+        prev = self._suppress_selection_info
+        self._suppress_selection_info = True
+        try:
+            for item in self._placed_items:
+                item.setSelected(True)
+            for wire in self._wire_items:
+                wire.setSelected(True)
+            for jitem in self._junction_items_by_id.values():
+                jitem.setSelected(True)
+        finally:
+            self._suppress_selection_info = prev
+        self._on_selection_changed()
+
+    def delete_selected(
+        self,
+        *,
+        description: str = "Delete Selection",
+        detach_unselected_wires: bool = False,
+    ) -> bool:
+        """Delete selected components, wires, and junctions.
+
+        When `detach_unselected_wires` is True (UI delete actions), unselected wires
+        attached to a deleted component are detached at that end into `FreeEnd` rather
+        than deleted. Programmatic callers default to `detach_unselected_wires=False`,
+        which removes wires attached to deleted components.
+        """
         selected_comps = [
             it for it in self.selectedItems() if isinstance(it, ComponentItem)
         ]
@@ -2325,14 +2352,36 @@ class CircuitScene(QGraphicsScene):
 
         old_graph = self._wire_graph
         new_graph = old_graph
-        for comp in selected_comps:
-            new_graph = new_graph.remove_component(comp.component.name)
-        for w in selected_wires:
-            if new_graph.has_wire(w.wire_id):
-                new_graph = new_graph.remove_wire(w.wire_id)
-        for jitem in selected_junctions:
-            if jitem.junction_id and new_graph.has_junction(jitem.junction_id):
-                new_graph = new_graph.remove_junction(jitem.junction_id)
+        deleted_explicit_junctions: list[PointPx] = []
+
+        if detach_unselected_wires:
+            for w in selected_wires:
+                if new_graph.has_wire(w.wire_id):
+                    new_graph = new_graph.remove_wire(w.wire_id)
+            for jitem in selected_junctions:
+                if jitem.junction_id and new_graph.has_junction(jitem.junction_id):
+                    jpos = new_graph.junction(jitem.junction_id).pos
+                    if jpos in self._explicit_junctions:
+                        deleted_explicit_junctions.append(jpos)
+                    new_graph = new_graph.remove_junction(jitem.junction_id)
+            for comp in selected_comps:
+                term_map = {
+                    (comp.component.name, tname): pos
+                    for tname, pos in comp.terminal_scene_positions_px().items()
+                }
+                new_graph = new_graph.detach_component(comp.component.name, term_map)
+        else:
+            for comp in selected_comps:
+                new_graph = new_graph.remove_component(comp.component.name)
+            for w in selected_wires:
+                if new_graph.has_wire(w.wire_id):
+                    new_graph = new_graph.remove_wire(w.wire_id)
+            for jitem in selected_junctions:
+                if jitem.junction_id and new_graph.has_junction(jitem.junction_id):
+                    jpos = new_graph.junction(jitem.junction_id).pos
+                    if jpos in self._explicit_junctions:
+                        deleted_explicit_junctions.append(jpos)
+                    new_graph = new_graph.remove_junction(jitem.junction_id)
 
         remaining_ids = {w.id for w in new_graph.wires}
         wires_to_delete = [w for w in self._wire_items if w.wire_id not in remaining_ids]
@@ -2342,6 +2391,7 @@ class CircuitScene(QGraphicsScene):
                 self,
                 selected_comps,
                 wires_to_delete,
+                deleted_explicit_junctions,
                 old_graph=old_graph,
                 new_graph=new_graph,
                 description=description,
@@ -2905,7 +2955,7 @@ class CircuitScene(QGraphicsScene):
         self.update()
 
     def _on_selection_changed(self) -> None:
-        if self._is_shutting_down:
+        if self._is_shutting_down or self._suppress_selection_info:
             return
         selected = [
             it for it in self.selectedItems() if isinstance(it, ComponentItem)

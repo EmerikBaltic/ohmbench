@@ -583,7 +583,9 @@ class CircuitView(QGraphicsView):
         act_delete = QAction("Delete\tDel", menu)
         act_delete.setShortcut(QKeySequence.StandardKey.Delete)
         act_delete.setEnabled(has_sel)
-        act_delete.triggered.connect(self.circuit_scene.delete_selected)
+        act_delete.triggered.connect(
+            lambda: self.circuit_scene.delete_selected(detach_unselected_wires=True)
+        )
         menu.addAction(act_delete)
 
         menu.addSeparator()
@@ -642,8 +644,16 @@ class CircuitView(QGraphicsView):
             self._update_cursor_for_scene_pos(self._last_scene_pos)
             event.accept()
             return
+        if (
+            event.key() == Qt.Key.Key_A
+            and (event.modifiers() & Qt.KeyboardModifier.ControlModifier)
+            and not (event.modifiers() & (Qt.KeyboardModifier.AltModifier | Qt.KeyboardModifier.ShiftModifier))
+        ):
+            self.circuit_scene.select_all()
+            event.accept()
+            return
         if event.key() in (Qt.Key.Key_Delete, Qt.Key.Key_Backspace):
-            self.circuit_scene.delete_selected()
+            self.circuit_scene.delete_selected(detach_unselected_wires=True)
             event.accept()
             return
         super().keyPressEvent(event)

@@ -294,9 +294,17 @@ class MainWindow(QMainWindow):
         self.act_delete = QAction("&Delete", self)
         self.act_delete.setIconText("Del")
         self.act_delete.setShortcut(QKeySequence.StandardKey.Delete)
-        self.act_delete.setToolTip("Delete selected items and attached wires (Shortcut: Del)")
-        self.act_delete.triggered.connect(self.circuit_scene.delete_selected)
+        self.act_delete.setToolTip("Delete selected items (Shortcut: Del)")
+        self.act_delete.triggered.connect(
+            lambda: self.circuit_scene.delete_selected(detach_unselected_wires=True)
+        )
         edit_menu.addAction(self.act_delete)
+
+        self.act_select_all = QAction("Select &All", self)
+        self.act_select_all.setShortcut(QKeySequence.StandardKey.SelectAll)
+        self.act_select_all.setToolTip("Select all components, wires, and junctions (Shortcut: Ctrl+A)")
+        self.act_select_all.triggered.connect(self.circuit_scene.select_all)
+        edit_menu.addAction(self.act_select_all)
 
         edit_menu.addSeparator()
         self.act_rotate = QAction("&Rotate (R)", self)

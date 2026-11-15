@@ -24,7 +24,6 @@ from tests.ui_flow_helpers import (
 )
 
 
-@pytest.mark.xfail(strict=True, reason="E1 reproduction")
 def test_e1_repro_select_all_delete_crash(tmp_path, qapp) -> None:
     """E1 repro: selecting all components/wires/junctions and pressing Delete must not crash."""
     win, view, scene = create_window_and_view(tmp_path, zoom=1.0)
@@ -74,6 +73,189 @@ def test_e1_repro_select_all_delete_crash(tmp_path, qapp) -> None:
         assert not slot_exceptions, f"Unhandled slot exception(s) on Delete: {slot_exceptions!r}"
         assert len(scene.placed_items) == 0
         assert len(scene.placed_wires) == 0
+    finally:
+        scene.undo_stack.setClean()
+        win.close()
+
+
+def test_e1_ctrl_a_delete_undo_redo_and_every_subset(tmp_path, qapp) -> None:
+    """E1 (a)-(d): Ctrl+A+Del, 10V divider (6.667V) undo/redo, FreeEnd detach, and all subsets."""
+    from circuitsim.wiring.model import FreeEnd, JunctionRef, TerminalRef
+
+    win, view, scene = create_window_and_view(tmp_path, zoom=1.0)
+    try:
+        v1 = scene.place_new_component("dc_voltage", QPointF(-160.0, 0.0), rotation_deg=90)
+        r1 = scene.place_new_component("resistor", QPointF(0.0, -40.0))
+        r2 = scene.place_new_component("resistor", QPointF(120.0, 0.0), rotation_deg=90)
+        vm1 = scene.place_new_component("voltmeter", QPointF(240.0, 0.0), rotation_deg=90)
+        gnd = scene.place_new_component("ground", QPointF(-160.0, 120.0))
+        scene.edit_component_parameters(v1, {"dc_voltage": 10.0})
+        scene.edit_component_parameters(r1, {"resistance": 1000.0})
+        scene.edit_component_parameters(r2, {"resistance": 2000.0})
+
+        p_vp = terminal_scene_point(v1, "pos")
+        p_vn = terminal_scene_point(v1, "neg")
+        p_r1a = terminal_scene_point(r1, "a")
+        p_r1b = terminal_scene_point(r1, "b")
+        p_r2a = terminal_scene_point(r2, "a")
+        p_r2b = terminal_scene_point(r2, "b")
+        p_vm_p = terminal_scene_point(vm1, "pos")
+        p_vm_n = terminal_scene_point(vm1, "neg")
+        p_gnd = terminal_scene_point(gnd, "gnd")
+
+        win.act_wire_mode.setChecked(True)
+        draw_wire_click_to_click(view, p_vp, p_r1a)
+        draw_wire_click_to_click(view, p_r1b, p_r2a)
+        draw_wire_click_to_click(view, p_r2b, p_vn)
+        draw_wire_click_to_click(view, p_vn, p_gnd)
+        # Branch voltmeter + free-end wire
+        split_top = scene.wire_graph.split_wire_at(
+            scene.wire_graph.attached_wires(TerminalRef("R1", "b"))[0].id,
+            p_r1b,
+        )
+        scene.set_wire_graph(split_top.graph)
+        j_top = split_top.junction_id
+        draw_wire_click_to_click(view, p_r1b, p_vm_p)
+        draw_wire_click_to_click(view, p_vm_n, p_r2b)
+        win.act_wire_mode.setChecked(False)
+        qapp.processEvents()
+
+        # Verify hand-calculated voltage at divider middle node: 10 * 2k / (1k + 2k) = 6.666667 V.
+        conn0 = scene.extract_connectivity_result()
+        sol0 = MNASolver(conn0.circuit).solve_dc()
+        v_mid_0 = sol0.node_voltages[conn0.component_nodes["R2"]["a"]]
+        assert math.isclose(v_mid_0, 10.0 * 2000.0 / 3000.0, rel_tol=1e-6)
+        orig_graph = scene.wire_graph
+        orig_positions = {it.component.name: (it.pos().x(), it.pos().y()) for it in scene.placed_items}
+
+        slot_exceptions: list[BaseException] = []
+        old_hook = sys.excepthook
+
+        def _capture_hook(exc_type, exc_val, exc_tb) -> None:
+            slot_exceptions.append(exc_val)
+            old_hook(exc_type, exc_val, exc_tb)
+
+        sys.excepthook = _capture_hook
+        try:
+            # (a)(b) Real Ctrl+A followed by Delete -> atomic empty scene in 1 undo step.
+            undo_before = scene.undo_stack.count()
+            press_key(view.viewport(), Qt.Key.Key_A, Qt.KeyboardModifier.ControlModifier)
+            assert len(scene.selectedItems()) == (
+                len(scene.placed_items) + len(scene.placed_wires) + len(scene.junction_items)
+            )
+            press_key(view.viewport(), Qt.Key.Key_Delete)
+            assert not slot_exceptions
+            assert len(scene.placed_items) == 0
+            assert len(scene.placed_wires) == 0
+            assert len(scene.junction_items) == 0
+            assert scene.undo_stack.count() == undo_before + 1
+
+            # Undo restores exact graph and positions -> divider still solves to 6.667 V.
+            scene.undo_stack.undo()
+            qapp.processEvents()
+            assert not slot_exceptions
+            assert scene.wire_graph == orig_graph
+            assert {it.component.name: (it.pos().x(), it.pos().y()) for it in scene.placed_items} == orig_positions
+            conn_u = scene.extract_connectivity_result()
+            sol_u = MNASolver(conn_u.circuit).solve_dc()
+            assert math.isclose(
+                sol_u.node_voltages[conn_u.component_nodes["R2"]["a"]],
+                20.0 / 3.0,
+                rel_tol=1e-6,
+            )
+
+            # Redo deletes everything again.
+            scene.undo_stack.redo()
+            qapp.processEvents()
+            assert len(scene.placed_items) == 0
+            assert len(scene.placed_wires) == 0
+            scene.undo_stack.undo()
+            qapp.processEvents()
+
+            # Deleting 1 component while its wires are NOT selected converts those ends to FreeEnd.
+            scene.clearSelection()
+            r1_item = next(it for it in scene.placed_items if it.component.name == "R1")
+            r1_item.setSelected(True)
+            win.act_delete.trigger()
+            qapp.processEvents()
+            assert not slot_exceptions
+            remaining_terms = {
+                it.component.name: tuple(t.name for t in it.metadata.terminals)
+                for it in scene.placed_items
+            }
+            scene.wire_graph.validate(remaining_terms)
+            w_detached = scene.wire_graph.attached_wires(TerminalRef("V1", "pos"))[0]
+            assert FreeEnd(*p_r1a) in (w_detached.end_a, w_detached.end_b)
+            assert isinstance(j_top, str)
+            scene.undo_stack.undo()
+            assert scene.wire_graph == orig_graph
+        finally:
+            sys.excepthook = old_hook
+    finally:
+        scene.undo_stack.setClean()
+        win.close()
+
+
+def test_e1_every_nonempty_subset_delete_and_undo(tmp_path, qapp) -> None:
+    """E1 (c)(d): every non-empty subset of components/wires/junction/free-end deletes cleanly & undoes."""
+    from circuitsim.wiring.model import FreeEnd, TerminalRef
+
+    win, view, scene = create_window_and_view(tmp_path, zoom=1.0)
+    try:
+        v1 = scene.place_new_component("dc_voltage", QPointF(-160.0, 0.0), rotation_deg=90)
+        a1 = scene.place_new_component("ammeter", QPointF(0.0, -40.0))
+        r1 = scene.place_new_component("resistor", QPointF(160.0, 0.0), rotation_deg=90)
+        vm1 = scene.place_new_component("voltmeter", QPointF(280.0, 0.0), rotation_deg=90)
+        qapp.processEvents()
+
+        w1 = scene.add_wire(TerminalRef("V1", "pos"), TerminalRef("A1", "pos"))
+        w2 = scene.add_wire(TerminalRef("A1", "neg"), TerminalRef("R1", "a"))
+        w3 = scene.add_wire(TerminalRef("R1", "b"), TerminalRef("V1", "neg"))
+        split_res = scene.wire_graph.split_wire_at(w2.wire_id, terminal_scene_point(r1, "a"))
+        scene.set_wire_graph(split_res.graph)
+        from circuitsim.wiring.model import JunctionRef
+
+        w4 = scene.add_wire(JunctionRef(split_res.junction_id), TerminalRef("VM1", "neg"))
+        w_free = scene.add_wire(TerminalRef("VM1", "pos"), FreeEnd(360, -80))
+        assert w1 is not None and w4 is not None and w_free is not None
+        assert len(scene.junction_items) == 1
+        qapp.processEvents()
+
+        # Enumerate subsets of key deletable items (components + sample wires + junction).
+        all_items = (
+            list(scene.placed_items)
+            + list(scene.placed_wires[:2])
+            + list(scene.junction_items[:1])
+        )
+        # Take up to 6 items to keep 2^6 - 1 = 63 exact subset checks fast (<0.5s).
+        subset_pool = all_items[:6]
+        orig_graph = scene.wire_graph
+
+        slot_exceptions: list[BaseException] = []
+        old_hook = sys.excepthook
+
+        def _capture_hook(exc_type, exc_val, exc_tb) -> None:
+            slot_exceptions.append(exc_val)
+            old_hook(exc_type, exc_val, exc_tb)
+
+        sys.excepthook = _capture_hook
+        try:
+            n = len(subset_pool)
+            for mask in range(1, 1 << n):
+                scene.clearSelection()
+                for bit in range(n):
+                    if mask & (1 << bit):
+                        subset_pool[bit].setSelected(True)
+                assert scene.delete_selected(detach_unselected_wires=True) is True
+                scene.wire_graph.validate({
+                    it.component.name: tuple(t.name for t in it.metadata.terminals)
+                    for it in scene.placed_items
+                })
+                scene.undo_stack.undo()
+                assert scene.wire_graph == orig_graph
+            assert not slot_exceptions
+        finally:
+            sys.excepthook = old_hook
     finally:
         scene.undo_stack.setClean()
         win.close()

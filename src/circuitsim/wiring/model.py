@@ -522,6 +522,35 @@ class WireGraph:
         _normalize(wires, junctions, affected)
         return WireGraph(tuple(wires), tuple(junctions))
 
+    def detach_component(
+        self,
+        component: str,
+        terminal_positions: Mapping[tuple[str, str], tuple[int, int]],
+    ) -> WireGraph:
+        """Detach any wire ends on `component`, converting them to `FreeEnd` at terminal coords."""
+
+        def _detach_end(end: Attachment) -> Attachment:
+            if isinstance(end, TerminalRef) and end.component == component:
+                pos = terminal_positions[(component, end.terminal)]
+                return FreeEnd(*snap_px(pos))
+            return end
+
+        wires: list[Wire] = []
+        affected: list[str] = []
+        for w in self.wires:
+            new_a = _detach_end(w.end_a)
+            new_b = _detach_end(w.end_b)
+            if new_a == new_b:
+                _queue_ends(affected, w.end_a, w.end_b)
+                continue
+            if new_a != w.end_a or new_b != w.end_b:
+                wires.append(Wire(w.id, new_a, new_b, w.hints))
+            else:
+                wires.append(w)
+        junctions = list(self.junctions)
+        _normalize(wires, junctions, affected)
+        return WireGraph(tuple(wires), tuple(junctions))
+
     # --- validation ---------------------------------------------------------
 
     def problems(self, terminals: Mapping[str, Collection[str]] | None = None) -> list[str]:

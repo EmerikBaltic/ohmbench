@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Collection, Sequence
+from contextlib import contextmanager
+from typing import TYPE_CHECKING, Collection, Iterator, Sequence
 
 from PySide6.QtCore import QPointF
 from PySide6.QtGui import QUndoCommand
@@ -18,6 +19,19 @@ if TYPE_CHECKING:
 
 
 CMD_ID_MOVE_COMPONENTS: int = 1001
+
+
+@contextmanager
+def _atomic_scene_graph_edit(scene: CircuitScene) -> Iterator[None]:
+    """Suppress `selectionChanged` info queries while components and WireGraph update together."""
+    prev = scene._suppress_selection_info
+    scene._suppress_selection_info = True
+    try:
+        yield
+    finally:
+        scene._suppress_selection_info = prev
+    scene.refresh_connectivity_visuals()
+    scene._on_selection_changed()
 
 
 class SetWireGraphCommand(QUndoCommand):
@@ -67,16 +81,19 @@ class AddComponentCommand(QUndoCommand):
         self.new_graph: WireGraph | None = new_graph
 
     def redo(self) -> None:
-        self.scene._insert_component_item(
-            self.item, select=True, refresh=self.new_graph is None
-        )
-        if self.new_graph is not None:
-            self.scene.set_wire_graph(self.new_graph)
+        with _atomic_scene_graph_edit(self.scene):
+            self.scene._insert_component_item(
+                self.item, select=True, refresh=False
+            )
+            if self.new_graph is not None:
+                self.scene.set_wire_graph(self.new_graph, refresh=False)
 
     def undo(self) -> None:
-        if self.old_graph is not None:
-            self.scene.set_wire_graph(self.old_graph, refresh=False)
-        self.scene._remove_component_item(self.item)
+        with _atomic_scene_graph_edit(self.scene):
+            self.scene.clearSelection()
+            if self.old_graph is not None:
+                self.scene.set_wire_graph(self.old_graph, refresh=False)
+            self.scene._remove_component_item(self.item, refresh=False)
 
 
 class AddWireCommand(QUndoCommand):
@@ -346,24 +363,25 @@ class DeleteItemsCommand(QUndoCommand):
         self.new_graph: WireGraph = new_graph
 
     def redo(self) -> None:
-        for comp in self.components:
-            self.scene._remove_component_item(comp, refresh=False)
-        for jp in self.junctions:
-            self.scene._explicit_junctions.discard(normalize_point_px(jp, snap=True))
-        self.scene.set_wire_graph(self.new_graph, refresh=False)
-        self.scene.refresh_connectivity_visuals()
+        with _atomic_scene_graph_edit(self.scene):
+            self.scene.clearSelection()
+            for comp in self.components:
+                self.scene._remove_component_item(comp, refresh=False)
+            for jp in self.junctions:
+                self.scene._explicit_junctions.discard(normalize_point_px(jp, snap=True))
+            self.scene.set_wire_graph(self.new_graph, refresh=False)
 
     def undo(self) -> None:
-        for comp in self.components:
-            self.scene._insert_component_item(comp, select=False, refresh=False)
-        for jp in self.junctions:
-            self.scene._explicit_junctions.add(normalize_point_px(jp, snap=True))
-        self.scene.set_wire_graph(
-            self.old_graph,
-            refresh=False,
-            preferred_wire_items={w.wire_id: w for w in self.wires},
-        )
-        self.scene.refresh_connectivity_visuals()
+        with _atomic_scene_graph_edit(self.scene):
+            for comp in self.components:
+                self.scene._insert_component_item(comp, select=False, refresh=False)
+            for jp in self.junctions:
+                self.scene._explicit_junctions.add(normalize_point_px(jp, snap=True))
+            self.scene.set_wire_graph(
+                self.old_graph,
+                refresh=False,
+                preferred_wire_items={w.wire_id: w for w in self.wires},
+            )
 
 
 class PasteItemsCommand(QUndoCommand):
@@ -392,30 +410,31 @@ class PasteItemsCommand(QUndoCommand):
         self.select_junction_ids: frozenset[str] = frozenset(select_junction_ids)
 
     def redo(self) -> None:
-        self.scene.clearSelection()
-        for comp in self.components:
-            self.scene._insert_component_item(comp, select=True, refresh=False)
-        for jp in self.junctions:
-            self.scene._explicit_junctions.add(normalize_point_px(jp, snap=True))
-        self.scene.set_wire_graph(
-            self.new_graph,
-            refresh=False,
-            preferred_wire_items={w.wire_id: w for w in self.wires},
-            select_wire_ids={w.wire_id for w in self.wires},
-        )
-        for jid in self.select_junction_ids:
-            jitem = self.scene._junction_items_by_id.get(jid)
-            if jitem is not None:
-                jitem.setSelected(True)
-        self.scene.refresh_connectivity_visuals()
+        with _atomic_scene_graph_edit(self.scene):
+            self.scene.clearSelection()
+            for comp in self.components:
+                self.scene._insert_component_item(comp, select=True, refresh=False)
+            for jp in self.junctions:
+                self.scene._explicit_junctions.add(normalize_point_px(jp, snap=True))
+            self.scene.set_wire_graph(
+                self.new_graph,
+                refresh=False,
+                preferred_wire_items={w.wire_id: w for w in self.wires},
+                select_wire_ids={w.wire_id for w in self.wires},
+            )
+            for jid in self.select_junction_ids:
+                jitem = self.scene._junction_items_by_id.get(jid)
+                if jitem is not None:
+                    jitem.setSelected(True)
 
     def undo(self) -> None:
-        for comp in self.components:
-            self.scene._remove_component_item(comp, refresh=False)
-        for jp in self.junctions:
-            self.scene._explicit_junctions.discard(normalize_point_px(jp, snap=True))
-        self.scene.set_wire_graph(self.old_graph, refresh=False)
-        self.scene.refresh_connectivity_visuals()
+        with _atomic_scene_graph_edit(self.scene):
+            self.scene.clearSelection()
+            for comp in self.components:
+                self.scene._remove_component_item(comp, refresh=False)
+            for jp in self.junctions:
+                self.scene._explicit_junctions.discard(normalize_point_px(jp, snap=True))
+            self.scene.set_wire_graph(self.old_graph, refresh=False)
 
 
 class EditComponentParametersCommand(QUndoCommand):
