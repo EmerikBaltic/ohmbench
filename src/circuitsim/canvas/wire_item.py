@@ -27,6 +27,7 @@ from circuitsim.canvas.connectivity import (
     WireSpec,
     simplify_orthogonal_points,
 )
+from circuitsim.wiring.model import FreeEnd
 
 if TYPE_CHECKING:
     from circuitsim.wiring.model import Attachment
@@ -200,6 +201,7 @@ class WireItem(QGraphicsObject):
         palette: ThemePalette = get_theme_palette(self.theme)
         painter.save()
 
+        active_color: QColor | None = None
         if self.is_preview:
             pen = QPen(
                 QColor(palette.terminal_hover),
@@ -217,22 +219,23 @@ class WireItem(QGraphicsObject):
                     QPointF(float(ep[0]), float(ep[1])), 5.0, 5.0
                 )
         elif self.isSelected():
+            active_color = QColor(palette.selection_accent)
             # Subtle outer glow + accent wire stroke
             glow_pen = QPen(
-                QColor(palette.selection_accent),
+                active_color,
                 5.0,
                 Qt.PenStyle.SolidLine,
                 Qt.PenCapStyle.RoundCap,
                 Qt.PenJoinStyle.RoundJoin,
             )
-            glow_col = QColor(palette.selection_accent)
+            glow_col = QColor(active_color)
             glow_col.setAlpha(90)
             glow_pen.setColor(glow_col)
             painter.setPen(glow_pen)
             painter.drawPath(self._path)
 
             main_pen = QPen(
-                QColor(palette.selection_accent),
+                active_color,
                 2.4,
                 Qt.PenStyle.SolidLine,
                 Qt.PenCapStyle.RoundCap,
@@ -241,12 +244,12 @@ class WireItem(QGraphicsObject):
             painter.setPen(main_pen)
             painter.drawPath(self._path)
         elif self.diagnostic_severity in ("error", "warning"):
-            diag_col = (
+            active_color = (
                 QColor("#FF5252")
                 if self.diagnostic_severity == "error"
                 else QColor("#FFA726")
             )
-            glow_col = QColor(diag_col)
+            glow_col = QColor(active_color)
             glow_col.setAlpha(85)
             painter.setPen(
                 QPen(
@@ -260,7 +263,7 @@ class WireItem(QGraphicsObject):
             painter.drawPath(self._path)
             painter.setPen(
                 QPen(
-                    diag_col,
+                    active_color,
                     2.4,
                     Qt.PenStyle.SolidLine,
                     Qt.PenCapStyle.RoundCap,
@@ -269,8 +272,9 @@ class WireItem(QGraphicsObject):
             )
             painter.drawPath(self._path)
         else:
+            active_color = QColor(palette.symbol_stroke)
             pen = QPen(
-                QColor(palette.symbol_stroke),
+                active_color,
                 2.2,
                 Qt.PenStyle.SolidLine,
                 Qt.PenCapStyle.RoundCap,
@@ -278,6 +282,17 @@ class WireItem(QGraphicsObject):
             )
             painter.setPen(pen)
             painter.drawPath(self._path)
+
+        if not self.is_preview and active_color is not None:
+            marker_pen = QPen(active_color, 1.6)
+            painter.setPen(marker_pen)
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            if isinstance(self.end_a, FreeEnd):
+                p0 = self._points[0]
+                painter.drawEllipse(QPointF(float(p0[0]), float(p0[1])), 3.5, 3.5)
+            if isinstance(self.end_b, FreeEnd):
+                pn = self._points[-1]
+                painter.drawEllipse(QPointF(float(pn[0]), float(pn[1])), 3.5, 3.5)
 
         painter.restore()
 

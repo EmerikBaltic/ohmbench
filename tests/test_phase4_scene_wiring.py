@@ -4,12 +4,15 @@ from __future__ import annotations
 
 import math
 
-from PySide6.QtCore import QPointF
+from PySide6.QtCore import QPointF, QRectF
+from PySide6.QtGui import QImage, QPainter
 
+from circuitsim.app.themes import ThemeMode, get_theme_palette
 from circuitsim.canvas.scene import CircuitScene
 from circuitsim.canvas.symbol_renderer import SymbolLibrary
 from circuitsim.engine import MNASolver
 from circuitsim.wiring.model import FreeEnd, JunctionRef, TerminalRef
+from circuitsim.wiring.router import route as wire_route
 
 
 def test_phase4_1_scene_wire_graph_add_wire_attachments_and_undo_redo(qapp) -> None:
@@ -90,3 +93,71 @@ def test_phase4_1_move_merge_and_wire_identity_and_split_junction(qapp) -> None:
     assert any(w is w_tap for w in scene.placed_wires)
     scene.undo_stack.undo()
     assert scene.wire_graph.has_wire(w1.wire_id)
+
+
+def test_phase4_2_wire_item_routed_from_router_junction_dot_and_free_end(qapp) -> None:
+    """WireItems use wiring.router.route(), JunctionItems track degree>=3, FreeEnd draws hollow markers, and hitbox is 10 px."""
+    scene = CircuitScene(SymbolLibrary())
+    r1 = scene.place_new_component("resistor", QPointF(0.0, 0.0))
+    r2 = scene.place_new_component("resistor", QPointF(160.0, 80.0))
+    r3 = scene.place_new_component("resistor", QPointF(160.0, -80.0))
+
+    # Connect R1.b (40, 0) [outward (+1, 0)] to R2.a (120, 80) [outward (-1, 0)].
+    w12 = scene.add_wire(TerminalRef(r1.component.name, "b"), TerminalRef(r2.component.name, "a"))
+    assert w12 is not None
+    expected_pts = wire_route(
+        (40, 0),
+        (120, 80),
+        start_dir=(1, 0),
+        end_dir=(-1, 0),
+        obstacles=scene._component_obstacles_px(),
+    )
+    assert w12.points == expected_pts
+    assert len(scene.junction_items) == 0
+
+    # Verify 10 px hit stroke (half-width 5 px): 4 px away is inside shape, 6 px away is outside.
+    first_x, first_y = w12.points[0]
+    second_x, second_y = w12.points[1]
+    assert first_y == second_y  # leaves R1.b horizontally
+    mid_x = (first_x + second_x) / 2.0
+    assert w12.shape().contains(QPointF(mid_x, float(first_y) + 4.0))
+    assert not w12.shape().contains(QPointF(mid_x, float(first_y) + 6.0))
+
+    # Tap interior of w12 at a grid bend/segment to create a 3-way junction -> JunctionItem appears.
+    tap_x = w12.points[1][0]
+    tap_y = (w12.points[1][1] + w12.points[2][1]) // 2
+    tap_y = (tap_y // 20) * 20
+    w_tap = scene.add_wire([(tap_x, tap_y), r3.terminal_scene_positions_px()["a"]])
+    assert w_tap is not None
+    assert isinstance(w_tap.end_a, JunctionRef)
+    assert len(scene.junction_items) == 1
+    jitem = scene.junction_items[0]
+    assert jitem.junction_id == w_tap.end_a.id
+    assert jitem.pos() == QPointF(float(tap_x), float(tap_y))
+
+    # Removing the 3rd branch reduces/collapses the junction and removes JunctionItem.
+    scene.clearSelection()
+    w_tap.setSelected(True)
+    assert scene.delete_selected() is True
+    assert len(scene.junction_items) == 0
+
+    # FreeEnd wire renders hollow circle marker on canvas in both themes without errors.
+    w_open = scene.add_wire(TerminalRef(r1.component.name, "a"), FreeEnd(-120, 0))
+    assert w_open is not None
+    for theme in (ThemeMode.DARK, ThemeMode.LIGHT):
+        scene.set_theme(theme)
+        img = QImage(240, 120, QImage.Format.Format_ARGB32_Premultiplied)
+        img.fill(get_theme_palette(theme).canvas_bg)
+        painter = QPainter(img)
+        scene.render(painter, QRectF(0, 0, 240, 120), QRectF(-160, -60, 240, 120))
+        painter.end()
+        # Marker ring at FreeEnd (-120, 0) corresponds to x=40, y=60; 3.5 px ring differs from canvas_bg.
+        bg_rgb = img.pixelColor(2, 2).rgb()
+        ring_pixels = [
+            img.pixelColor(px, py).rgb()
+            for px in range(36, 45)
+            for py in range(56, 65)
+        ]
+        assert any(c != bg_rgb for c in ring_pixels)
+        # Center of hollow ring matches canvas background (wire stops at (-120, 0), hollow inside left edge at 37..39).
+        assert img.pixelColor(37, 60).rgb() != bg_rgb or img.pixelColor(43, 60).rgb() != bg_rgb

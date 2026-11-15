@@ -69,6 +69,11 @@ from circuitsim.wiring.model import (
     WireGraphError,
     snap_px as wire_snap_px,
 )
+from circuitsim.wiring.router import (
+    normalize_dir as wire_normalize_dir,
+    route as wire_route,
+    simplify_orthogonal_points as wire_simplify_points,
+)
 
 
 @dataclass(frozen=True)
@@ -164,6 +169,11 @@ class CircuitScene(QGraphicsScene):
         return self._wire_graph
 
     @property
+    def junction_items(self) -> list[JunctionItem]:
+        """Return list of visible `JunctionItem` objects on the canvas."""
+        return list(self._junction_items_by_id.values())
+
+    @property
     def explicit_junctions(self) -> set[PointPx]:
         """Return copy of user-placed explicit junction dot coordinates."""
         return set(self._explicit_junctions)
@@ -227,6 +237,42 @@ class CircuitScene(QGraphicsScene):
                 mapping[(cname, tname)] = pt
         return mapping
 
+    def _terminal_dir_map(self) -> dict[tuple[str, str], tuple[int, int] | None]:
+        mapping: dict[tuple[str, str], tuple[int, int] | None] = {}
+        for item in self._placed_items:
+            cname = item.component.name
+            cx = int(round(item.pos().x()))
+            cy = int(round(item.pos().y()))
+            for tname, pt in item.terminal_scene_positions_px().items():
+                mapping[(cname, tname)] = wire_normalize_dir(
+                    (pt[0] - cx, pt[1] - cy)
+                )
+        return mapping
+
+    def _component_obstacles_px(self) -> tuple[tuple[int, int, int, int], ...]:
+        rects: list[tuple[int, int, int, int]] = []
+        for item in self._placed_items:
+            r = item.scene_body_rect()
+            rects.append(
+                (
+                    int(round(r.left())),
+                    int(round(r.top())),
+                    int(round(r.right())),
+                    int(round(r.bottom())),
+                )
+            )
+        return tuple(rects)
+
+    def _attachment_outward_dir(
+        self,
+        att: Attachment,
+        dir_map: dict[tuple[str, str], tuple[int, int] | None] | None = None,
+    ) -> tuple[int, int] | None:
+        if isinstance(att, TerminalRef):
+            dmap = dir_map if dir_map is not None else self._terminal_dir_map()
+            return dmap.get((att.component, att.terminal))
+        return None
+
     def _attachment_pos_px(
         self,
         att: Attachment,
@@ -251,6 +297,8 @@ class CircuitScene(QGraphicsScene):
         graph: WireGraph,
         *,
         term_map: dict[tuple[str, str], PointPx] | None = None,
+        dir_map: dict[tuple[str, str], tuple[int, int] | None] | None = None,
+        obstacles: tuple[tuple[int, int, int, int], ...] | None = None,
         fallback_points: tuple[PointPx, ...] | None = None,
     ) -> tuple[PointPx, ...]:
         p_a = self._attachment_pos_px(wire.end_a, graph, term_map)
@@ -259,21 +307,66 @@ class CircuitScene(QGraphicsScene):
             return fallback_points or ()
         if p_a == p_b:
             return (p_a,)
+        dmap = dir_map if dir_map is not None else self._terminal_dir_map()
+        obs = obstacles if obstacles is not None else self._component_obstacles_px()
+        dir_a = self._attachment_outward_dir(wire.end_a, dmap)
+        dir_b = self._attachment_outward_dir(wire.end_b, dmap)
         if wire.hints:
             waypoints = [p_a, *wire.hints, p_b]
-            full_pts: list[PointPx] = [waypoints[0]]
-            for nxt in waypoints[1:]:
+            full_pts: list[PointPx] = [wire_snap_px(waypoints[0])]
+            for idx in range(len(waypoints) - 1):
                 prev = full_pts[-1]
+                nxt = wire_snap_px(waypoints[idx + 1])
                 if prev == nxt:
                     continue
                 if prev[0] == nxt[0] or prev[1] == nxt[1]:
                     full_pts.append(nxt)
                 else:
-                    seg = route_orthogonal_wire(prev, nxt)
+                    seg = wire_route(
+                        prev,
+                        nxt,
+                        obstacles=obs,
+                        previous=fallback_points if idx == 0 else None,
+                    )
                     full_pts.extend(seg[1:])
-            simp = simplify_orthogonal_points(full_pts, snap=True)
+            simp = wire_simplify_points(full_pts)
             return simp if simp else (p_a, p_b)
-        return route_orthogonal_wire(p_a, p_b)
+        return wire_route(
+            p_a,
+            p_b,
+            start_dir=dir_a,
+            end_dir=dir_b,
+            obstacles=obs,
+            previous=fallback_points,
+        )
+
+    def _sync_junction_items_from_wire_graph(self) -> None:
+        """Create, update, or remove `JunctionItem` objects matching `graph.junction_dot_visible(jid)`."""
+        graph = self._wire_graph
+        visible_junctions = {
+            j.id: j for j in graph.junctions if graph.junction_dot_visible(j.id)
+        }
+        for old_jid in list(self._junction_items_by_id):
+            if old_jid not in visible_junctions:
+                jitem = self._junction_items_by_id.pop(old_jid)
+                if jitem.scene() is self:
+                    self.removeItem(jitem)
+        for jid, junc in visible_junctions.items():
+            existing = self._junction_items_by_id.get(jid)
+            target_pos = QPointF(float(junc.pos[0]), float(junc.pos[1]))
+            if existing is not None:
+                if existing.pos() != target_pos:
+                    existing.setPos(target_pos)
+                if existing.scene() is not self:
+                    self.addItem(existing)
+            else:
+                jitem = JunctionItem(
+                    target_pos,
+                    theme=self.theme,
+                    junction_id=jid,
+                )
+                self._junction_items_by_id[jid] = jitem
+                self.addItem(jitem)
 
     def _sync_graphics_from_wire_graph(
         self,
@@ -283,6 +376,8 @@ class CircuitScene(QGraphicsScene):
     ) -> None:
         graph = self._wire_graph
         term_map = self._terminal_pos_map()
+        dir_map = self._terminal_dir_map()
+        obstacles = self._component_obstacles_px()
         pref = preferred_wire_items or {}
         want_ids = {w.id for w in graph.wires}
 
@@ -302,7 +397,12 @@ class CircuitScene(QGraphicsScene):
             existing = self._wire_items_by_id.get(wire.id) or pref.get(wire.id)
             fallback = existing.points if existing is not None else None
             pts = self._compute_wire_points_from_graph(
-                wire, graph, term_map=term_map, fallback_points=fallback
+                wire,
+                graph,
+                term_map=term_map,
+                dir_map=dir_map,
+                obstacles=obstacles,
+                fallback_points=fallback,
             )
             if existing is not None:
                 existing.end_a = wire.end_a
@@ -330,6 +430,7 @@ class CircuitScene(QGraphicsScene):
         self._wire_counter = max_w_num
         self._wire_items = new_items
         self._wire_items_by_id = new_by_id
+        self._sync_junction_items_from_wire_graph()
 
     def set_wire_graph(
         self,
@@ -1607,6 +1708,7 @@ class CircuitScene(QGraphicsScene):
             self._wire_items_by_id[wire.wire_id] = wire
             self.addItem(wire)
         self._wire_graph = loaded_graph
+        self._sync_junction_items_from_wire_graph()
 
         # Keep future wire ids unique: continue after the highest loaded "W<n>".
         numbers = [
@@ -1726,11 +1828,17 @@ class CircuitScene(QGraphicsScene):
             palette = get_theme_palette(self.theme)
             painter.save()
 
-            # 1. Draw all active junction dots (T-junctions + explicit junctions on wires)
+            # 1. Draw any remaining active junction dots not already rendered by a JunctionItem
+            rendered_by_items = {
+                (int(round(j.pos().x())), int(round(j.pos().y())))
+                for j in self._junction_items_by_id.values()
+            }
             junc_color = QColor(palette.symbol_stroke)
             painter.setPen(QPen(junc_color, 1.2))
             painter.setBrush(QBrush(junc_color))
             for jx, jy in self._active_junction_dots:
+                if (jx, jy) in rendered_by_items:
+                    continue
                 painter.drawEllipse(QPointF(float(jx), float(jy)), 4.2, 4.2)
 
             # 2. Draw glowing highlight ring around hovered terminal or wire snap target
