@@ -45,11 +45,11 @@
 - [x] `C4` (`done` `875b03f`, 381 fast): HYDROGEN QUEUE `5.4` — Editing wire ends (`Acceptance S3`: drag handle, detach, reattach to terminal/junction/wire-split/`FreeEnd`, 1 undo step) + synthetic `QTest` mouse tests.
 - [x] `C5` (`done` `4d552ec`, 382 fast): HYDROGEN QUEUE `5.5` — Update/audit existing wire tests (document any replaced coordinate-mechanism test in `PROGRESS.md`) + performance benchmark (`route()` + 50-part drag step <= ~30 ms).
 - [x] `C6` (`done` `c053c45`, 383 fast): HYDROGEN QUEUE `6.1` — Verification matrix S1–S5, golden circuit round-trips, update `PROGRESS.md` and `README.md`.
-- [x] `GATE C` (`done`, 384 full x3 + MainWindow divider smoke): Full test suite + tag `checkpoint/C-done`.
+- [x] `GATE C` (`done` `4d973a0`, 384 full x3 + MainWindow divider smoke): Full test suite + tag `checkpoint/C-done`.
 
 ### PART D — WIRE REDESIGN STEP 4B (branch `wire-redesign`)
-- [ ] `D1` (`in_progress`): Split-on-drop (dropping component onto wire splits inline or taps junction in one undo step).
-- [ ] `D2` (`todo`): Explicit `J` key junction placement on wire at snapped cursor via `split_wire_at`.
+- [x] `D1` (`done`, 384 fast): Split-on-drop (dropping component onto wire splits inline or taps junction in one undo step).
+- [ ] `D2` (`in_progress`): Explicit `J` key junction placement on wire at snapped cursor via `split_wire_at`.
 - [ ] `D3` (`todo`): Junction dragging (`MoveJunctionCommand(junction_id, old_pos, new_pos)` updating `Junction.pos` and rerouting incident wires).
 - [ ] `D4` (`todo`): Copy/paste of selections containing components, wires, and junctions (`Ctrl+C` / `Ctrl+V`).
 - [ ] `D5` (`todo`): Remove dead old wire routing/endpoint code listed in `OLD CODE MAP`.

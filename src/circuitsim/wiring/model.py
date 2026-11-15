@@ -438,6 +438,42 @@ class WireGraph:
         _normalize(wires, junctions, affected)
         return WireGraph(tuple(wires), tuple(junctions))
 
+    def insert_component_inline(
+        self,
+        wire_id: str,
+        term_a: TerminalRef,
+        term_b: TerminalRef,
+        *,
+        hints_a: Iterable[tuple[float, float]] = (),
+        hints_b: Iterable[tuple[float, float]] = (),
+        second_wire_id: str | None = None,
+    ) -> WireGraph:
+        """Split `wire_id` (`end_a -> end_b`) around a 2-terminal component (`term_a`, `term_b`)."""
+        if term_a == term_b:
+            raise WireGraphError("Inline component insertion requires two distinct terminals.")
+        old = self.wire(wire_id)
+        remaining = [w for w in self.wires if w.id != old.id]
+        idx = self.wires.index(old)
+        inserted: list[Wire] = []
+        if old.end_a != term_a and _find_duplicate(remaining, old.end_a, term_a) is None:
+            inserted.append(Wire(old.id, old.end_a, term_a, _snap_hints(hints_a)))
+        with_first = remaining + inserted
+        if term_b != old.end_b and _find_duplicate(with_first, term_b, old.end_b) is None:
+            if second_wire_id is None:
+                second_id = _lowest_free_id("W", (w.id for w in with_first))
+            else:
+                if any(w.id == second_wire_id for w in with_first):
+                    raise WireGraphError(f"Wire id {second_wire_id!r} already exists.")
+                second_id = second_wire_id
+            inserted.append(Wire(second_id, term_b, old.end_b, _snap_hints(hints_b)))
+        new_wires = list(self.wires)
+        new_wires[idx : idx + 1] = inserted
+        junctions = list(self.junctions)
+        affected = [att.id for att in (old.end_a, old.end_b) if isinstance(att, JunctionRef)]
+        if affected:
+            _normalize(new_wires, junctions, affected)
+        return WireGraph(tuple(new_wires), tuple(junctions))
+
     def remove_component(self, component: str) -> WireGraph:
         """Delete every wire attached to `component`, then clean up the junctions."""
         wires: list[Wire] = []

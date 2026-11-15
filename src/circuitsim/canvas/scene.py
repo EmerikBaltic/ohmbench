@@ -696,7 +696,19 @@ class CircuitScene(QGraphicsScene):
             item.set_flipped_h(flipped_h)
 
         self._record_pin_to_pin_bonds_for(item, self._placed_items)
-        self.undo_stack.push(AddComponentCommand(self, item))
+        old_graph = self._wire_graph
+        new_graph = self._apply_component_split_on_drop(item, old_graph)
+        if new_graph != old_graph:
+            self.undo_stack.push(
+                AddComponentCommand(
+                    self,
+                    item,
+                    old_graph=old_graph,
+                    new_graph=new_graph,
+                )
+            )
+        else:
+            self.undo_stack.push(AddComponentCommand(self, item))
         return item
 
     def _record_pin_to_pin_bonds_for(
@@ -1523,6 +1535,124 @@ class CircuitScene(QGraphicsScene):
                 return w.id
         return None
 
+    def _wire_polyline_in_graph(
+        self,
+        wire: Wire,
+        graph: WireGraph,
+        term_map: dict[tuple[str, str], PointPx],
+    ) -> tuple[PointPx, ...]:
+        item = self._wire_items_by_id.get(wire.id)
+        if (
+            item is not None
+            and item.scene() is self
+            and len(item.points) >= 2
+            and self._wire_graph.has_wire(wire.id)
+            and self._wire_graph.wire(wire.id) == wire
+        ):
+            return item.points
+        return self._compute_wire_points_from_graph(wire, graph, term_map=term_map)
+
+    @staticmethod
+    def _arc_distance_along_polyline(
+        pt: PointPx, pts: Sequence[PointPx]
+    ) -> float | None:
+        from circuitsim.canvas.connectivity import point_on_orthogonal_segment
+
+        dist = 0.0
+        for i in range(len(pts) - 1):
+            a, b = pts[i], pts[i + 1]
+            if point_on_orthogonal_segment(pt, a, b):
+                return dist + float(abs(pt[0] - a[0]) + abs(pt[1] - a[1]))
+            dist += float(abs(b[0] - a[0]) + abs(b[1] - a[1]))
+        return None
+
+    def _hints_before_point(
+        self, pt: PointPx, wire: Wire, pts: Sequence[PointPx]
+    ) -> int:
+        if not wire.hints:
+            return 0
+        d_pt = self._arc_distance_along_polyline(pt, pts)
+        if d_pt is None:
+            return 0
+        count = 0
+        for h in wire.hints:
+            d_h = self._arc_distance_along_polyline(h, pts)
+            if d_h is not None and d_h < d_pt:
+                count += 1
+            else:
+                break
+        return count
+
+    def _apply_component_split_on_drop(
+        self, item: ComponentItem, graph: WireGraph
+    ) -> WireGraph:
+        """Split a wire inline or tap a junction when an unconnected `item` is dropped onto wires."""
+        from circuitsim.canvas.connectivity import point_strictly_inside_wire
+
+        cname = item.component.name
+        terms = item.terminal_scene_positions_px()
+        if not terms:
+            return graph
+        if any(graph.attached_wires(TerminalRef(cname, t)) for t in terms):
+            return graph
+
+        term_map = self._terminal_pos_map()
+
+        # Case A: 2-terminal component dropped inline onto the interior of one wire.
+        if len(terms) == 2:
+            (t1, p1), (t2, p2) = list(terms.items())
+            for w in graph.wires:
+                pts = self._wire_polyline_in_graph(w, graph, term_map)
+                if len(pts) < 2:
+                    continue
+                if point_strictly_inside_wire(p1, pts) and point_strictly_inside_wire(p2, pts):
+                    d1 = self._arc_distance_along_polyline(p1, pts)
+                    d2 = self._arc_distance_along_polyline(p2, pts)
+                    if d1 is not None and d2 is not None and d1 != d2:
+                        if d1 < d2:
+                            first_t, d_first = t1, d1
+                            second_t, d_second = t2, d2
+                        else:
+                            first_t, d_first = t2, d2
+                            second_t, d_second = t1, d1
+                        hints_a = [
+                            h
+                            for h in w.hints
+                            if (dh := self._arc_distance_along_polyline(h, pts)) is not None
+                            and dh < d_first
+                        ]
+                        hints_b = [
+                            h
+                            for h in w.hints
+                            if (dh := self._arc_distance_along_polyline(h, pts)) is not None
+                            and dh > d_second
+                        ]
+                        return graph.insert_component_inline(
+                            w.id,
+                            TerminalRef(cname, first_t),
+                            TerminalRef(cname, second_t),
+                            hints_a=hints_a,
+                            hints_b=hints_b,
+                        )
+
+        # Case B: Single-terminal (or non-inline multi-terminal) tap onto wire interior(s).
+        working = graph
+        for t_name, pt in sorted(terms.items()):
+            j_exact = self._find_junction_at(pt, working, tolerance_px=0.5)
+            if j_exact is not None:
+                working = working.add_wire(j_exact, TerminalRef(cname, t_name))
+                continue
+            for w in working.wires:
+                pts = self._wire_polyline_in_graph(w, working, term_map)
+                if len(pts) >= 2 and point_strictly_inside_wire(pt, pts):
+                    hb = self._hints_before_point(pt, w, pts)
+                    split_res = working.split_wire_at(w.id, pt, hints_before=hb)
+                    working = split_res.graph.add_wire(
+                        JunctionRef(split_res.junction_id), TerminalRef(cname, t_name)
+                    )
+                    break
+        return working
+
     def _bond_overlapping_terminals(
         self, graph: WireGraph, pt: PointPx, primary: TerminalRef
     ) -> WireGraph:
@@ -1838,6 +1968,10 @@ class CircuitScene(QGraphicsScene):
             return False
 
         target_graph = self._moved_graph_from_drag_start(moved_items)
+        if len(moved_items) == 1:
+            target_graph = self._apply_component_split_on_drop(
+                moved_items[0][0], target_graph
+            )
         if target_graph != self._wire_graph:
             self._wire_graph = target_graph
             self._sync_graphics_from_wire_graph()

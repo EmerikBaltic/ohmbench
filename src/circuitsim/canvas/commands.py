@@ -52,15 +52,30 @@ class SetWireGraphCommand(QUndoCommand):
 class AddComponentCommand(QUndoCommand):
     """Undoable command that places a `ComponentItem` onto `CircuitScene`."""
 
-    def __init__(self, scene: CircuitScene, item: ComponentItem) -> None:
+    def __init__(
+        self,
+        scene: CircuitScene,
+        item: ComponentItem,
+        *,
+        old_graph: WireGraph | None = None,
+        new_graph: WireGraph | None = None,
+    ) -> None:
         super().__init__(f"Add {item.component.name}")
         self.scene: CircuitScene = scene
         self.item: ComponentItem = item
+        self.old_graph: WireGraph | None = old_graph
+        self.new_graph: WireGraph | None = new_graph
 
     def redo(self) -> None:
-        self.scene._insert_component_item(self.item, select=True)
+        self.scene._insert_component_item(
+            self.item, select=True, refresh=self.new_graph is None
+        )
+        if self.new_graph is not None:
+            self.scene.set_wire_graph(self.new_graph)
 
     def undo(self) -> None:
+        if self.old_graph is not None:
+            self.scene.set_wire_graph(self.old_graph, refresh=False)
         self.scene._remove_component_item(self.item)
 
 
