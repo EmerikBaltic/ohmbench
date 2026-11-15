@@ -20,7 +20,7 @@
 - [x] `A2` (`done`): Make `tests/test_scope_performance.py` robust on shared CI runners (`os.environ.get("CI")`) while keeping local thresholds strict.
 - [x] `A3` (`done`): Diagnose and fix the intermittent Windows Qt teardown access violation (`MainWindow.closeEvent`, `SimulationWorkerController.shutdown`, `tests/conftest.py`).
 - [x] `A4` (`done`): Add exact-value Qt-free scope tests in `tests/test_scope_core_exact.py` (`roll`, `single`, `auto_set` [skipped & reported: rule not documented in docstring/PROGRESS.md], `hysteresis`, `holdoff`, `10x probe`, `NOT gate`).
-- [ ] `GATE A` (`todo`): Run `.\.venv\Scripts\pytest.exe -q` 3 times consecutively (0 failures, 0 access violations) and tag `checkpoint/A-done`.
+- [x] `GATE A` (`done`): Run `.\.venv\Scripts\pytest.exe -q` 3 times consecutively (`370 passed` x3, 0 failures, 0 access violations) and tag `checkpoint/A-done`.
 
 ### PART B — WIRE REDESIGN PHASE 4 (branch `wire-redesign`)
 - [ ] `B0` (`todo`): Switch to `wire-redesign`, fast-forward merge `main`, write `OLD CODE MAP`, inspect & discard `stash@{0}` without dropping stash entry.
