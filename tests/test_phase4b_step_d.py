@@ -260,3 +260,127 @@ def test_d2_j_key_junction_split_and_third_wire_and_undo(tmp_path, qapp) -> None
     finally:
         win.circuit_scene.undo_stack.setClean()
         win.close()
+
+
+def test_d3_junction_dragging_reroutes_wires_and_undo_redo(tmp_path, qapp) -> None:
+    """D3: dragging a JunctionItem updates Junction.pos, reroutes incident wires, and supports undo/redo."""
+    from circuitsim.canvas.commands import MoveJunctionCommand
+
+    settings = AppSettings(data_dir=tmp_path / "settings_d3")
+    win = MainWindow(settings=settings)
+    win.resize(1100, 800)
+    win.show()
+    qapp.processEvents()
+    scene = win.circuit_scene
+    view = win.circuit_view
+    vp = view.viewport()
+
+    try:
+        # Divider with degree-3 junction J1 at (0, -80): V1(12V) -> R1(1k) -> J1 -> (R2(2k) || R3(2k)) -> GND
+        v1 = scene.place_new_component("dc_voltage", QPointF(-240.0, 0.0), rotation_deg=90)
+        r1 = scene.place_new_component("resistor", QPointF(-100.0, -80.0))
+        r2 = scene.place_new_component("resistor", QPointF(160.0, 0.0), rotation_deg=90)
+        r3 = scene.place_new_component("resistor", QPointF(0.0, 20.0), rotation_deg=90)
+        gnd = scene.place_new_component("ground", QPointF(-240.0, 120.0))
+        scene.edit_component_parameters(v1, {"dc_voltage": 12.0})
+        scene.edit_component_parameters(r1, {"resistance": 1000.0})
+        scene.edit_component_parameters(r2, {"resistance": 2000.0})
+        scene.edit_component_parameters(r3, {"resistance": 2000.0})
+
+        r2_terms = r2.terminal_scene_positions_px()
+        r2_top_t, _ = min(r2_terms.items(), key=lambda kv: kv[1][1])
+        r2_bot_t, _ = max(r2_terms.items(), key=lambda kv: kv[1][1])
+        r3_terms = r3.terminal_scene_positions_px()
+        r3_top_t, r3_top_pos = min(r3_terms.items(), key=lambda kv: kv[1][1])
+        r3_bot_t, _ = max(r3_terms.items(), key=lambda kv: kv[1][1])
+
+        w_top = scene.add_wire(TerminalRef("V1", "pos"), TerminalRef("R1", "a"))
+        w_mid = scene.add_wire(
+            TerminalRef("R1", "b"),
+            TerminalRef("R2", r2_top_t),
+            hints=((-40, -80), (140, -80)),
+        )
+        w_bot = scene.add_wire(
+            TerminalRef("V1", "neg"),
+            TerminalRef("R2", r2_bot_t),
+            hints=((-200, 80), (140, 80)),
+        )
+        w_gnd = scene.add_wire(TerminalRef("V1", "neg"), TerminalRef("GND1", "gnd"))
+        w_r3_bot = scene.add_wire(TerminalRef("R3", r3_bot_t), TerminalRef("V1", "neg"))
+        assert all(w is not None for w in (w_top, w_mid, w_bot, w_gnd, w_r3_bot))
+
+        split_res = scene.wire_graph.split_wire_at(w_mid.wire_id, (0, -80))
+        g_j3 = split_res.graph.add_wire(
+            JunctionRef(split_res.junction_id),
+            TerminalRef("R3", r3_top_t),
+        )
+        scene.set_wire_graph(g_j3)
+        jid = split_res.junction_id
+        assert len(scene.junction_items) == 1
+        assert scene.wire_graph.junction(jid).pos == (0, -80)
+
+        # Ensure view center keeps (-240..200, -140..140) comfortably in viewport.
+        view.centerOn(0.0, 0.0)
+        qapp.processEvents()
+
+        # 1. Start dragging J1, move to (60, -120), press Esc -> cancels with 0 undo steps.
+        idx0 = scene.undo_stack.index()
+        vp_start = view.mapFromScene(QPointF(0.0, -80.0))
+        vp_cancel = view.mapFromScene(QPointF(60.0, -120.0))
+        QTest.mousePress(vp, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier, vp_start)
+        QTest.mouseMove(vp, vp_cancel)
+        qapp.processEvents()
+        assert scene.is_dragging_junction is True
+        assert scene.wire_graph.junction(jid).pos == (60, -120)
+        QTest.keyClick(view, Qt.Key.Key_Escape)
+        QTest.mouseRelease(vp, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier, vp_cancel)
+        qapp.processEvents()
+        assert scene.is_dragging_junction is False
+        assert scene.undo_stack.index() == idx0
+        assert scene.wire_graph.junction(jid).pos == (0, -80)
+
+        # 2. Drag J1 from (0, -80) to (40, -100) and release -> commits MoveJunctionCommand.
+        vp_dest = view.mapFromScene(QPointF(40.0, -100.0))
+        QTest.mousePress(vp, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier, vp_start)
+        QTest.mouseMove(vp, vp_dest)
+        QTest.mouseRelease(vp, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier, vp_dest)
+        qapp.processEvents()
+
+        assert scene.undo_stack.index() == idx0 + 1
+        assert scene.wire_graph.junction(jid).pos == (40, -100)
+        assert scene.junction_items[0].pos() == QPointF(40.0, -100.0)
+
+        incident = scene.wire_graph.attached_wires(JunctionRef(jid))
+        assert len(incident) == 3
+        for w in incident:
+            witem = scene._wire_items_by_id[w.id]
+            end_pt = witem.points[0] if w.end_a == JunctionRef(jid) else witem.points[-1]
+            assert end_pt == (40, -100)
+            for i in range(len(witem.points) - 1):
+                p, q = witem.points[i], witem.points[i + 1]
+                assert p[0] == q[0] or p[1] == q[1]
+
+        # Hand calc: parallel R2 || R3 = 1 kOhm, series with R1 = 1 kOhm -> V_mid = 6.0 V unchanged.
+        conn_moved = scene.extract_connectivity_result()
+        sol_moved = MNASolver(conn_moved.circuit).solve_dc()
+        assert math.isclose(
+            sol_moved.node_voltages[conn_moved.component_nodes["R2"][r2_top_t]],
+            6.0,
+            rel_tol=1e-6,
+        )
+
+        # Undo restores (0, -80); redo moves back to (40, -100).
+        scene.undo_stack.undo()
+        assert scene.undo_stack.index() == idx0
+        assert scene.wire_graph.junction(jid).pos == (0, -80)
+        scene.undo_stack.redo()
+        assert scene.wire_graph.junction(jid).pos == (40, -100)
+
+        # 3. Direct MoveJunctionCommand API works standalone as well.
+        scene.undo_stack.push(MoveJunctionCommand(scene, jid, (40, -100), (20, -60)))
+        assert scene.wire_graph.junction(jid).pos == (20, -60)
+        scene.undo_stack.undo()
+        assert scene.wire_graph.junction(jid).pos == (40, -100)
+    finally:
+        win.circuit_scene.undo_stack.setClean()
+        win.close()

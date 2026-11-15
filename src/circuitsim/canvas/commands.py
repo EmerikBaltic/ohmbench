@@ -233,6 +233,46 @@ class MoveComponentsCommand(QUndoCommand):
         self.scene.refresh_connectivity_visuals()
 
 
+class MoveJunctionCommand(QUndoCommand):
+    """Undoable command that moves a `Junction` and re-routes incident wires."""
+
+    def __init__(
+        self,
+        scene: CircuitScene,
+        junction_id: str,
+        old_pos: PointPx,
+        new_pos: PointPx,
+        *,
+        old_graph: WireGraph | None = None,
+        new_graph: WireGraph | None = None,
+    ) -> None:
+        super().__init__(f"Move Junction {junction_id}")
+        self.scene: CircuitScene = scene
+        self.junction_id: str = junction_id
+        self.old_pos: PointPx = old_pos
+        self.new_pos: PointPx = new_pos
+        self.old_graph: WireGraph = (
+            old_graph if old_graph is not None else scene.wire_graph
+        )
+        self.new_graph: WireGraph = (
+            new_graph
+            if new_graph is not None
+            else self.old_graph.move_junction(junction_id, new_pos)
+        )
+
+    def redo(self) -> None:
+        if self.old_pos in self.scene._explicit_junctions:
+            self.scene._explicit_junctions.discard(self.old_pos)
+            self.scene._explicit_junctions.add(self.new_pos)
+        self.scene.set_wire_graph(self.new_graph)
+
+    def undo(self) -> None:
+        if self.new_pos in self.scene._explicit_junctions:
+            self.scene._explicit_junctions.discard(self.new_pos)
+            self.scene._explicit_junctions.add(self.old_pos)
+        self.scene.set_wire_graph(self.old_graph)
+
+
 class RotateComponentsCommand(QUndoCommand):
     """Undoable command that rotates components by 90° CW and re-routes attached wires."""
 

@@ -23,6 +23,7 @@ from circuitsim.canvas.commands import (
     EditComponentParametersCommand,
     FlipComponentsCommand,
     MoveComponentsCommand,
+    MoveJunctionCommand,
     PasteItemsCommand,
     RotateComponentsCommand,
     SetWireGraphCommand,
@@ -160,6 +161,10 @@ class CircuitScene(QGraphicsScene):
         self._end_drag_orig_att: Attachment | None = None
         self._end_drag_orig_pts: tuple[PointPx, ...] = ()
         self._hovered_wire_end_pt: PointPx | None = None
+        self._dragging_junction_id: str | None = None
+        self._dragging_junction_start_pos: PointPx | None = None
+        self._dragging_junction_start_graph: WireGraph | None = None
+        self._dragging_junction_explicit: bool = False
 
         # Component drag-move tracking for live attached-wire re-routing & QUndoStack
         self._move_tracking_active: bool = False
@@ -1486,6 +1491,142 @@ class CircuitScene(QGraphicsScene):
         self._end_drag_orig_att = None
         self._end_drag_orig_pts = ()
         self._hovered_wire_end_pt = None
+
+    @property
+    def is_dragging_junction(self) -> bool:
+        """Return whether a junction dot is currently being dragged."""
+        return self._dragging_junction_id is not None
+
+    def find_junction_item_near(
+        self,
+        scene_pos: QPointF | tuple[float, float],
+        *,
+        tolerance_px: float | None = None,
+    ) -> JunctionItem | None:
+        """Return the closest visible `JunctionItem` within `tolerance_px`, if any."""
+        tol = (
+            self.TERMINAL_SNAP_RADIUS_PX
+            if tolerance_px is None
+            else float(tolerance_px)
+        )
+        px = scene_pos[0] if isinstance(scene_pos, (tuple, list)) else scene_pos.x()
+        py = scene_pos[1] if isinstance(scene_pos, (tuple, list)) else scene_pos.y()
+        best_item: JunctionItem | None = None
+        best_dist = tol
+        for jitem in self._junction_items_by_id.values():
+            if jitem.scene() is not self:
+                continue
+            dist = math.hypot(jitem.pos().x() - px, jitem.pos().y() - py)
+            if dist <= best_dist:
+                best_dist = dist
+                best_item = jitem
+        return best_item
+
+    def begin_junction_drag(self, junction_id: str) -> bool:
+        """Begin interactively dragging `junction_id` to a new grid position."""
+        if not self._wire_graph.has_junction(junction_id):
+            return False
+        junc = self._wire_graph.junction(junction_id)
+        self._dragging_junction_id = junction_id
+        self._dragging_junction_start_pos = junc.pos
+        self._dragging_junction_start_graph = self._wire_graph
+        self._dragging_junction_explicit = junc.pos in self._explicit_junctions
+        self._hovered_wire_end_pt = None
+        return True
+
+    def update_junction_drag(
+        self, scene_pos: QPointF | tuple[float, float]
+    ) -> PointPx | None:
+        """Live-preview moving the active junction to snapped `scene_pos` and rerouting wires."""
+        jid = self._dragging_junction_id
+        old_graph = self._dragging_junction_start_graph
+        if jid is None or old_graph is None or not old_graph.has_junction(jid):
+            return None
+        raw = (
+            (scene_pos.x(), scene_pos.y())
+            if isinstance(scene_pos, QPointF)
+            else (float(scene_pos[0]), float(scene_pos[1]))
+        )
+        new_pos = wire_snap_px(raw)
+        if self._dragging_junction_explicit:
+            old_j = (
+                self._wire_graph.junction(jid)
+                if self._wire_graph.has_junction(jid)
+                else None
+            )
+            if old_j is not None:
+                self._explicit_junctions.discard(old_j.pos)
+            self._explicit_junctions.add(new_pos)
+        new_graph = old_graph.move_junction(jid, new_pos)
+        self.set_wire_graph(new_graph, refresh=True)
+        return new_pos
+
+    def commit_junction_drag(
+        self, scene_pos: QPointF | tuple[float, float] | None = None
+    ) -> bool:
+        """Finalize junction drag and push `MoveJunctionCommand` if its position changed."""
+        jid = self._dragging_junction_id
+        start_pos = self._dragging_junction_start_pos
+        old_graph = self._dragging_junction_start_graph
+        was_explicit = self._dragging_junction_explicit
+        self._clear_junction_drag_state()
+        if (
+            jid is None
+            or start_pos is None
+            or old_graph is None
+            or not old_graph.has_junction(jid)
+        ):
+            return False
+        if scene_pos is not None:
+            raw = (
+                (scene_pos.x(), scene_pos.y())
+                if isinstance(scene_pos, QPointF)
+                else (float(scene_pos[0]), float(scene_pos[1]))
+            )
+            new_pos = wire_snap_px(raw)
+        elif self._wire_graph.has_junction(jid):
+            new_pos = self._wire_graph.junction(jid).pos
+        else:
+            new_pos = start_pos
+
+        if new_pos == start_pos:
+            if was_explicit:
+                self._explicit_junctions.add(start_pos)
+            self.set_wire_graph(old_graph, refresh=True)
+            return False
+
+        new_graph = old_graph.move_junction(jid, new_pos)
+        if was_explicit:
+            self._explicit_junctions.discard(new_pos)
+            self._explicit_junctions.add(start_pos)
+        self.undo_stack.push(
+            MoveJunctionCommand(
+                self,
+                jid,
+                start_pos,
+                new_pos,
+                old_graph=old_graph,
+                new_graph=new_graph,
+            )
+        )
+        return True
+
+    def cancel_junction_drag(self) -> None:
+        """Cancel an active junction drag and restore the original graph (0 undo steps)."""
+        start_pos = self._dragging_junction_start_pos
+        old_graph = self._dragging_junction_start_graph
+        was_explicit = self._dragging_junction_explicit
+        self._clear_junction_drag_state()
+        if old_graph is not None:
+            if was_explicit and start_pos is not None:
+                self._explicit_junctions.add(start_pos)
+            self.set_wire_graph(old_graph, refresh=True)
+
+    def _clear_junction_drag_state(self) -> None:
+        self._dragging_junction_id = None
+        self._dragging_junction_start_pos = None
+        self._dragging_junction_start_graph = None
+        self._dragging_junction_explicit = False
 
     def _terminals_at_point(self, pt: PointPx) -> list[TerminalRef]:
         refs: list[TerminalRef] = []

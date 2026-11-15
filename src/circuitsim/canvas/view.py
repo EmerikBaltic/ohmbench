@@ -172,6 +172,9 @@ class CircuitView(QGraphicsView):
         if self._space_held:
             self.setCursor(Qt.CursorShape.OpenHandCursor)
             return
+        if self.circuit_scene.is_dragging_junction:
+            self.setCursor(Qt.CursorShape.SizeAllCursor)
+            return
         if self.circuit_scene.is_dragging_wire_endpoint:
             self.setCursor(Qt.CursorShape.CrossCursor)
             return
@@ -277,6 +280,12 @@ class CircuitView(QGraphicsView):
                 self._update_cursor_for_scene_pos(scene_pt)
                 event.accept()
                 return
+            if self.circuit_scene.is_dragging_junction:
+                self._suppress_next_context_menu = True
+                self.circuit_scene.cancel_junction_drag()
+                self._update_cursor_for_scene_pos(scene_pt)
+                event.accept()
+                return
             if self.circuit_scene.is_dragging_wire_endpoint:
                 self._suppress_next_context_menu = True
                 self.circuit_scene.cancel_wire_endpoint_drag()
@@ -303,6 +312,17 @@ class CircuitView(QGraphicsView):
                 return
 
             if not self._wire_mode_enabled:
+                jitem = self.circuit_scene.find_junction_item_near(
+                    scene_pt, tolerance_px=self.circuit_scene.TERMINAL_SNAP_RADIUS_PX
+                )
+                if jitem is not None and jitem.junction_id is not None:
+                    if not (event.modifiers() & Qt.KeyboardModifier.ShiftModifier):
+                        self.circuit_scene.clearSelection()
+                    jitem.setSelected(True)
+                    self.circuit_scene.begin_junction_drag(jitem.junction_id)
+                    self._update_cursor_for_scene_pos(scene_pt)
+                    event.accept()
+                    return
                 end_hit = self.circuit_scene.find_wire_endpoint_near(
                     scene_pt, tolerance_px=self.circuit_scene.TERMINAL_SNAP_RADIUS_PX
                 )
@@ -380,6 +400,12 @@ class CircuitView(QGraphicsView):
             event.accept()
             return
 
+        if self.circuit_scene.is_dragging_junction:
+            self.circuit_scene.update_junction_drag(scene_pt)
+            self._update_cursor_for_scene_pos(scene_pt)
+            event.accept()
+            return
+
         if self.circuit_scene.is_dragging_wire_endpoint:
             self.circuit_scene.update_wire_endpoint_drag(scene_pt)
             self._update_cursor_for_scene_pos(scene_pt)
@@ -430,6 +456,12 @@ class CircuitView(QGraphicsView):
                 pts = self.circuit_scene.update_wire_preview(scene_pt)
                 if len(pts) >= 2:
                     self.circuit_scene.finish_wire_preview(scene_pt)
+                self._update_cursor_for_scene_pos(scene_pt)
+                event.accept()
+                return
+
+            if self.circuit_scene.is_dragging_junction:
+                self.circuit_scene.commit_junction_drag(scene_pt)
                 self._update_cursor_for_scene_pos(scene_pt)
                 event.accept()
                 return
@@ -573,7 +605,9 @@ class CircuitView(QGraphicsView):
             event.accept()
             return
         if event.key() == Qt.Key.Key_Escape:
-            if self.circuit_scene.is_dragging_wire_endpoint:
+            if self.circuit_scene.is_dragging_junction:
+                self.circuit_scene.cancel_junction_drag()
+            elif self.circuit_scene.is_dragging_wire_endpoint:
                 self.circuit_scene.cancel_wire_endpoint_drag()
             elif self.circuit_scene.is_dragging_wire_segment:
                 self.circuit_scene.cancel_wire_segment_drag()

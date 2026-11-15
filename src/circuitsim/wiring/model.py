@@ -484,6 +484,27 @@ class WireGraph:
         _normalize(wires, junctions, [junction_id])
         return WireGraph(tuple(wires), tuple(junctions))
 
+    def move_junction(
+        self, junction_id: str, new_pos: tuple[float, float]
+    ) -> WireGraph:
+        """Move `junction_id` to snapped `new_pos` and clear stale hints on incident wires."""
+        old_j = self.junction(junction_id)
+        pt = snap_px(new_pos)
+        if pt == old_j.pos:
+            return self
+        ref = JunctionRef(junction_id)
+        junctions = tuple(
+            Junction(junction_id, pt) if j.id == junction_id else j
+            for j in self.junctions
+        )
+        wires = tuple(
+            Wire(w.id, w.end_a, w.end_b, ())
+            if (w.hints and w.touches(ref))
+            else w
+            for w in self.wires
+        )
+        return WireGraph(wires=wires, junctions=junctions)
+
     def remove_component(self, component: str) -> WireGraph:
         """Delete every wire attached to `component`, then clean up the junctions."""
         wires: list[Wire] = []

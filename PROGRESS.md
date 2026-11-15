@@ -49,9 +49,9 @@
 
 ### PART D — WIRE REDESIGN STEP 4B (branch `wire-redesign`)
 - [x] `D1` (`done` `95685c3`, 384 fast): Split-on-drop (dropping component onto wire splits inline or taps junction in one undo step).
-- [x] `D2` (`done`, 385 fast): Explicit `J` key junction placement on wire at snapped cursor via `split_wire_at`.
-- [ ] `D3` (`in_progress`): Junction dragging (`MoveJunctionCommand(junction_id, old_pos, new_pos)` updating `Junction.pos` and rerouting incident wires).
-- [ ] `D4` (`todo`): Copy/paste of selections containing components, wires, and junctions (`Ctrl+C` / `Ctrl+V`).
+- [x] `D2` (`done` `00e4dca`, 385 fast): Explicit `J` key junction placement on wire at snapped cursor via `split_wire_at`.
+- [x] `D3` (`done`, 386 fast): Junction dragging (`MoveJunctionCommand(junction_id, old_pos, new_pos)` updating `Junction.pos` and rerouting incident wires).
+- [ ] `D4` (`in_progress`): Copy/paste of selections containing components, wires, and junctions (`Ctrl+C` / `Ctrl+V`).
 - [ ] `D5` (`todo`): Remove dead old wire routing/endpoint code listed in `OLD CODE MAP`.
 - [ ] `GATE D` (`todo`): Full test suite + `python -m pytest -q` + tag `checkpoint/D-done`.
 
