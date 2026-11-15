@@ -387,6 +387,23 @@ class SimulationSession:
         self.state = SimulationState.STOPPED
         return self.build_frame()
 
+    def load_connectivity(
+        self, connectivity: ConnectivityResult
+    ) -> SimulationFrame:
+        """Load a pre-extracted `ConnectivityResult` (e.g. built from `WireGraph`)."""
+        was_running = self.state == SimulationState.RUNNING
+        self._connectivity = connectivity
+        self.circuit = connectivity.circuit
+        self.solver = MNASolver(self.circuit)
+        self._dt = self._compute_step_dt()
+        self._latched_warnings.clear()
+        self._active_diagnostics.clear()
+
+        if was_running:
+            return self.start()
+        self.state = SimulationState.STOPPED
+        return self.build_frame()
+
     @property
     def dt(self) -> float:
         return self._dt
@@ -741,6 +758,25 @@ class SimulationSession:
                             f"{cname} is not connected and is ignored",
                         ),
                         component_names=(cname,),
+                    )
+                )
+
+        # Report any wires with an open FreeEnd termination as a non-blocking amber warning
+        if self._connectivity is not None:
+            open_ids = getattr(self._connectivity, "open_wire_ids", ())
+            if open_ids:
+                ids_tuple = tuple(open_ids)
+                joined = ", ".join(ids_tuple)
+                diags.append(
+                    ProblemDiagnostic(
+                        code="open_wire",
+                        severity="warning",
+                        message=DiagnosticMessage(
+                            f"Open wire end ({joined}): one end is not connected to a terminal or junction; "
+                            "attach it to a terminal/junction or delete the wire",
+                            f"Open wire end ({joined})",
+                        ),
+                        wire_ids=ids_tuple,
                     )
                 )
         return diags

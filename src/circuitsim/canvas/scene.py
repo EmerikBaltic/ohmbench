@@ -69,11 +69,13 @@ from circuitsim.wiring.model import (
     WireGraphError,
     snap_px as wire_snap_px,
 )
+from circuitsim.wiring.netlist import build_circuit as wiring_build_circuit
 from circuitsim.wiring.router import (
     normalize_dir as wire_normalize_dir,
     route as wire_route,
     simplify_orthogonal_points as wire_simplify_points,
 )
+from circuitsim.wiring.serializer import migrate_v1_to_v2
 
 
 @dataclass(frozen=True)
@@ -1440,14 +1442,95 @@ class CircuitScene(QGraphicsScene):
     # ------------------------------------------------------------------
 
     def extract_connectivity_result(self) -> ConnectivityResult:
-        """Run the pure-Python Union-Find connectivity extractor on the current scene."""
-        placed_specs = [item.to_placed_spec() for item in self._placed_items]
-        wire_specs = [wire.to_wire_spec() for wire in self._wire_items]
-        return extract_connectivity(
-            placed_specs,
-            wire_specs,
-            self._explicit_junctions,
+        """Build the electrical `Circuit` and telemetry maps from `self._wire_graph`."""
+        components = [item.component for item in self._placed_items]
+        effective_graph = self._wire_graph
+
+        # Preserve pin-to-pin contact where co-located terminals share the exact same pixel.
+        pos_groups: dict[PointPx, list[TerminalRef]] = {}
+        for item in self._placed_items:
+            cname = item.component.name
+            for tname, tpt in item.terminal_scene_positions_px().items():
+                pos_groups.setdefault(tpt, []).append(TerminalRef(cname, tname))
+
+        existing_pairs: set[frozenset[Attachment]] = {
+            frozenset((w.end_a, w.end_b)) for w in effective_graph.wires
+        }
+        bond_idx = 0
+        for pt in sorted(pos_groups):
+            refs = pos_groups[pt]
+            if len(refs) < 2:
+                continue
+            primary = refs[0]
+            for other in refs[1:]:
+                if other == primary:
+                    continue
+                pair = frozenset((primary, other))
+                if pair in existing_pairs:
+                    continue
+                existing_pairs.add(pair)
+                while True:
+                    bond_idx += 1
+                    bid = f"__pin_bond_{bond_idx}"
+                    if not effective_graph.has_wire(bid):
+                        break
+                effective_graph = effective_graph.add_wire(
+                    primary, other, wire_id=bid
+                )
+
+        wnet = wiring_build_circuit(
+            effective_graph,
+            components,
             symbol_catalog=self.symbol_library.metadata_catalog,
+        )
+
+        wire_to_node = {
+            wid: node
+            for wid, node in wnet.wire_to_node.items()
+            if not wid.startswith("__pin_bond_")
+        }
+        open_wire_ids = [
+            w.id
+            for w in self._wire_graph.wires
+            if isinstance(w.end_a, FreeEnd) or isinstance(w.end_b, FreeEnd)
+        ]
+
+        point_to_node: dict[PointPx, str] = {}
+        for item in self._placed_items:
+            cname = item.component.name
+            node_map = wnet.component_nodes.get(cname, {})
+            for tname, pt in item.terminal_scene_positions_px().items():
+                if tname in node_map:
+                    point_to_node[pt] = node_map[tname]
+        for j in self._wire_graph.junctions:
+            if j.id in wnet.junction_to_node:
+                point_to_node[j.pos] = wnet.junction_to_node[j.id]
+        for w_item in self._wire_items:
+            if w_item.wire_id in wire_to_node and w_item.points:
+                wnode = wire_to_node[w_item.wire_id]
+                point_to_node.setdefault(w_item.points[0], wnode)
+                point_to_node.setdefault(w_item.points[-1], wnode)
+
+        junction_dots = {
+            j.pos
+            for j in self._wire_graph.junctions
+            if self._wire_graph.junction_dot_visible(j.id)
+        } | set(self._explicit_junctions)
+        valid_wires = tuple(
+            (w.wire_id, w.points)
+            for w in self._wire_items
+            if len(w.points) >= 2
+        )
+
+        return ConnectivityResult(
+            circuit=wnet.circuit,
+            component_nodes=wnet.component_nodes,
+            wire_to_node=wire_to_node,
+            point_to_node=point_to_node,
+            junction_dots=junction_dots,
+            valid_wires=valid_wires,
+            unconnected_components=wnet.unconnected_components,
+            open_wire_ids=open_wire_ids,
         )
 
     def build_circuit(self) -> Circuit:
@@ -1630,18 +1713,9 @@ class CircuitScene(QGraphicsScene):
                 item.set_rotation_deg(spec.rotation_deg)
                 item.set_flipped_h(spec.flipped_h)
                 new_items.append(item)
-            new_wires = [
-                WireItem(w.wire_id, tuple(w.points), theme=self.theme)
-                for w in doc.wires
-            ]
-            new_junctions = {
-                normalize_point_px(p, snap=True) for p in doc.junctions
-            }
+            migrated_v2 = migrate_v1_to_v2(doc)
             # Dry run of netlist extraction: proves the circuit can be analysed.
-            extract_connectivity(
-                [it.to_placed_spec() for it in new_items],
-                [w.to_wire_spec() for w in new_wires],
-                new_junctions,
+            migrated_v2.build_circuit(
                 symbol_catalog=self.symbol_library.metadata_catalog,
             )
         except CircuitFileError:
@@ -1667,56 +1741,14 @@ class CircuitScene(QGraphicsScene):
         self._wire_items_by_id = {}
         self._placed_items = []
         self._counters.clear()
-        self._explicit_junctions = new_junctions
+        self._explicit_junctions = set()
         for item in new_items:
             self._placed_items.append(item)
             self.addItem(item)
 
-        # Build WireGraph corresponding to the loaded document while preserving WireItems
-        loaded_term_map: dict[PointPx, TerminalRef] = {}
-        for comp_item in new_items:
-            cname = comp_item.component.name
-            for tname, tpt in comp_item.terminal_scene_positions_px().items():
-                loaded_term_map.setdefault(tpt, TerminalRef(cname, tname))
-
-        loaded_graph = WireGraph()
-        for jp in sorted(new_junctions):
-            loaded_graph = loaded_graph.add_junction(jp)
-        jpos_to_ref: dict[PointPx, JunctionRef] = {
-            j.pos: JunctionRef(j.id) for j in loaded_graph.junctions
-        }
-
-        for wire in new_wires:
-            pts = wire.points
-            if len(pts) < 2:
-                continue
-            att_a: Attachment = loaded_term_map.get(
-                pts[0], jpos_to_ref.get(pts[0], FreeEnd(*pts[0]))
-            )
-            att_b: Attachment = loaded_term_map.get(
-                pts[-1], jpos_to_ref.get(pts[-1], FreeEnd(*pts[-1]))
-            )
-            hints_pts = pts[1:-1]
-            wire.end_a = att_a
-            wire.end_b = att_b
-            wire.hints = hints_pts
-            if att_a != att_b and not loaded_graph.has_wire(wire.wire_id):
-                loaded_graph = loaded_graph.add_wire(
-                    att_a, att_b, hints=hints_pts, wire_id=wire.wire_id
-                )
-            self._wire_items.append(wire)
-            self._wire_items_by_id[wire.wire_id] = wire
-            self.addItem(wire)
-        self._wire_graph = loaded_graph
-        self._sync_junction_items_from_wire_graph()
-
-        # Keep future wire ids unique: continue after the highest loaded "W<n>".
-        numbers = [
-            int(w.wire_id[1:])
-            for w in new_wires
-            if w.wire_id.startswith("W") and w.wire_id[1:].isdigit()
-        ]
-        self._wire_counter = max(numbers, default=0)
+        self._wire_counter = 0
+        self._wire_graph = migrated_v2.graph
+        self._sync_graphics_from_wire_graph()
         self.undo_stack.clear()  # a freshly loaded file has no undo history
         self.clearSelection()
         self.refresh_connectivity_visuals()

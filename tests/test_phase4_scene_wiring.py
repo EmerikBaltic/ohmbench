@@ -10,7 +10,7 @@ from PySide6.QtGui import QImage, QPainter
 from circuitsim.app.themes import ThemeMode, get_theme_palette
 from circuitsim.canvas.scene import CircuitScene
 from circuitsim.canvas.symbol_renderer import SymbolLibrary
-from circuitsim.engine import MNASolver
+from circuitsim.engine import MNASolver, SimulationSession, SimulationState
 from circuitsim.wiring.model import FreeEnd, JunctionRef, TerminalRef
 from circuitsim.wiring.router import route as wire_route
 
@@ -161,3 +161,52 @@ def test_phase4_2_wire_item_routed_from_router_junction_dot_and_free_end(qapp) -
         assert any(c != bg_rgb for c in ring_pixels)
         # Center of hollow ring matches canvas background (wire stops at (-120, 0), hollow inside left edge at 37..39).
         assert img.pixelColor(37, 60).rgb() != bg_rgb or img.pixelColor(43, 60).rgb() != bg_rgb
+
+
+def test_phase4_3_netlist_from_wire_graph_and_open_wire_diagnostic(qapp) -> None:
+    """Scene netlist uses wiring.netlist.build_circuit and reports amber open-wire warning for FreeEnd."""
+    scene = CircuitScene(SymbolLibrary())
+    v1 = scene.place_new_component("dc_voltage", QPointF(-100.0, 0.0), rotation_deg=90)
+    r1 = scene.place_new_component("resistor", QPointF(0.0, -40.0))
+    r2 = scene.place_new_component("resistor", QPointF(100.0, 0.0), rotation_deg=90)
+    gnd = scene.place_new_component("ground", QPointF(-100.0, 60.0))
+
+    scene.edit_component_parameters(v1, {"dc_voltage": 10.0})
+    scene.edit_component_parameters(r1, {"resistance": 1000.0})
+    scene.edit_component_parameters(r2, {"resistance": 2000.0})
+
+    # Wire up 10 V -> 1 kOhm -> 2 kOhm -> Ground
+    # V1 rot=90: pos=(-100, -40), neg=(-100, 40); GND1 gnd=(-100, 40) (pin-to-pin contact!)
+    w1 = scene.add_wire(TerminalRef("V1", "pos"), TerminalRef("R1", "a"))
+    w2 = scene.add_wire(TerminalRef("R1", "b"), TerminalRef("R2", "a"))
+    w3 = scene.add_wire(TerminalRef("R2", "b"), TerminalRef(gnd.component.name, "gnd"))
+    assert w1 is not None and w2 is not None and w3 is not None
+
+    # Add a wire with a FreeEnd crossing across the midpoint wire without a junction.
+    # Also attach a separate resistor R3 on an independent FreeEnd branch to verify crossing does not short.
+    r3 = scene.place_new_component("resistor", QPointF(220.0, -40.0))
+    scene.edit_component_parameters(r3, {"resistance": 500.0})
+    w_open = scene.add_wire(TerminalRef("R1", "b"), FreeEnd(160, -100))
+    assert w_open is not None
+
+    conn = scene.extract_connectivity_result()
+    assert conn.open_wire_ids == [w_open.wire_id]
+
+    session = SimulationSession(connectivity=conn)
+    frame = session.start()
+    assert frame.state == SimulationState.RUNNING
+
+    # Hand calculation: V_mid = V1 * R2 / (R1 + R2) = 10.0 * 2000.0 / (1000.0 + 2000.0) = 20 / 3 V
+    mid_node = conn.component_nodes["R2"]["a"]
+    expected_v_mid = 10.0 * 2000.0 / (1000.0 + 2000.0)
+    assert math.isclose(frame.node_voltages[mid_node], expected_v_mid, rel_tol=1e-6)
+
+    # FreeEnd open wire produces a non-blocking amber warning diagnostic highlighted on w_open.
+    open_diags = [d for d in frame.diagnostics if d.code == "open_wire"]
+    assert len(open_diags) == 1
+    assert open_diags[0].severity == "warning"
+    assert w_open.wire_id in open_diags[0].wire_ids
+
+    scene.apply_simulation_frame(frame)
+    assert w_open.diagnostic_severity == "warning"
+    assert w_open.effective_highlight_color() == "#FFA726"

@@ -564,14 +564,8 @@ class MainWindow(QMainWindow):
     # ------------------------------------------------------------------
 
     def _sync_schematic_to_worker(self) -> None:
-        placed_specs = [
-            item.to_placed_spec() for item in self.circuit_scene.placed_items
-        ]
-        wire_specs = [
-            wire.to_wire_spec() for wire in self.circuit_scene.placed_wires
-        ]
-        self.sim_controller.load_schematic(
-            placed_specs, wire_specs, self.circuit_scene.explicit_junctions
+        self.sim_controller.load_connectivity(
+            self.circuit_scene.extract_connectivity_result()
         )
 
     def start_simulation(self) -> None:

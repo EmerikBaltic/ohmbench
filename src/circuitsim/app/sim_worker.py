@@ -64,6 +64,16 @@ class _SessionThreadWorker(QObject):
             timer.stop()
         self.frame_emitted.emit(frame)
 
+    @Slot(object)
+    def handle_load_connectivity(self, connectivity: object) -> None:
+        timer = self._ensure_timer()
+        frame = self.session.load_connectivity(connectivity)  # type: ignore[arg-type]
+        if frame.state == SimulationState.RUNNING:
+            timer.start()
+        else:
+            timer.stop()
+        self.frame_emitted.emit(frame)
+
     @Slot()
     def handle_start(self) -> None:
         timer = self._ensure_timer()
@@ -152,6 +162,7 @@ class SimulationWorkerController(QObject):
 
     # Internal queued signals to the worker thread
     _sig_load = Signal(object, object, object)
+    _sig_load_connectivity = Signal(object)
     _sig_start = Signal()
     _sig_pause = Signal()
     _sig_stop = Signal()
@@ -169,6 +180,9 @@ class SimulationWorkerController(QObject):
 
         self._sig_load.connect(
             self._worker.handle_load_schematic, Qt.ConnectionType.QueuedConnection
+        )
+        self._sig_load_connectivity.connect(
+            self._worker.handle_load_connectivity, Qt.ConnectionType.QueuedConnection
         )
         self._sig_start.connect(
             self._worker.handle_start, Qt.ConnectionType.QueuedConnection
@@ -221,6 +235,11 @@ class SimulationWorkerController(QObject):
             tuple(wires),
             tuple(explicit_junctions),
         )
+
+    def load_connectivity(self, connectivity: object) -> None:
+        """Send a pre-extracted `ConnectivityResult` (built from `WireGraph`) to the worker."""
+        self._ensure_thread_running()
+        self._sig_load_connectivity.emit(connectivity)
 
     def start(self) -> None:
         """Start or resume simulation on the worker thread."""
