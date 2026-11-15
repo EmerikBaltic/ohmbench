@@ -157,7 +157,7 @@ class MainWindow(QMainWindow):
         self.theme: ThemeMode = initial_theme
         self.symbol_library = SymbolLibrary()
         self.circuit_scene = CircuitScene(
-            self.symbol_library, theme=self.theme, settings=self.settings
+            self.symbol_library, theme=self.theme, settings=self.settings, parent=self
         )
         self.circuit_view = CircuitView(self.circuit_scene)
         self.setCentralWidget(self.circuit_view)
@@ -168,6 +168,7 @@ class MainWindow(QMainWindow):
         self._current_path: Path | None = None
         self._switch_modified: bool = False
         self._is_closing: bool = False
+        self._close_cleaned_up: bool = False
         self._user_closed_problems_panel: bool = False
         self._prev_error_count: int = 0
 
@@ -175,10 +176,11 @@ class MainWindow(QMainWindow):
         self._build_docks()
         self._build_status_bar()
         self._connect_signals()
-        self.circuit_scene.undo_stack.cleanChanged.connect(
-            lambda _clean: self._update_window_title()
-        )
+        self.circuit_scene.undo_stack.cleanChanged.connect(self._on_undo_clean_changed)
         self.apply_theme(self.theme)
+        self._update_window_title()
+
+    def _on_undo_clean_changed(self, _clean: bool = False) -> None:
         self._update_window_title()
 
     def restoreState(self, state: QByteArray | bytes, version: int = 0) -> bool:
@@ -1268,24 +1270,25 @@ class MainWindow(QMainWindow):
     def closeEvent(self, event: QCloseEvent) -> None:
         """Orderly window shutdown sequence:
 
-        1. If already closing, accept immediately.
+        1. If already cleaned up, accept immediately.
         2. Ask about unsaved changes first; if the user cancels, change nothing.
         3. Mark window as closing so handlers never touch the undo stack.
         4. Stop the simulation worker thread and wait for it.
-        5. Disconnect listeners from the undo stack and worker before destruction.
+        5. Disconnect listeners from the undo stack, scene, and worker before destruction.
         6. Proceed with base window close.
         """
-        if self._is_closing:
+        if self._close_cleaned_up:
             event.accept()
             return
 
         # 1. Ask about unsaved changes first; if user cancels, change nothing
-        if not self._confirm_discard_changes("closing the window"):
+        if not self._is_closing and not self._confirm_discard_changes("closing the window"):
             event.ignore()
             return
 
-        # 2. Mark window as closing
+        # 2. Mark window as closing and cleaned up
         self._is_closing = True
+        self._close_cleaned_up = True
         try:
             from circuitsim.app.crash_handler import set_shutting_down
 
@@ -1296,15 +1299,20 @@ class MainWindow(QMainWindow):
         # 3. Stop the simulation worker thread and wait for it
         self.sim_controller.shutdown()
 
-        # 4. Disconnect handlers from the undo stack and worker before destruction
-        try:
-            self.circuit_scene.undo_stack.cleanChanged.disconnect()
-        except (RuntimeError, TypeError):
-            pass
+        # 4. Disconnect handlers from the scene, undo stack, and worker before destruction
+        for sig, slot in (
+            (self.circuit_scene.undo_stack.cleanChanged, self._on_undo_clean_changed),
+            (self.circuit_scene.component_placed, self._on_component_placed),
+            (self.circuit_scene.selection_info_changed, self._update_info_panel),
+            (self.circuit_scene.circuit_modified, self._on_circuit_modified),
+            (self.circuit_scene.switch_toggled_by_user, self._on_user_switch_toggled),
+            (self.circuit_scene.component_parameters_edited, self._on_user_parameters_edited),
+            (self.sim_controller.frame_ready, self._on_simulation_frame),
+        ):
+            try:
+                sig.disconnect(slot)
+            except (RuntimeError, TypeError):
+                pass
 
-        try:
-            self.sim_controller.frame_ready.disconnect(self._on_simulation_frame)
-        except (RuntimeError, TypeError):
-            pass
-
+        self.circuit_scene.shutdown_scene()
         super().closeEvent(event)

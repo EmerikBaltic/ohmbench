@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import faulthandler
+import gc
 import os
 import subprocess
 import sys
@@ -108,8 +109,22 @@ def _qt_cleanup_and_watchdog(request: pytest.FixtureRequest, qapp) -> Iterator[N
                 pass
 
         from PySide6.QtCore import QEvent
+
+        scene_mod = sys.modules.get("circuitsim.canvas.scene")
+        circuit_scene_cls = getattr(scene_mod, "CircuitScene", None) if scene_mod is not None else None
+        if circuit_scene_cls is not None:
+            for obj in list(gc.get_objects()):
+                try:
+                    if isinstance(obj, circuit_scene_cls) and obj.parent() is None:
+                        obj.shutdown_scene()
+                        obj.deleteLater()
+                except (RuntimeError, ReferenceError):
+                    pass
+
         qapp.sendPostedEvents(None, QEvent.Type.DeferredDelete)
         qapp.processEvents()
+        gc.collect()
+        qapp.sendPostedEvents(None, QEvent.Type.DeferredDelete)
         qapp.processEvents()
 
         if "circuitsim.app.crash_handler" in sys.modules:

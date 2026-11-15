@@ -128,6 +128,18 @@ class _SessionThreadWorker(QObject):
             self._tick_timer.stop()
         self.frame_emitted.emit(frame)
 
+    @Slot()
+    def cleanup_for_shutdown(self) -> None:
+        """Stop timer inside worker's thread and return worker affinity to main thread."""
+        if self._tick_timer is not None:
+            self._tick_timer.stop()
+            self._tick_timer.deleteLater()
+            self._tick_timer = None
+        self.session.stop()
+        app = QCoreApplication.instance()
+        if app is not None and QThread.currentThread() is not app.thread():
+            self.moveToThread(app.thread())
+
 
 class SimulationWorkerController(QObject):
     """Main-thread facade managing the background `QThread` simulation worker.
@@ -146,12 +158,14 @@ class SimulationWorkerController(QObject):
     _sig_speed = Signal(str)
     _sig_toggle_switch = Signal(str)
     _sig_update_param = Signal(str, str, object)
+    _sig_cleanup = Signal()
 
     def __init__(self, parent: QObject | None = None) -> None:
         super().__init__(parent)
         self._thread = QThread(self)
         self._worker = _SessionThreadWorker()
-        self._worker.moveToThread(self._thread)
+        self._worker_moved_to_thread: bool = False
+        self._is_shut_down: bool = False
 
         self._sig_load.connect(
             self._worker.handle_load_schematic, Qt.ConnectionType.QueuedConnection
@@ -174,6 +188,10 @@ class SimulationWorkerController(QObject):
         self._sig_update_param.connect(
             self._worker.handle_update_parameter, Qt.ConnectionType.QueuedConnection
         )
+        self._sig_cleanup.connect(
+            self._worker.cleanup_for_shutdown,
+            Qt.ConnectionType.BlockingQueuedConnection,
+        )
         self._worker.frame_emitted.connect(
             self.frame_ready, Qt.ConnectionType.QueuedConnection
         )
@@ -182,6 +200,11 @@ class SimulationWorkerController(QObject):
             app.aboutToQuit.connect(self.shutdown)
 
     def _ensure_thread_running(self) -> None:
+        if self._is_shut_down:
+            return
+        if not self._worker_moved_to_thread:
+            self._worker.moveToThread(self._thread)
+            self._worker_moved_to_thread = True
         if not self._thread.isRunning():
             self._thread.start()
 
@@ -233,7 +256,36 @@ class SimulationWorkerController(QObject):
 
     def shutdown(self) -> None:
         """Cleanly stop the worker timer and join the background `QThread`."""
+        if self._is_shut_down:
+            return
+        self._is_shut_down = True
+
+        app = QCoreApplication.instance()
+        if app is not None:
+            try:
+                app.aboutToQuit.disconnect(self.shutdown)
+            except (RuntimeError, TypeError):
+                pass
+
+        if self._worker is not None:
+            try:
+                self._worker.frame_emitted.disconnect(self.frame_ready)
+            except (RuntimeError, TypeError):
+                pass
+
         if self._thread.isRunning():
-            self._sig_stop.emit()
+            if self._worker_moved_to_thread and QThread.currentThread() is not self._thread:
+                try:
+                    self._sig_cleanup.emit()
+                except RuntimeError:
+                    pass
             self._thread.quit()
             self._thread.wait(2000)
+        elif self._worker is not None and not self._worker_moved_to_thread:
+            self._worker.cleanup_for_shutdown()
+
+        if self._worker is not None:
+            try:
+                self._worker.deleteLater()
+            except RuntimeError:
+                pass

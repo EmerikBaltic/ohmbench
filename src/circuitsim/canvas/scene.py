@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING, Sequence
 if TYPE_CHECKING:
     from circuitsim.app.settings import AppSettings
 
-from PySide6.QtCore import QLineF, QPointF, QRectF, Qt, Signal
+from PySide6.QtCore import QLineF, QObject, QPointF, QRectF, Qt, Signal
 from PySide6.QtGui import QBrush, QColor, QPainter, QPen, QUndoStack
 from PySide6.QtWidgets import QGraphicsScene
 
@@ -90,8 +90,10 @@ class CircuitScene(QGraphicsScene):
         *,
         theme: ThemeMode = ThemeMode.DARK,
         settings: AppSettings | None = None,
+        parent: QObject | None = None,
     ) -> None:
-        super().__init__()
+        super().__init__(parent)
+        self._is_shutting_down: bool = False
         self.symbol_library: SymbolLibrary = symbol_library
         self.theme: ThemeMode = theme
         self.settings: AppSettings | None = settings
@@ -1237,10 +1239,26 @@ class CircuitScene(QGraphicsScene):
         self.update()
 
     def _on_selection_changed(self) -> None:
+        if self._is_shutting_down:
+            return
         selected = [
             it for it in self.selectedItems() if isinstance(it, ComponentItem)
         ]
         self.selection_info_changed.emit(selected[0] if selected else None)
+
+    def shutdown_scene(self) -> None:
+        """Disconnect internal signals and clear selection before scene destruction."""
+        if self._is_shutting_down:
+            return
+        self._is_shutting_down = True
+        try:
+            self.selectionChanged.disconnect(self._on_selection_changed)
+        except (RuntimeError, TypeError):
+            pass
+        try:
+            self.clearSelection()
+        except RuntimeError:
+            pass
 
     # ------------------------------------------------------------------
     # Background Grid & Foreground Junction / Terminal Highlight Drawing
