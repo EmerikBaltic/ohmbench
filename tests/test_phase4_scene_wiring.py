@@ -634,3 +634,186 @@ def test_phase4_5_save_load_v2_and_v1_migration_and_bad_files(tmp_path, qapp) ->
     finally:
         win2.circuit_scene.undo_stack.setClean()
         win2.close()
+
+
+def test_phase4_6_examples_export_labels_tooltips_zoom_dirty(tmp_path, qapp) -> None:
+    """Phase 4.6: examples migrate cleanly, PNG/SVG export includes wires+junctions cleanly, labels freeze during drag, tooltips/zoom/recent/dirty work."""
+    from pathlib import Path
+
+    from PySide6.QtGui import QColor
+
+    from circuitsim.app.main_window import MainWindow
+    from circuitsim.app.settings import AppSettings
+    from circuitsim.canvas.export import (
+        compute_schematic_bounds,
+        export_schematic_to_image,
+        export_schematic_to_svg,
+    )
+
+    settings = AppSettings(data_dir=tmp_path / "settings_46")
+    win = MainWindow(settings=settings)
+    errors: list[str] = []
+    win._show_error = lambda _title, msg: errors.append(msg)
+    try:
+        examples_dir = (
+            Path(__file__).resolve().parent.parent
+            / "src"
+            / "circuitsim"
+            / "resources"
+            / "examples"
+        )
+        example_files = sorted(examples_dir.glob("*.circ"))
+        assert len(example_files) >= 5
+
+        for ex_path in example_files:
+            win._on_open_example(ex_path, ex_path.stem)
+            assert errors == [], ex_path.name
+            assert win._current_path is None
+            assert not win.circuit_scene.undo_stack.canUndo()
+            assert not win.has_unsaved_changes()
+            assert "*" not in win.windowTitle()
+            assert (
+                win.circuit_scene.wire_graph.problems(
+                    win.circuit_scene.all_component_terminals_px()
+                )
+                == []
+            ), ex_path.name
+            sess = SimulationSession(
+                connectivity=win.circuit_scene.extract_connectivity_result()
+            )
+            frame = sess.start()
+            assert frame.state == SimulationState.RUNNING, ex_path.name
+
+        # Open voltage_divider.circ specifically and verify hand-calculated divider voltage.
+        win._on_open_example(examples_dir / "voltage_divider.circ", "Voltage Divider")
+        assert errors == []
+        scene = win.circuit_scene
+        # (60, 0) and (40, 100) are wire-to-wire junctions; (-100, 40) is V1.neg terminal.
+        assert len(scene.junction_items) == 2
+        sess_div = SimulationSession(connectivity=scene.extract_connectivity_result())
+        frame_div = sess_div.start()
+        assert frame_div.state == SimulationState.RUNNING
+        # Hand calculation: R_eq = (3000 * 1e7) / (3000 + 1e7); V_out = 12 * R_eq / (1000 + R_eq) ~= 8.999325 V
+        r_eq = (3000.0 * 1.0e7) / (3000.0 + 1.0e7)
+        expected_vm = 12.0 * r_eq / (1000.0 + r_eq)
+        assert math.isclose(abs(frame_div.components["VM1"].voltage), expected_vm, rel_tol=1e-5)
+
+        # PNG & SVG export: includes wires and junctions cleanly without selection/hover highlights.
+        bounds = compute_schematic_bounds(scene, margin_px=20.0)
+        assert bounds is not None
+        for jitem in scene.junction_items:
+            assert bounds.contains(jitem.sceneBoundingRect())
+
+        img_clean = export_schematic_to_image(
+            scene, margin_px=20.0, theme_mode=ThemeMode.DARK
+        )
+        assert img_clean is not None
+
+        r1_item = next(it for it in scene.placed_items if it.component.name == "R1")
+        scene.placed_wires[0].setSelected(True)
+        scene.junction_items[0].setSelected(True)
+        scene._hovered_terminal_pt = (60, 0)
+        r1_item._is_hovered = True
+        try:
+            img_dirty = export_schematic_to_image(
+                scene, margin_px=20.0, theme_mode=ThemeMode.DARK
+            )
+            assert img_dirty == img_clean
+            assert scene.placed_wires[0].isSelected() is True
+            assert scene.junction_items[0].isSelected() is True
+            assert scene._hovered_terminal_pt == (60, 0)
+            assert r1_item._is_hovered is True
+        finally:
+            scene.clearSelection()
+            scene._hovered_terminal_pt = None
+            r1_item._is_hovered = False
+
+        # Verify junction pixel (60, 0) is painted over dark canvas background.
+        bg_color = QColor(get_theme_palette(ThemeMode.DARK).canvas_bg)
+        jx = int(round(60.0 - bounds.left()))
+        jy = int(round(0.0 - bounds.top()))
+        assert QColor(img_clean.pixelColor(jx, jy)) != bg_color
+
+        svg_path = tmp_path / "divider_export.svg"
+        assert export_schematic_to_svg(scene, svg_path, theme_mode=ThemeMode.LIGHT) is True
+        assert svg_path.exists()
+        assert "<path" in svg_path.read_text(encoding="utf-8")
+
+        # Terminal tooltip displays net name and live voltage.
+        conn_div = scene.extract_connectivity_result()
+        sol_div = MNASolver(conn_div.circuit).solve_dc()
+        r2_item = next(it for it in scene.placed_items if it.component.name == "R2")
+        scene.is_simulation_running = True
+        scene.latest_node_voltages = dict(sol_div.node_voltages)
+        try:
+            tip = scene.get_terminal_tooltip(r2_item, "a")
+            assert "Terminal: a" in tip
+            assert "Net:" in tip
+            assert "Node voltage:" in tip
+            assert "Node voltage: --" not in tip
+        finally:
+            scene.is_simulation_running = False
+            scene.latest_node_voltages = {}
+
+        # Zoom-to-fit keeps components, wires, and junctions inside the viewport scene rect.
+        win.resize(900, 700)
+        win.show()
+        qapp.processEvents()
+        win.circuit_view.zoom_to_fit()
+        qapp.processEvents()
+        visible_rect = win.circuit_view.mapToScene(
+            win.circuit_view.viewport().rect()
+        ).boundingRect()
+        for jitem in scene.junction_items:
+            assert visible_rect.contains(jitem.scenePos())
+        for item in scene.placed_items:
+            assert visible_rect.contains(item.scenePos())
+
+        # Unsaved-changes '*' tracking and Recent Files updates on save.
+        w_extra = scene.add_wire(FreeEnd(220, 0), FreeEnd(260, 0))
+        assert w_extra is not None
+        assert win.has_unsaved_changes() is True
+        assert "*" in win.windowTitle()
+
+        scene.undo_stack.undo()
+        assert win.has_unsaved_changes() is False
+        assert "*" not in win.windowTitle()
+
+        saved_path = tmp_path / "recent_divider.circ"
+        assert win.save_to_path(saved_path) is True
+        assert win.has_unsaved_changes() is False
+        assert "*" not in win.windowTitle()
+        assert win.open_path(saved_path) is True
+        recent_resolved = [str(Path(p).resolve()) for p in win.settings.get_recent_files()]
+        assert str(saved_path.resolve()) in recent_resolved
+    finally:
+        win.circuit_scene.undo_stack.setClean()
+        win.close()
+
+    # Label collision avoidance: reacts to WireItem obstacles and freezes while _move_tracking_active is True.
+    lbl_scene = CircuitScene(SymbolLibrary())
+    r_lbl = lbl_scene.place_new_component("resistor", QPointF(0.0, 0.0))
+    assert r_lbl.label_position == "default"
+    def_rect = r_lbl.candidate_label_rects_scene("default")[0]
+
+    # Route a horizontal wire at y = -40 above R1's body through R1's default label box QRectF(-9, -43, 18, 18).
+    blocker = lbl_scene.add_wire([(-60, -40), (60, -40)])
+    assert blocker is not None
+    assert r_lbl.label_position != "default"
+
+    lbl_scene.undo_stack.undo()
+    assert r_lbl.label_position == "default"
+
+    v_blk = lbl_scene.place_new_component("dc_voltage", QPointF(240.0, 0.0))
+    assert r_lbl.label_position == "default"
+
+    # Dragging V1 to (0, -40) over R1's default label box keeps R1.label_position frozen during drag, then updates on release.
+    lbl_scene.begin_component_move_tracking()
+    v_blk.setPos(QPointF(0.0, -40.0))
+    lbl_scene.on_component_position_changed(v_blk)
+    assert lbl_scene._move_tracking_active is True
+    assert r_lbl.label_position == "default"
+
+    assert lbl_scene.commit_component_move_tracking() is True
+    assert lbl_scene._move_tracking_active is False
+    assert r_lbl.label_position != "default"

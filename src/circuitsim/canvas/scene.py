@@ -556,6 +556,8 @@ class CircuitScene(QGraphicsScene):
             3. Any wire segment.
         If no candidate is free, keeps 'default'.
         """
+        if self._move_tracking_active:
+            return
         items = sorted(self._placed_items, key=lambda it: it.component.name)
         if not items:
             return
@@ -1200,6 +1202,7 @@ class CircuitScene(QGraphicsScene):
 
         if not moved_new:
             self._wire_graph = self._move_start_graph
+            self.update_label_positions()
             return False
 
         target_graph = self._moved_graph_from_drag_start(moved_items)

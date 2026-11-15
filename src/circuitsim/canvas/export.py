@@ -30,7 +30,12 @@ def compute_schematic_bounds(
         rect = rect.united(item.sceneBoundingRect())
         has_content = True
     for wire in scene.placed_wires:
+        if len(wire.points) < 2:
+            continue
         rect = rect.united(wire.sceneBoundingRect())
+        has_content = True
+    for junc in scene.junction_items:
+        rect = rect.united(junc.sceneBoundingRect())
         has_content = True
 
     if not has_content or rect.isEmpty():
@@ -45,6 +50,7 @@ class _ExportSceneGuard:
         self.scene: CircuitScene = scene
         self.target_theme: ThemeMode = target_theme
         self.prev_selected: list = []
+        self.prev_hovered_items: list = []
         self.prev_hover = None
         self.prev_ghost_visible: bool = False
         self.prev_theme: ThemeMode = scene.theme
@@ -53,6 +59,12 @@ class _ExportSceneGuard:
     def __enter__(self) -> _ExportSceneGuard:
         self.prev_selected = list(self.scene.selectedItems())
         self.scene.clearSelection()
+        self.prev_hovered_items = [
+            it for it in self.scene.placed_items if getattr(it, "_is_hovered", False)
+        ]
+        for it in self.prev_hovered_items:
+            it._is_hovered = False
+            it.update()
         self.prev_hover = self.scene._hovered_terminal_pt
         self.scene._hovered_terminal_pt = None
         if self.scene._ghost_item is not None:
@@ -69,6 +81,9 @@ class _ExportSceneGuard:
             self.scene.set_theme(self.prev_theme)
         self.scene.show_grid = self.prev_grid
         self.scene._hovered_terminal_pt = self.prev_hover
+        for it in self.prev_hovered_items:
+            it._is_hovered = True
+            it.update()
         if self.scene._ghost_item is not None:
             self.scene._ghost_item.setVisible(self.prev_ghost_visible)
         for it in self.prev_selected:
