@@ -16,8 +16,8 @@
 
 ## MASTER QUEUE
 ### PART A — HARDENING (branch `main`)
-- [ ] `A1` (`todo`): Delete accidental untracked file `"pytest.exe -q"` after reporting first 10 lines (no commit needed).
-- [ ] `A2` (`todo`): Make `tests/test_scope_performance.py` robust on shared CI runners (`os.environ.get("CI")`) while keeping local thresholds strict.
+- [x] `A1` (`done (no commit)`): Delete accidental untracked file `"pytest.exe -q"` after reporting first 10 lines (no commit needed).
+- [x] `A2` (`done`): Make `tests/test_scope_performance.py` robust on shared CI runners (`os.environ.get("CI")`) while keeping local thresholds strict.
 - [ ] `A3` (`todo`): Diagnose and fix the intermittent Windows Qt teardown access violation (`MainWindow.closeEvent`, `SimulationWorkerController.shutdown`, `tests/conftest.py`).
 - [ ] `A4` (`todo`): Add exact-value Qt-free scope tests in `tests/test_scope_core_exact.py` (`roll`, `single`, `auto_set` [skip & report undocumented], `hysteresis`, `holdoff`, `10x probe`, `NOT gate`).
 - [ ] `GATE A` (`todo`): Run `.\.venv\Scripts\pytest.exe -q` 3 times consecutively (0 failures, 0 access violations) and tag `checkpoint/A-done`.
@@ -558,6 +558,7 @@ When ready to perform Stage 2 (internal/package rename after Stage 1 settles):
 
 ## KNOWN ISSUES / FIXED
 - **Plain `pytest` collection error on `tests/test_app_info.py` (`ModuleNotFoundError: No module named 'tests'`)**: **Cause**: `[tool.pytest.ini_options]` in `pyproject.toml` only listed `pythonpath = ["src"]`, omitting the project root `.` when invoked as `pytest` rather than `python -m pytest`. **Fix**: Updated `pythonpath = [".", "src"]` in `pyproject.toml` so both `pytest` and `python -m pytest` resolve `tests.conftest` consistently.
+- **Shared-CI timing variance in `tests/test_scope_performance.py`**: **Cause**: Strict local wall-clock thresholds (`< 8.0 ms`, `< 5.0%`, `>= 12`, `< 50.0 ms`) can flake on loaded CI runners due to noisy CPU scheduling. **Fix**: Relaxed thresholds only when `os.environ.get("CI")` is set (`MAX_FRAME_TIME_MS=25.0`, `MAX_SINK_OVERHEAD_PCT=15.0`, `MIN_UI_HEARTBEATS=6`, `MAX_UI_GAP_MS=150.0`), while keeping local thresholds strict and using repeated trials + median/GC control (`7` paired trials for sink overhead, `5` trials for 4ch `produce_frame()`, warm-up + clean signal/sink disconnect in UI loop test).
 
 
 
