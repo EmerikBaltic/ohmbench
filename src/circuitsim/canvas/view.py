@@ -34,6 +34,7 @@ class CircuitView(QGraphicsView):
 
     cursor_grid_moved = Signal(float, float, int, int)  # (x_px, y_px, gx, gy)
     zoom_changed = Signal(float)  # Zoom factor (1.0 = 100%)
+    wire_mode_changed = Signal(bool)  # Synced with toolbar Wire button
 
     MIN_ZOOM: float = 0.25
     MAX_ZOOM: float = 4.0
@@ -49,6 +50,7 @@ class CircuitView(QGraphicsView):
         self._last_scene_pos: QPointF = QPointF(0.0, 0.0)
         self._wire_drag_active: bool = False
         self._wire_mode_enabled: bool = False
+        self._suppress_next_context_menu: bool = False
         self._pressed_switch_item: ComponentItem | None = None
         self._pressed_switch_pos: QPointF = QPointF()
 
@@ -79,10 +81,14 @@ class CircuitView(QGraphicsView):
 
     def set_wire_mode(self, enabled: bool) -> None:
         """Toggle dedicated Wire Drawing mode."""
-        self._wire_mode_enabled = bool(enabled)
-        if not self._wire_mode_enabled:
-            self.circuit_scene.cancel_wire_preview()
-        self._update_cursor_for_scene_pos(self._last_scene_pos)
+        new_val = bool(enabled)
+        if new_val != self._wire_mode_enabled:
+            self._wire_mode_enabled = new_val
+            if not self._wire_mode_enabled:
+                self._wire_drag_active = False
+                self.circuit_scene.cancel_wire_preview()
+            self._update_cursor_for_scene_pos(self._last_scene_pos)
+            self.wire_mode_changed.emit(self._wire_mode_enabled)
 
     def reset_zoom(self) -> None:
         """Reset viewport zoom to 100% and center on `(0, 0)`."""
@@ -239,6 +245,7 @@ class CircuitView(QGraphicsView):
             and self.circuit_scene.is_drawing_wire
         ):
             self._wire_drag_active = False
+            self._suppress_next_context_menu = True
             self.circuit_scene.cancel_wire_preview()
             self._update_cursor_for_scene_pos(scene_pt)
             event.accept()
@@ -337,13 +344,13 @@ class CircuitView(QGraphicsView):
 
         if event.button() == Qt.MouseButton.LeftButton:
             if self._wire_drag_active and self.circuit_scene.is_drawing_wire:
+                self._wire_drag_active = False
                 pts = self.circuit_scene.update_wire_preview(scene_pt)
                 if len(pts) >= 2:
-                    self._wire_drag_active = False
                     self.circuit_scene.finish_wire_preview(scene_pt)
-                    self._update_cursor_for_scene_pos(scene_pt)
-                    event.accept()
-                    return
+                self._update_cursor_for_scene_pos(scene_pt)
+                event.accept()
+                return
 
             super().mouseReleaseEvent(event)
             moved = self.circuit_scene.commit_component_move_tracking()
@@ -372,6 +379,10 @@ class CircuitView(QGraphicsView):
 
     def contextMenuEvent(self, event: QContextMenuEvent) -> None:
         """Show right-click context menu on components, wires, or canvas (Requirement 7)."""
+        if self._suppress_next_context_menu:
+            self._suppress_next_context_menu = False
+            event.accept()
+            return
         scene_pt = self.mapToScene(event.pos())
         self._last_scene_pos = scene_pt
 

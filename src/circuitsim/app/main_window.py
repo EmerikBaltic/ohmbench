@@ -548,6 +548,7 @@ class MainWindow(QMainWindow):
         )
         self.circuit_view.cursor_grid_moved.connect(self._on_cursor_moved)
         self.circuit_view.zoom_changed.connect(self._on_zoom_changed)
+        self.circuit_view.wire_mode_changed.connect(self._on_wire_mode_changed)
         self.circuit_scene.component_placed.connect(self._on_component_placed)
         self.circuit_scene.selection_info_changed.connect(
             self._update_info_panel
@@ -559,6 +560,7 @@ class MainWindow(QMainWindow):
         self.circuit_scene.component_parameters_edited.connect(
             self._on_user_parameters_edited
         )
+        self.circuit_scene.status_notice.connect(self._on_scene_status_notice)
         self.sim_controller.frame_ready.connect(self._on_simulation_frame)
 
     # ------------------------------------------------------------------
@@ -1183,6 +1185,17 @@ class MainWindow(QMainWindow):
     def _on_zoom_changed(self, zoom: float) -> None:
         self.status_zoom.setText(f"Zoom: {int(round(zoom * 100.0))}%")
 
+    def _on_wire_mode_changed(self, enabled: bool) -> None:
+        if self.act_wire_mode.isChecked() != enabled:
+            blocked = self.act_wire_mode.blockSignals(True)
+            try:
+                self.act_wire_mode.setChecked(enabled)
+            finally:
+                self.act_wire_mode.blockSignals(blocked)
+
+    def _on_scene_status_notice(self, message: str) -> None:
+        self.statusBar().showMessage(message, 5000)
+
     def _on_component_placed(self, item: ComponentItem) -> None:
         self._update_status_counts()
         self._update_info_panel(item)
@@ -1299,12 +1312,14 @@ class MainWindow(QMainWindow):
 
         # 4. Disconnect handlers from the scene, undo stack, and worker before destruction
         for sig, slot in (
+            (self.circuit_view.wire_mode_changed, self._on_wire_mode_changed),
             (self.circuit_scene.undo_stack.cleanChanged, self._on_undo_clean_changed),
             (self.circuit_scene.component_placed, self._on_component_placed),
             (self.circuit_scene.selection_info_changed, self._update_info_panel),
             (self.circuit_scene.circuit_modified, self._on_circuit_modified),
             (self.circuit_scene.switch_toggled_by_user, self._on_user_switch_toggled),
             (self.circuit_scene.component_parameters_edited, self._on_user_parameters_edited),
+            (self.circuit_scene.status_notice, self._on_scene_status_notice),
             (self.sim_controller.frame_ready, self._on_simulation_frame),
         ):
             try:

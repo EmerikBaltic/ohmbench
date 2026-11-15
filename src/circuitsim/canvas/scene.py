@@ -101,6 +101,7 @@ class CircuitScene(QGraphicsScene):
     circuit_modified = Signal()  # Emits whenever components, wires, or junctions change
     switch_toggled_by_user = Signal(str, bool)  # (switch_name, closed)
     component_parameters_edited = Signal(str, object)  # (comp_name, dict[str, float])
+    status_notice = Signal(str)  # Non-modal status/feedback note for the user
 
     def __init__(
         self,
@@ -135,8 +136,13 @@ class CircuitScene(QGraphicsScene):
         # Interactive wire routing preview & terminal hover
         self._hovered_terminal_pt: PointPx | None = None
         self._wire_start_pt: PointPx | None = None
+        self._wire_start_att: Attachment | None = None
+        self._wire_end_att: Attachment | None = None
+        self._wire_hints: list[PointPx] = []
+        self._wire_preview_previous: tuple[PointPx, ...] | None = None
         self._wire_prefer_horiz: bool = True
         self._preview_wire_item: WireItem | None = None
+        self.last_status_notice: str = ""
 
         # Component drag-move tracking for live attached-wire re-routing & QUndoStack
         self._move_tracking_active: bool = False
@@ -742,16 +748,58 @@ class CircuitScene(QGraphicsScene):
                 return snapped
         return None
 
+    def _emit_status_notice(self, message: str) -> None:
+        self.last_status_notice = message
+        self.status_notice.emit(message)
+
+    def _resolve_wire_attachment(
+        self, pos: QPointF | tuple[float, float]
+    ) -> tuple[Attachment, PointPx]:
+        """Resolve cursor `pos` to `(TerminalRef | JunctionRef | FreeEnd, point_px)`."""
+        sx = pos.x() if isinstance(pos, QPointF) else float(pos[0])
+        sy = pos.y() if isinstance(pos, QPointF) else float(pos[1])
+        term_hit = self.find_terminal_near(
+            (sx, sy), tolerance_px=self.TERMINAL_SNAP_RADIUS_PX
+        )
+        if term_hit is not None:
+            return (TerminalRef(term_hit[0].component.name, term_hit[1]), term_hit[2])
+        j_ref = self._find_junction_at(
+            (sx, sy),
+            self._wire_graph,
+            tolerance_px=self.TERMINAL_SNAP_RADIUS_PX,
+        )
+        if j_ref is not None:
+            return (j_ref, self._wire_graph.junction(j_ref.id).pos)
+        snapped = wire_snap_px((sx, sy))
+        return (FreeEnd(*snapped), snapped)
+
+    def _point_hits_existing_wire(self, pt: PointPx, graph: WireGraph) -> bool:
+        """Return True if `pt` lies anywhere on an existing wire polyline in `graph`."""
+        term_map = self._terminal_pos_map()
+        for w in graph.wires:
+            item = self._wire_items_by_id.get(w.id)
+            if item is not None and item.scene() is self and len(item.points) >= 2:
+                pts = item.points
+            else:
+                pts = self._compute_wire_points_from_graph(w, graph, term_map=term_map)
+            if len(pts) >= 2 and point_on_wire(pt, pts):
+                return True
+        return False
+
     def update_hover_highlight(self, scene_pos: QPointF) -> PointPx | None:
-        """Update the highlighted terminal (or wire snap target) under `scene_pos`."""
+        """Update the highlighted terminal or junction snap target under `scene_pos`."""
         term_hit = self.find_terminal_near(scene_pos)
         new_hover: PointPx | None = None
         if term_hit is not None:
             new_hover = term_hit[2]
-        elif self.is_drawing_wire:
-            wire_hit = self.find_wire_point_near(scene_pos)
-            if wire_hit is not None:
-                new_hover = wire_hit
+        else:
+            j_ref = self._find_junction_at(
+                scene_pos,
+                self._wire_graph,
+                tolerance_px=self.TERMINAL_SNAP_RADIUS_PX,
+            )
+            if j_ref is not None:
+                new_hover = self._wire_graph.junction(j_ref.id).pos
 
         if new_hover != self._hovered_terminal_pt:
             self._hovered_terminal_pt = new_hover
@@ -761,23 +809,13 @@ class CircuitScene(QGraphicsScene):
     def start_wire_preview(
         self, start_pos: QPointF | tuple[float, float]
     ) -> PointPx:
-        """Begin interactive right-angle wire drawing from `start_pos`."""
-        term_hit = self.find_terminal_near(start_pos)
-        if term_hit is not None:
-            start_pt = term_hit[2]
-        else:
-            start_pt = normalize_point_px(
-                (
-                    start_pos.x()
-                    if isinstance(start_pos, QPointF)
-                    else float(start_pos[0]),
-                    start_pos.y()
-                    if isinstance(start_pos, QPointF)
-                    else float(start_pos[1]),
-                ),
-                snap=True,
-            )
+        """Begin interactive orthogonal wire drawing from `start_pos` using `WireGraph`."""
+        att_a, start_pt = self._resolve_wire_attachment(start_pos)
+        self._wire_start_att = att_a
+        self._wire_end_att = None
         self._wire_start_pt = start_pt
+        self._wire_hints = []
+        self._wire_preview_previous = None
         self._wire_prefer_horiz = True
         if self._preview_wire_item is None:
             self._preview_wire_item = WireItem(
@@ -795,34 +833,35 @@ class CircuitScene(QGraphicsScene):
     def update_wire_preview(
         self, cursor_pos: QPointF | tuple[float, float]
     ) -> tuple[PointPx, ...]:
-        """Update the live right-angle preview wire from `_wire_start_pt` to `cursor_pos`."""
-        if self._wire_start_pt is None:
+        """Update the live preview wire using `circuitsim.wiring.router.route`."""
+        if self._wire_start_pt is None or self._wire_start_att is None:
             return ()
 
         cx = cursor_pos.x() if isinstance(cursor_pos, QPointF) else float(cursor_pos[0])
         cy = cursor_pos.y() if isinstance(cursor_pos, QPointF) else float(cursor_pos[1])
-        term_hit = self.find_terminal_near((cx, cy))
-        end_pt = (
-            term_hit[2]
-            if term_hit is not None
-            else normalize_point_px((cx, cy), snap=True)
+        att_b, _end_pt = self._resolve_wire_attachment((cx, cy))
+        self._wire_end_att = att_b
+
+        preview_wire = Wire(
+            id="PREVIEW_WIRE",
+            end_a=self._wire_start_att,
+            end_b=att_b,
+            hints=tuple(self._wire_hints),
         )
-
-        # Infer initial horizontal/vertical preference when leaving the start point
-        dx = abs(end_pt[0] - self._wire_start_pt[0])
-        dy = abs(end_pt[1] - self._wire_start_pt[1])
-        if dx == 0 and dy > 0:
-            self._wire_prefer_horiz = False
-        elif dy == 0 and dx > 0:
-            self._wire_prefer_horiz = True
-
-        pts = route_orthogonal_wire(
-            self._wire_start_pt,
-            end_pt,
-            prefer_horizontal_first=self._wire_prefer_horiz,
+        pts = self._compute_wire_points_from_graph(
+            preview_wire,
+            self._wire_graph,
+            fallback_points=self._wire_preview_previous,
         )
         if self._preview_wire_item is not None:
-            self._preview_wire_item.set_points(pts)
+            if len(pts) >= 2:
+                self._wire_preview_previous = pts
+                self._preview_wire_item.set_points(pts)
+            else:
+                self._wire_preview_previous = None
+                self._preview_wire_item.set_points(
+                    (self._wire_start_pt, self._wire_start_pt)
+                )
         self.update_hover_highlight(QPointF(float(cx), float(cy)))
         self.update()
         return pts
@@ -830,18 +869,38 @@ class CircuitScene(QGraphicsScene):
     def finish_wire_preview(
         self, end_pos: QPointF | tuple[float, float]
     ) -> WireItem | None:
-        """Commit the previewed wire onto the canvas via `QUndoStack` and clear preview."""
-        if self._wire_start_pt is None:
+        """Commit the previewed wire onto `WireGraph` via `QUndoStack` and clear preview."""
+        if self._wire_start_pt is None or self._wire_start_att is None:
             return None
         pts = self.update_wire_preview(end_pos)
+        att_a = self._wire_start_att
+        att_b = self._wire_end_att
+        hints = tuple(self._wire_hints)
         self.cancel_wire_preview()
-        if len(pts) < 2:
+        if att_b is None or len(pts) < 2 or att_a == att_b:
             return None
-        return self.add_wire(pts)
+
+        free_on_wire = (
+            isinstance(att_a, FreeEnd)
+            and self._point_hits_existing_wire((att_a.x, att_a.y), self._wire_graph)
+        ) or (
+            isinstance(att_b, FreeEnd)
+            and self._point_hits_existing_wire((att_b.x, att_b.y), self._wire_graph)
+        )
+        wire = self.add_wire(att_a, att_b, hints=hints)
+        if wire is not None and free_on_wire:
+            self._emit_status_notice(
+                "Wire ends on another wire: junctions come in the next update"
+            )
+        return wire
 
     def cancel_wire_preview(self) -> None:
         """Cancel any active wire preview without creating a wire."""
         self._wire_start_pt = None
+        self._wire_start_att = None
+        self._wire_end_att = None
+        self._wire_hints = []
+        self._wire_preview_previous = None
         if self._preview_wire_item is not None:
             self.removeItem(self._preview_wire_item)
             self._preview_wire_item = None
@@ -857,17 +916,25 @@ class CircuitScene(QGraphicsScene):
         return refs
 
     def _find_junction_at(
-        self, pt: PointPx, graph: WireGraph, *, tolerance_px: float = 0.0
+        self,
+        pt: QPointF | tuple[float, float],
+        graph: WireGraph,
+        *,
+        tolerance_px: float = 0.0,
     ) -> JunctionRef | None:
+        px = pt.x() if isinstance(pt, QPointF) else float(pt[0])
+        py = pt.y() if isinstance(pt, QPointF) else float(pt[1])
         if tolerance_px <= 0.0:
+            ix = int(round(px))
+            iy = int(round(py))
             for j in graph.junctions:
-                if j.pos == pt:
+                if j.pos == (ix, iy):
                     return JunctionRef(j.id)
             return None
         best_id: str | None = None
         best_dist = tolerance_px
         for j in graph.junctions:
-            dist = math.hypot(j.pos[0] - pt[0], j.pos[1] - pt[1])
+            dist = math.hypot(j.pos[0] - px, j.pos[1] - py)
             if dist <= best_dist:
                 best_dist = dist
                 best_id = j.id
