@@ -313,6 +313,15 @@ class WireGraph:
         _normalize(wires, junctions, affected)
         return WireGraph(tuple(wires), tuple(junctions))
 
+    def set_wire_hints(
+        self, wire_id: str, hints: Iterable[tuple[float, float]]
+    ) -> WireGraph:
+        """Return a new graph with `wire_id`'s waypoint hints replaced (snapped to grid)."""
+        old = self.wire(wire_id)
+        updated = Wire(old.id, old.end_a, old.end_b, _snap_hints(hints))
+        wires = tuple(updated if w.id == wire_id else w for w in self.wires)
+        return WireGraph(wires, self.junctions)
+
     def add_junction(self, pos: tuple[float, float], junction_id: str | None = None) -> WireGraph:
         """Add a junction object (position snapped to the grid). It starts with no wires."""
         if junction_id is None:

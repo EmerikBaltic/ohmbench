@@ -22,7 +22,7 @@ from PySide6.QtWidgets import QGraphicsView, QMenu, QToolTip
 from circuitsim.canvas.component_item import ComponentItem
 from circuitsim.canvas.scene import CircuitScene
 from circuitsim.canvas.symbol_geometry import GRID_PITCH_PX, snap_to_grid
-from circuitsim.canvas.wire_item import WireItem
+from circuitsim.canvas.wire_item import JunctionItem, WireItem
 from circuitsim.components.switch import Switch
 from circuitsim.dialogs.quick_edit_dialog import QuickValueDialog
 
@@ -157,12 +157,28 @@ class CircuitView(QGraphicsView):
         self.scale(factor, factor)
         self.zoom_changed.emit(self._zoom_factor)
 
+    def _item_at_is_component_or_junction(self, scene_pt: QPointF) -> bool:
+        curr = self.circuit_scene.itemAt(scene_pt, self.transform())
+        while curr is not None:
+            if isinstance(curr, (ComponentItem, JunctionItem)):
+                return True
+            curr = curr.parentItem()
+        return False
+
     def _update_cursor_for_scene_pos(self, scene_pt: QPointF) -> None:
         if self._is_panning:
             self.setCursor(Qt.CursorShape.ClosedHandCursor)
             return
         if self._space_held:
             self.setCursor(Qt.CursorShape.OpenHandCursor)
+            return
+        if self.circuit_scene.is_dragging_wire_segment:
+            orient = self.circuit_scene.active_wire_segment_orientation
+            self.setCursor(
+                Qt.CursorShape.SizeVerCursor
+                if orient == "H"
+                else Qt.CursorShape.SizeHorCursor
+            )
             return
         hovered_pt = self.circuit_scene.update_hover_highlight(scene_pt)
         if (
@@ -171,8 +187,17 @@ class CircuitView(QGraphicsView):
             or hovered_pt is not None
         ):
             self.setCursor(Qt.CursorShape.CrossCursor)
-        else:
-            self.setCursor(Qt.CursorShape.ArrowCursor)
+            return
+        if not self._item_at_is_component_or_junction(scene_pt):
+            seg_hit = self.circuit_scene.find_wire_segment_near(scene_pt)
+            if seg_hit is not None:
+                self.setCursor(
+                    Qt.CursorShape.SizeVerCursor
+                    if seg_hit[2] == "H"
+                    else Qt.CursorShape.SizeHorCursor
+                )
+                return
+        self.setCursor(Qt.CursorShape.ArrowCursor)
 
     def open_quick_edit_for_item(self, item: ComponentItem) -> bool:
         """Open the double-click `QuickValueDialog` for `item` and apply changes live."""
@@ -239,19 +264,23 @@ class CircuitView(QGraphicsView):
             event.accept()
             return
 
-        # 2. Right-click while drawing a wire cancels the wire preview
-        if (
-            event.button() == Qt.MouseButton.RightButton
-            and self.circuit_scene.is_drawing_wire
-        ):
-            self._wire_drag_active = False
-            self._suppress_next_context_menu = True
-            self.circuit_scene.cancel_wire_preview()
-            self._update_cursor_for_scene_pos(scene_pt)
-            event.accept()
-            return
+        # 2. Right-click cancels active wire drawing or active wire segment drag
+        if event.button() == Qt.MouseButton.RightButton:
+            if self.circuit_scene.is_drawing_wire:
+                self._wire_drag_active = False
+                self._suppress_next_context_menu = True
+                self.circuit_scene.cancel_wire_preview()
+                self._update_cursor_for_scene_pos(scene_pt)
+                event.accept()
+                return
+            if self.circuit_scene.is_dragging_wire_segment:
+                self._suppress_next_context_menu = True
+                self.circuit_scene.cancel_wire_segment_drag()
+                self._update_cursor_for_scene_pos(scene_pt)
+                event.accept()
+                return
 
-        # 3. Left-click wire drawing (either clicking a terminal, or in Wire Mode, or adding waypoint / finishing wire)
+        # 3. Left-click wire drawing / segment drag / component selection
         if event.button() == Qt.MouseButton.LeftButton:
             if self.circuit_scene.is_drawing_wire:
                 self._wire_drag_active = False
@@ -270,6 +299,20 @@ class CircuitView(QGraphicsView):
                 self._update_cursor_for_scene_pos(scene_pt)
                 event.accept()
                 return
+
+            if not self._item_at_is_component_or_junction(scene_pt):
+                seg_hit = self.circuit_scene.find_wire_segment_near(scene_pt)
+                if seg_hit is not None:
+                    wire_item, seg_idx, orient = seg_hit
+                    if not (event.modifiers() & Qt.KeyboardModifier.ShiftModifier):
+                        self.circuit_scene.clearSelection()
+                    wire_item.setSelected(True)
+                    self.circuit_scene.begin_wire_segment_drag(
+                        wire_item, seg_idx, orient
+                    )
+                    self._update_cursor_for_scene_pos(scene_pt)
+                    event.accept()
+                    return
 
             # Check if clicking a Switch component body (to toggle on release if not dragged)
             hit_item = self.circuit_scene.itemAt(scene_pt, self.transform())
@@ -313,6 +356,12 @@ class CircuitView(QGraphicsView):
             event.accept()
             return
 
+        if self.circuit_scene.is_dragging_wire_segment:
+            self.circuit_scene.update_wire_segment_drag(scene_pt)
+            self._update_cursor_for_scene_pos(scene_pt)
+            event.accept()
+            return
+
         if (
             event.buttons() & Qt.MouseButton.LeftButton
             and not self._is_panning
@@ -351,6 +400,12 @@ class CircuitView(QGraphicsView):
                 pts = self.circuit_scene.update_wire_preview(scene_pt)
                 if len(pts) >= 2:
                     self.circuit_scene.finish_wire_preview(scene_pt)
+                self._update_cursor_for_scene_pos(scene_pt)
+                event.accept()
+                return
+
+            if self.circuit_scene.is_dragging_wire_segment:
+                self.circuit_scene.commit_wire_segment_drag()
                 self._update_cursor_for_scene_pos(scene_pt)
                 event.accept()
                 return
@@ -482,7 +537,9 @@ class CircuitView(QGraphicsView):
             event.accept()
             return
         if event.key() == Qt.Key.Key_Escape:
-            if self.circuit_scene.is_drawing_wire:
+            if self.circuit_scene.is_dragging_wire_segment:
+                self.circuit_scene.cancel_wire_segment_drag()
+            elif self.circuit_scene.is_drawing_wire:
                 self._wire_drag_active = False
                 self.circuit_scene.cancel_wire_preview()
             elif self._wire_mode_enabled:

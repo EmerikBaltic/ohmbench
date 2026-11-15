@@ -12,6 +12,7 @@ from circuitsim.app.main_window import MainWindow
 from circuitsim.app.settings import AppSettings
 from circuitsim.engine import MNASolver, SimulationSession, SimulationState
 from circuitsim.wiring.model import FreeEnd, Junction, JunctionRef, TerminalRef, WireGraph
+from circuitsim.wiring.router import slide_segment_hints
 
 
 def _vpos(win: MainWindow, sx: float, sy: float):
@@ -408,6 +409,216 @@ def test_phase5_2_waypoints_backspace_and_invalid_wire_rejections(tmp_path, qapp
         assert "zero-length" in scene.last_status_notice.lower()
         assert scene.undo_stack.count() == undo_after_first
         assert len(scene.placed_wires) == wires_after_first
+    finally:
+        win.circuit_scene.undo_stack.setClean()
+        win.close()
+
+
+def test_phase5_3_wire_segment_dragging_updates_hints_and_undo_redo(
+    tmp_path, qapp
+) -> None:
+    """Phase 5.3: dragging a horizontal or vertical wire segment slides it via hints + route() with 1 undo step."""
+    # Unit checks for Qt-free slide_segment_hints helper (grid pitch = 20 px):
+    # 1. Z-shape interior V segment at x=60 dragged to x=87 -> snaps to round(87/20)*20 = 80.
+    z_pts = ((0, 0), (60, 0), (60, 100), (120, 100))
+    assert slide_segment_hints(z_pts, 1, "V", 87) == ((80, 0), (80, 100))
+
+    # 2. L-shape H segment at y=0 dragged to y=-40 -> hints ((0, -40), (100, -40)).
+    l_pts = ((0, 0), (100, 0), (100, 100))
+    assert slide_segment_hints(l_pts, 0, "H", -40) == ((0, -40), (100, -40))
+
+    # 3. Straight 2-point H segment at y=0 dragged to y=60, then back to y=0 -> hints cleared.
+    s_pts = ((0, 0), (100, 0))
+    assert slide_segment_hints(s_pts, 0, "H", 60) == ((0, 60), (100, 60))
+    assert slide_segment_hints(s_pts, 0, "H", 0) == ()
+
+    settings = AppSettings(data_dir=tmp_path / "settings_53")
+    win = MainWindow(settings=settings)
+    win.resize(1000, 760)
+    win.show()
+    qapp.processEvents()
+    view = win.circuit_view
+    scene = win.circuit_scene
+    vp = view.viewport()
+
+    try:
+        view.reset_zoom()
+        qapp.processEvents()
+
+        # Build 10 V / 1 kOhm / 2 kOhm divider -> V_mid = 10 * 2k / (1k + 2k) = 20/3 V.
+        v1 = scene.place_new_component("dc_voltage", QPointF(-140.0, 20.0), rotation_deg=90)
+        r1 = scene.place_new_component("resistor", QPointF(0.0, -60.0))
+        r2 = scene.place_new_component("resistor", QPointF(160.0, 20.0), rotation_deg=90)
+        gnd = scene.place_new_component("ground", QPointF(-140.0, 140.0))
+        scene.edit_component_parameters(v1, {"dc_voltage": 10.0})
+        scene.edit_component_parameters(r1, {"resistance": 1000.0})
+        scene.edit_component_parameters(r2, {"resistance": 2000.0})
+
+        p_r1b = r1.terminal_scene_positions_px()["b"]
+        p_r2a = r2.terminal_scene_positions_px()["a"]
+        p_vpos = v1.terminal_scene_positions_px()["pos"]
+
+        # Create a 3-segment H-V-H wire from R1.b to R2.a using a middle vertical hint x_mid.
+        x_mid = ((p_r1b[0] + p_r2a[0]) // 40) * 20
+        w_top = scene.add_wire(TerminalRef("V1", "pos"), TerminalRef("R1", "a"))
+        w_mid = scene.add_wire(
+            TerminalRef("R1", "b"),
+            TerminalRef("R2", "a"),
+            hints=((x_mid, p_r1b[1]), (x_mid, p_r2a[1])),
+        )
+        w_bot = scene.add_wire(TerminalRef("R2", "b"), TerminalRef("V1", "neg"))
+        w_gnd = scene.add_wire(TerminalRef("V1", "neg"), TerminalRef("GND1", "gnd"))
+        assert w_top is not None and w_mid is not None and w_bot is not None and w_gnd is not None
+
+        # 1. Hover & drag interior vertical segment of w_mid horizontally (+40 px -> x_mid + 40).
+        assert len(w_mid.points) == 4
+        v_seg_mid_y = (w_mid.points[1][1] + w_mid.points[2][1]) / 2.0
+        QTest.mouseMove(vp, _vpos(win, x_mid, v_seg_mid_y))
+        assert view.cursor().shape() == Qt.CursorShape.SizeHorCursor
+
+        undo_before_v = scene.undo_stack.count()
+        QTest.mousePress(
+            vp,
+            Qt.MouseButton.LeftButton,
+            Qt.KeyboardModifier.NoModifier,
+            _vpos(win, x_mid, v_seg_mid_y),
+        )
+        assert scene.is_dragging_wire_segment is True
+        assert scene.undo_stack.count() == undo_before_v
+
+        new_x = x_mid + 40
+        QTest.mouseMove(vp, _vpos(win, new_x, v_seg_mid_y))
+        live_pts = scene._wire_items_by_id[w_mid.wire_id].points
+        assert (new_x, p_r1b[1]) in live_pts and (new_x, p_r2a[1]) in live_pts
+        assert scene.undo_stack.count() == undo_before_v
+
+        QTest.mouseRelease(
+            vp,
+            Qt.MouseButton.LeftButton,
+            Qt.KeyboardModifier.NoModifier,
+            _vpos(win, new_x, v_seg_mid_y),
+        )
+        assert scene.is_dragging_wire_segment is False
+        assert scene.undo_stack.count() == undo_before_v + 1
+        assert scene.wire_graph.wire(w_mid.wire_id).hints == (
+            (new_x, p_r1b[1]),
+            (new_x, p_r2a[1]),
+        )
+
+        # 2. Undo and redo restore exact hints and points in 1 step each.
+        scene.undo_stack.undo()
+        assert scene.wire_graph.wire(w_mid.wire_id).hints == (
+            (x_mid, p_r1b[1]),
+            (x_mid, p_r2a[1]),
+        )
+        scene.undo_stack.redo()
+        assert scene.wire_graph.wire(w_mid.wire_id).hints == (
+            (new_x, p_r1b[1]),
+            (new_x, p_r2a[1]),
+        )
+
+        # 3. Hover & drag horizontal bottom wire segment vertically (-40 px -> bottom_y - 40).
+        w_bot_item = scene._wire_items_by_id[w_bot.wire_id]
+        h_idx = next(
+            i
+            for i in range(len(w_bot_item.points) - 1)
+            if w_bot_item.points[i][1] == w_bot_item.points[i + 1][1]
+            and abs(w_bot_item.points[i][0] - w_bot_item.points[i + 1][0]) >= 40
+        )
+        hp1, hp2 = w_bot_item.points[h_idx], w_bot_item.points[h_idx + 1]
+        hx = (hp1[0] + hp2[0]) / 2.0
+        hy = float(hp1[1])
+        QTest.mouseMove(vp, _vpos(win, hx, hy))
+        assert view.cursor().shape() == Qt.CursorShape.SizeVerCursor
+
+        undo_before_h = scene.undo_stack.count()
+        QTest.mousePress(
+            vp,
+            Qt.MouseButton.LeftButton,
+            Qt.KeyboardModifier.NoModifier,
+            _vpos(win, hx, hy),
+        )
+        assert scene.is_dragging_wire_segment is True
+        target_hy = int(hy) + 40
+        QTest.mouseMove(vp, _vpos(win, hx, target_hy))
+        QTest.mouseRelease(
+            vp,
+            Qt.MouseButton.LeftButton,
+            Qt.KeyboardModifier.NoModifier,
+            _vpos(win, hx, target_hy),
+        )
+        assert scene.is_dragging_wire_segment is False
+        assert scene.undo_stack.count() == undo_before_h + 1
+        bot_hints = scene.wire_graph.wire(w_bot.wire_id).hints
+        assert any(pt[1] == target_hy for pt in bot_hints)
+
+        # 4. Tiny sub-half-grid drag that lands back on the original coordinate pushes 0 undo steps.
+        undo_before_noop = scene.undo_stack.count()
+        QTest.mousePress(
+            vp,
+            Qt.MouseButton.LeftButton,
+            Qt.KeyboardModifier.NoModifier,
+            _vpos(win, new_x, v_seg_mid_y),
+        )
+        QTest.mouseMove(vp, _vpos(win, new_x + 3, v_seg_mid_y))
+        QTest.mouseRelease(
+            vp,
+            Qt.MouseButton.LeftButton,
+            Qt.KeyboardModifier.NoModifier,
+            _vpos(win, new_x + 3, v_seg_mid_y),
+        )
+        assert scene.undo_stack.count() == undo_before_noop
+
+        # 5. Esc cancel mid-drag restores original hints & pushes 0 undo steps.
+        QTest.mousePress(
+            vp,
+            Qt.MouseButton.LeftButton,
+            Qt.KeyboardModifier.NoModifier,
+            _vpos(win, new_x, v_seg_mid_y),
+        )
+        QTest.mouseMove(vp, _vpos(win, new_x + 60, v_seg_mid_y))
+        assert scene.is_dragging_wire_segment is True
+        QTest.keyClick(view, Qt.Key.Key_Escape)
+        assert scene.is_dragging_wire_segment is False
+        assert scene.undo_stack.count() == undo_before_noop
+        assert scene.wire_graph.wire(w_mid.wire_id).hints == (
+            (new_x, p_r1b[1]),
+            (new_x, p_r2a[1]),
+        )
+
+        # 6. Right-click cancel mid-drag also restores geometry, pushes 0 undo, suppresses context menu.
+        QTest.mousePress(
+            vp,
+            Qt.MouseButton.LeftButton,
+            Qt.KeyboardModifier.NoModifier,
+            _vpos(win, new_x, v_seg_mid_y),
+        )
+        QTest.mouseMove(vp, _vpos(win, new_x + 60, v_seg_mid_y))
+        QTest.mousePress(
+            vp,
+            Qt.MouseButton.RightButton,
+            Qt.KeyboardModifier.NoModifier,
+            _vpos(win, new_x + 60, v_seg_mid_y),
+        )
+        assert scene.is_dragging_wire_segment is False
+        assert scene.undo_stack.count() == undo_before_noop
+        ctx = QContextMenuEvent(
+            QContextMenuEvent.Reason.Mouse,
+            _vpos(win, new_x + 60, v_seg_mid_y),
+            vp.mapToGlobal(_vpos(win, new_x + 60, v_seg_mid_y)),
+        )
+        view.contextMenuEvent(ctx)
+        assert ctx.isAccepted() is True
+
+        # 7. Clicking right near a terminal (<= 10 px) starts wire drawing, not segment drag.
+        assert scene.find_wire_segment_near((p_vpos[0] + 4, p_vpos[1])) is None
+
+        # 8. Electrical connectivity remains intact after sliding segments: V_mid = 10 * 2k / (1k + 2k) = 20 / 3 V.
+        conn = scene.extract_connectivity_result()
+        sol = MNASolver(conn.circuit).solve_dc()
+        assert math.isclose(
+            sol.node_voltages[conn.component_nodes["R1"]["b"]], 20.0 / 3.0, rel_tol=1e-6
+        )
     finally:
         win.circuit_scene.undo_stack.setClean()
         win.close()

@@ -40,9 +40,9 @@
 
 ### PART C — WIRE REDESIGN PHASE 5 & 6 (branch `wire-redesign`)
 - [x] `C1` (`done` `70fe674`, 378 fast): HYDROGEN QUEUE `5.1` — Interactive wire drawing tool re-enabled (live preview via `route()`, `10 px` terminal/junction snap, `FreeEnd`, wire-on-wire notice, `Esc`/right-click cancel, 1 undo step).
-- [x] `C2` (`done`, 379 fast): HYDROGEN QUEUE `5.2` — Waypoint clicks while drawing + `Backspace` removes last waypoint + double-click finish + readable zero-undo rejections (same terminal/junction, duplicate wire, zero-length wire).
-- [ ] `C3` (`in_progress`): HYDROGEN QUEUE `5.3` — Interactive wire segment dragging (parallel slide updating `hints`, live preview via `route()`, 1 undo step). Acceptance: dragging an interior/movable horizontal or vertical wire segment slides it orthogonally, updates `Wire.hints` and reroutes cleanly via `route()`, and pushes 1 undo step on release (0 if unchanged).
-- [ ] `C4` (`todo`): HYDROGEN QUEUE `5.4` — Editing wire ends (`Acceptance S3`: drag handle, detach, reattach to terminal/junction/wire-split/`FreeEnd`, 1 undo step) + synthetic `QTest` mouse tests.
+- [x] `C2` (`done` `258e8cd`, 379 fast): HYDROGEN QUEUE `5.2` — Waypoint clicks while drawing + `Backspace` removes last waypoint + double-click finish + readable zero-undo rejections (same terminal/junction, duplicate wire, zero-length wire).
+- [x] `C3` (`done`, 380 fast): HYDROGEN QUEUE `5.3` — Interactive wire segment dragging (parallel slide updating `hints`, live preview via `route()`, 1 undo step). Acceptance: dragging an interior/movable horizontal or vertical wire segment slides it orthogonally, updates `Wire.hints` and reroutes cleanly via `route()`, and pushes 1 undo step on release (0 if unchanged).
+- [ ] `C4` (`in_progress`): HYDROGEN QUEUE `5.4` — Editing wire ends (`Acceptance S3`: drag handle, detach, reattach to terminal/junction/wire-split/`FreeEnd`, 1 undo step) + synthetic `QTest` mouse tests.
 - [ ] `C5` (`todo`): HYDROGEN QUEUE `5.5` — Update/audit existing wire tests (document any replaced coordinate-mechanism test in `PROGRESS.md`) + performance benchmark (`route()` + 50-part drag step <= ~30 ms).
 - [ ] `C6` (`todo`): HYDROGEN QUEUE `6.1` — Verification matrix S1–S5, golden circuit round-trips, update `PROGRESS.md` and `README.md`.
 - [ ] `GATE C` (`todo`): Full test suite + tag `checkpoint/C-done`.
@@ -89,9 +89,9 @@
 
 ### Phase 5: Wire Tool, Step 4A-2 (branch `wire-redesign`)
 - [x] 5.1 Wire drawing tool re-enabled (live preview, 10 px snap, `JunctionRef`, `FreeEnd`, wire-on-wire notice) - *done (`70fe674`, 378 fast)*
-- [x] 5.2 Rejections (same terminal, duplicate wire, zero-length wire) + waypoints/`Backspace` - *done (379 fast)*
-- [ ] 5.3 Editing wire ends (Acceptance S3: handle, detach, reattach/free-end, 1 undo step) - *todo*
-- [ ] 5.4 Synthetic mouse tests (`QTest`, shared `qapp`) - *todo*
+- [x] 5.2 Rejections (same terminal, duplicate wire, zero-length wire) + waypoints/`Backspace` - *done (`258e8cd`, 379 fast)*
+- [x] 5.3 Interactive wire segment dragging (`hints` parallel slide, live preview via `route()`, 1 undo step) - *done (380 fast)*
+- [ ] 5.4 Editing wire ends (`Acceptance S3`: handle, detach, reattach/`FreeEnd`, 1 undo step) + synthetic `QTest` mouse tests - *in_progress*
 - [ ] 5.5 Performance benchmark (`route()` + 50-part drag step <= ~30 ms, configurable threshold test) - *todo*
 
 ### Phase 6: Documentation & Report (branch `wire-redesign`)

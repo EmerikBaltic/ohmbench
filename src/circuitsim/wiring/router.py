@@ -423,3 +423,53 @@ def route(
 
     # 2. Fallback: A* Grid Search around obstacles
     return _route_astar(p0, p3, s_dir, e_dir, norm_obstacles, latched_ori)
+
+
+def slide_segment_hints(
+    orig_pts: Sequence[PointPx],
+    seg_index: int,
+    orientation: str,
+    target_coord: int | float,
+) -> tuple[PointPx, ...]:
+    """Return grid-snapped interior waypoint `hints` after sliding segment `seg_index`.
+
+    `orientation` is `"H"` (horizontal segment moving vertically to `target_coord`)
+    or `"V"` (vertical segment moving horizontally to `target_coord`).
+    """
+    n = len(orig_pts)
+    if n < 2 or not (0 <= seg_index <= n - 2) or orientation not in ("H", "V"):
+        return ()
+
+    snapped_target = int(round(float(target_coord) / GRID_PX)) * GRID_PX
+    pts = [(int(p[0]), int(p[1])) for p in orig_pts]
+    p_start = pts[0]
+    p_end = pts[-1]
+
+    def _with_coord(pt: PointPx, coord: int) -> PointPx:
+        return (pt[0], coord) if orientation == "H" else (coord, pt[1])
+
+    if seg_index == 0 and seg_index == n - 2:
+        orig_coord = p_start[1] if orientation == "H" else p_start[0]
+        if snapped_target == orig_coord:
+            return ()
+        return (_with_coord(p_start, snapped_target), _with_coord(p_end, snapped_target))
+
+    new_pts = list(pts)
+    if seg_index == 0:
+        new_pts[1] = _with_coord(new_pts[1], snapped_target)
+        orig_coord = p_start[1] if orientation == "H" else p_start[0]
+        if snapped_target != orig_coord:
+            new_pts.insert(1, _with_coord(p_start, snapped_target))
+    elif seg_index == n - 2:
+        new_pts[-2] = _with_coord(new_pts[-2], snapped_target)
+        orig_coord = p_end[1] if orientation == "H" else p_end[0]
+        if snapped_target != orig_coord:
+            new_pts.insert(n - 1, _with_coord(p_end, snapped_target))
+    else:
+        new_pts[seg_index] = _with_coord(new_pts[seg_index], snapped_target)
+        new_pts[seg_index + 1] = _with_coord(new_pts[seg_index + 1], snapped_target)
+
+    simp = simplify_orthogonal_points(new_pts)
+    if len(simp) <= 2:
+        return ()
+    return tuple(simp[1:-1])

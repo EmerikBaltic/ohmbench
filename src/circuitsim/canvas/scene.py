@@ -74,6 +74,7 @@ from circuitsim.wiring.router import (
     normalize_dir as wire_normalize_dir,
     route as wire_route,
     simplify_orthogonal_points as wire_simplify_points,
+    slide_segment_hints as wire_slide_segment_hints,
 )
 from circuitsim.wiring.serializer import CircuitDocumentV2, migrate_v1_to_v2
 
@@ -143,6 +144,14 @@ class CircuitScene(QGraphicsScene):
         self._wire_prefer_horiz: bool = True
         self._preview_wire_item: WireItem | None = None
         self.last_status_notice: str = ""
+
+        # Interactive wire segment dragging state
+        self._seg_drag_old_graph: WireGraph | None = None
+        self._seg_drag_wire_id: str | None = None
+        self._seg_drag_index: int = -1
+        self._seg_drag_orient: str = ""
+        self._seg_drag_orig_pts: tuple[PointPx, ...] = ()
+        self._seg_drag_orig_hints: tuple[PointPx, ...] = ()
 
         # Component drag-move tracking for live attached-wire re-routing & QUndoStack
         self._move_tracking_active: bool = False
@@ -987,6 +996,199 @@ class CircuitScene(QGraphicsScene):
             self.removeItem(self._preview_wire_item)
             self._preview_wire_item = None
         self.update()
+
+    # ------------------------------------------------------------------
+    # Interactive wire segment dragging (updates Wire.hints, 1 undo step)
+    # ------------------------------------------------------------------
+
+    @property
+    def is_dragging_wire_segment(self) -> bool:
+        """Return whether a wire segment drag is currently in progress."""
+        return self._seg_drag_wire_id is not None
+
+    @property
+    def active_wire_segment_orientation(self) -> str:
+        """Return `'H'`, `'V'`, or `''` for the segment currently being dragged."""
+        return self._seg_drag_orient
+
+    def find_wire_segment_near(
+        self,
+        scene_pos: QPointF | tuple[float, float],
+        *,
+        tolerance_px: float = 8.0,
+        endpoint_guard_px: float = 10.0,
+    ) -> tuple[WireItem, int, str] | None:
+        """Find the nearest movable wire segment within `tolerance_px` of `scene_pos`.
+
+        Returns `(wire_item, seg_index, orientation)` where `orientation` is
+        `'H'` (horizontal segment that slides vertically) or `'V'` (vertical
+        segment that slides horizontally), or `None` if `scene_pos` is near a
+        terminal, junction, or wire free end, or not within `tolerance_px`.
+        """
+        sx = scene_pos.x() if isinstance(scene_pos, QPointF) else float(scene_pos[0])
+        sy = scene_pos.y() if isinstance(scene_pos, QPointF) else float(scene_pos[1])
+
+        if (
+            self.find_terminal_near((sx, sy), tolerance_px=endpoint_guard_px)
+            is not None
+        ):
+            return None
+        if (
+            self._find_junction_at(
+                (sx, sy), self._wire_graph, tolerance_px=endpoint_guard_px
+            )
+            is not None
+        ):
+            return None
+
+        best: tuple[WireItem, int, str] | None = None
+        best_key: tuple[float, float, int] | None = None
+
+        for wire in self._wire_items:
+            if wire.scene() is not self:
+                continue
+            pts = wire.points
+            if len(pts) < 2:
+                continue
+            # Keep free endpoints reserved for wire-end handle dragging.
+            if (
+                math.hypot(sx - pts[0][0], sy - pts[0][1]) < endpoint_guard_px
+                or math.hypot(sx - pts[-1][0], sy - pts[-1][1]) < endpoint_guard_px
+            ):
+                continue
+
+            for idx in range(len(pts) - 1):
+                p1, p2 = pts[idx], pts[idx + 1]
+                if p1 == p2:
+                    continue
+                if p1[1] == p2[1]:
+                    orient = "H"
+                    x_min, x_max = min(p1[0], p2[0]), max(p1[0], p2[0])
+                    dx = max(x_min - sx, 0.0, sx - x_max)
+                    dy = abs(sy - p1[1])
+                    dist = math.hypot(dx, dy)
+                    perp_dist = dy
+                    seg_len = float(x_max - x_min)
+                elif p1[0] == p2[0]:
+                    orient = "V"
+                    y_min, y_max = min(p1[1], p2[1]), max(p1[1], p2[1])
+                    dx = abs(sx - p1[0])
+                    dy = max(y_min - sy, 0.0, sy - y_max)
+                    dist = math.hypot(dx, dy)
+                    perp_dist = dx
+                    seg_len = float(y_max - y_min)
+                else:
+                    continue
+
+                if dist > tolerance_px:
+                    continue
+                cand_key = (round(dist, 6), round(perp_dist, 6), -int(seg_len))
+                if best_key is None or cand_key < best_key:
+                    best_key = cand_key
+                    best = (wire, idx, orient)
+
+        return best
+
+    def begin_wire_segment_drag(
+        self, wire_item: WireItem, seg_index: int, orientation: str
+    ) -> bool:
+        """Start interactively sliding segment `seg_index` of `wire_item`."""
+        if (
+            orientation not in ("H", "V")
+            or not self._wire_graph.has_wire(wire_item.wire_id)
+            or not (0 <= seg_index <= len(wire_item.points) - 2)
+        ):
+            return False
+        wire_obj = self._wire_graph.wire(wire_item.wire_id)
+        self._seg_drag_old_graph = self._wire_graph
+        self._seg_drag_wire_id = wire_item.wire_id
+        self._seg_drag_index = seg_index
+        self._seg_drag_orient = orientation
+        self._seg_drag_orig_pts = tuple(wire_item.points)
+        self._seg_drag_orig_hints = wire_obj.hints
+        return True
+
+    def _compute_slid_hints_for_pos(self, scene_pos: QPointF | tuple[float, float]) -> tuple[PointPx, ...]:
+        sx = scene_pos.x() if isinstance(scene_pos, QPointF) else float(scene_pos[0])
+        sy = scene_pos.y() if isinstance(scene_pos, QPointF) else float(scene_pos[1])
+        target_raw = sy if self._seg_drag_orient == "H" else sx
+        snapped_coord = int(round(target_raw / GRID_PITCH_PX)) * GRID_PITCH_PX
+        p_seg = self._seg_drag_orig_pts[self._seg_drag_index]
+        orig_coord = p_seg[1] if self._seg_drag_orient == "H" else p_seg[0]
+        if snapped_coord == orig_coord:
+            return self._seg_drag_orig_hints
+        return wire_slide_segment_hints(
+            self._seg_drag_orig_pts,
+            self._seg_drag_index,
+            self._seg_drag_orient,
+            snapped_coord,
+        )
+
+    def update_wire_segment_drag(
+        self, scene_pos: QPointF | tuple[float, float]
+    ) -> tuple[PointPx, ...]:
+        """Update the live preview of the dragged wire segment via `route()`."""
+        wid = self._seg_drag_wire_id
+        old_graph = self._seg_drag_old_graph
+        if wid is None or old_graph is None or not old_graph.has_wire(wid):
+            return ()
+        hints = self._compute_slid_hints_for_pos(scene_pos)
+        preview_graph = old_graph.set_wire_hints(wid, hints)
+        item = self._wire_items_by_id.get(wid)
+        pref = {wid: item} if item is not None else None
+        self.set_wire_graph(preview_graph, refresh=False, preferred_wire_items=pref)
+        self.update()
+        updated_item = self._wire_items_by_id.get(wid)
+        return updated_item.points if updated_item is not None else ()
+
+    def commit_wire_segment_drag(self) -> bool:
+        """Finish wire segment drag, pushing 1 undo step if geometry/hints changed."""
+        wid = self._seg_drag_wire_id
+        old_graph = self._seg_drag_old_graph
+        new_graph = self._wire_graph
+        orig_pts = self._seg_drag_orig_pts
+        self._clear_wire_segment_drag_state()
+        if wid is None or old_graph is None:
+            return False
+
+        item = self._wire_items_by_id.get(wid)
+        new_pts = item.points if item is not None else ()
+        if new_graph == old_graph or new_pts == orig_pts:
+            pref = {wid: item} if item is not None else None
+            self.set_wire_graph(old_graph, refresh=False, preferred_wire_items=pref)
+            return False
+
+        pref = {wid: item} if item is not None else None
+        # Restore old_graph briefly so QUndoStack.push() executes redo() cleanly once.
+        self.set_wire_graph(old_graph, refresh=False, preferred_wire_items=pref)
+        self.undo_stack.push(
+            SetWireGraphCommand(
+                self,
+                old_graph,
+                new_graph,
+                preferred_wire_items=pref,
+                description=f"Move Wire {wid} Segment",
+            )
+        )
+        return True
+
+    def cancel_wire_segment_drag(self) -> None:
+        """Cancel an active wire segment drag and restore the previous wire geometry."""
+        wid = self._seg_drag_wire_id
+        old_graph = self._seg_drag_old_graph
+        self._clear_wire_segment_drag_state()
+        if old_graph is not None:
+            item = self._wire_items_by_id.get(wid) if wid is not None else None
+            pref = {wid: item} if wid is not None and item is not None else None
+            self.set_wire_graph(old_graph, refresh=True, preferred_wire_items=pref)
+
+    def _clear_wire_segment_drag_state(self) -> None:
+        self._seg_drag_old_graph = None
+        self._seg_drag_wire_id = None
+        self._seg_drag_index = -1
+        self._seg_drag_orient = ""
+        self._seg_drag_orig_pts = ()
+        self._seg_drag_orig_hints = ()
 
     def _terminals_at_point(self, pt: PointPx) -> list[TerminalRef]:
         refs: list[TerminalRef] = []
