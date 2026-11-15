@@ -1,7 +1,14 @@
 # Project Progress — Ohmbench (formerly CircuitSim)
 
 ## FIX QUEUE (branch `wire-redesign`)
-- [ ] `E0` (`todo`): Create offscreen real-input UI helpers (`tests/ui_flow_helpers.py`), reproduce E1–E5 on both `wire-redesign` and `main`, mark failing reproductions `xfail(strict=True)`, and record the per-branch failure table.
+- [x] `E0` (`done`): Created `tests/ui_flow_helpers.py` and `tests/test_ui_flow_bugs.py`; reproduced E1–E5 on both `wire-redesign` (`99e80b2`) and `main` (`checkpoint/A-done` `12fb46f` via worktree), marked `xfail(strict=True)`.
+  | Bug | Fails on `main` (`12fb46f`) | Fails on `wire-redesign` (`99e80b2`) | Notes / Failing Line |
+  |---|---|---|---|
+  | `E1` | no | yes | Raises `WireGraphError` in `_update_info_panel` during `DeleteItemsCommand.redo()` (`tests/test_ui_flow_bugs.py:73`) |
+  | `E2` | yes | yes | Shared zoom/snap radius & wire-on-wire (`tests/test_ui_flow_bugs.py:119`, `N3 != N1` on `main`, `N1 != N4` on `wire-redesign`) |
+  | `E3` | yes | yes | Shared drag/drop behavior onto wire (`tests/test_ui_flow_bugs.py:170`, `A1` left disconnected) |
+  | `E4` | yes | yes | Shared `themes.py` missing `QToolButton:checked`, status text, `Esc` (`tests/test_ui_flow_bugs.py:190`) |
+  | `E5` | yes | yes | Shared `ComponentItem._paint_impl` opaque plate over wire (`tests/test_ui_flow_bugs.py:261`) |
 - [ ] `E1` (`todo`): Fix `Select All + Delete` crash (`DeleteItemsCommand` / atomic `_placed_items` + `WireGraph` updates / `WireGraph.detach_component` / UI delete detaches unselected wires).
 - [ ] `E2` (`todo`): Fix terminal snapping & wire-on-wire splitting in Wire mode (zoom-scaled tolerance, grid-cell consistency, priority `terminal > junction > wire interior > wire bend > free end`, click vs drag, double-click, update Phase 5.1 wire-on-wire test).
 - [ ] `E3` (`todo`): Fix dropping/dragging a 2-terminal part onto a wire (no route jump on unattached wires during drag, inline split around straight/bent wires excluding dropped part obstacle, never tap both terminals in parallel).
