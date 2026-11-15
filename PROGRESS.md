@@ -454,8 +454,8 @@ When ready to perform Stage 2 (internal/package rename after Stage 1 settles):
 | 6 | Automated waveform measurements & phase lag (`measurements.py`) | `[x]` | `bc4024c` |
 | 7 | Math traces (`CH1-CH2`, `CH1+CH2`, `CH1*CH2`), periodic-Hann FFT, XY & cursors (`math_fft.py`) | `[x]` | `80ea01c` |
 | 8 | `ScopeCore` state machine, Roll mode, Single & Auto Set (`core.py`, `__init__.py`) | `[x]` | `3fd9cde` |
-| 9 | Comprehensive Qt-free analytical & circuit test suite (`tests/test_scope_core.py`) | `[x]` | pending |
-| 10 | Offscreen Qt waveform debug tool & PNG exports (`tools/scope_demo.py`, `docs/design/scope_*.png`) | `[ ]` | - |
+| 9 | Comprehensive Qt-free analytical & circuit test suite (`tests/test_scope_core.py`) | `[x]` | `5a7a78e` |
+| 10 | Offscreen Qt waveform debug tool & PNG exports (`tools/scope_demo.py`, `docs/design/scope_*.png`) | `[x]` | pending |
 | 11 | Performance benchmarks, sink overhead (<5%) & UI responsiveness check (`tests/test_scope_performance.py`) | `[ ]` | - |
 | 12 | Scope core API & Next-Chat UI requirements in `PROGRESS.md` | `[ ]` | - |
 | 13 | Student `LEARNING_NOTES.md`, final fast suite check & wrap-up | `[ ]` | - |
