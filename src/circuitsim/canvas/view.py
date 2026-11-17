@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from PySide6.QtCore import QEvent, QPoint, QPointF, Qt, Signal
+from PySide6.QtCore import QEvent, QPoint, QPointF, QRectF, Qt, Signal
 from PySide6.QtGui import (
     QAction,
     QContextMenuEvent,
@@ -78,9 +78,9 @@ class CircuitView(QGraphicsView):
         )
         self.setDragMode(QGraphicsView.DragMode.RubberBandDrag)
         self.setTransformationAnchor(
-            QGraphicsView.ViewportAnchor.AnchorUnderMouse
+            QGraphicsView.ViewportAnchor.AnchorViewCenter
         )
-        self.setResizeAnchor(QGraphicsView.ViewportAnchor.NoAnchor)
+        self.setResizeAnchor(QGraphicsView.ViewportAnchor.AnchorViewCenter)
         self.centerOn(0.0, 0.0)
 
     @property
@@ -203,12 +203,39 @@ class CircuitView(QGraphicsView):
     def zoom_out(self) -> None:
         self._apply_zoom(1.0 / self.ZOOM_STEP)
 
+    def _ensure_scene_rect_covers(self, center_scene: QPointF, zoom: float) -> None:
+        """Ensure `sceneRect` is large enough around `center_scene` so scrollbars do not clamp."""
+        vp_size = self.viewport().size()
+        half_w = max(2000.0, (vp_size.width() / max(zoom, 0.05)) * 1.5)
+        half_h = max(2000.0, (vp_size.height() / max(zoom, 0.05)) * 1.5)
+        needed = QRectF(
+            center_scene.x() - half_w,
+            center_scene.y() - half_h,
+            2.0 * half_w,
+            2.0 * half_h,
+        )
+        cur = self.circuit_scene.sceneRect()
+        if not cur.contains(needed):
+            self.circuit_scene.setSceneRect(cur.united(needed))
+
     def _apply_zoom(self, factor: float) -> None:
-        new_zoom = self._zoom_factor * factor
-        if new_zoom < self.MIN_ZOOM or new_zoom > self.MAX_ZOOM:
+        new_zoom = min(max(self._zoom_factor * factor, self.MIN_ZOOM), self.MAX_ZOOM)
+        actual_factor = new_zoom / max(self._zoom_factor, 1e-12)
+        if abs(actual_factor - 1.0) < 1e-9:
             return
-        self._zoom_factor = new_zoom
-        self.scale(factor, factor)
+        vp_rect = self.viewport().rect()
+        center_scene = self.mapToScene(
+            QPoint(vp_rect.width() // 2, vp_rect.height() // 2)
+        )
+        self._ensure_scene_rect_covers(center_scene, new_zoom)
+        old_anchor = self.transformationAnchor()
+        self.setTransformationAnchor(QGraphicsView.ViewportAnchor.NoAnchor)
+        try:
+            self._zoom_factor = new_zoom
+            self.scale(actual_factor, actual_factor)
+            self.centerOn(center_scene)
+        finally:
+            self.setTransformationAnchor(old_anchor)
         self.zoom_changed.emit(self._zoom_factor)
 
     def _item_at_is_component_or_junction(self, scene_pt: QPointF) -> bool:
@@ -304,8 +331,10 @@ class CircuitView(QGraphicsView):
         return super().viewportEvent(event)
 
     def wheelEvent(self, event: QWheelEvent) -> None:
-        """Zoom smoothly around the cursor using the mouse wheel."""
+        """Zoom smoothly anchored at the viewport center using the mouse wheel."""
         delta = event.angleDelta().y()
+        if delta == 0:
+            delta = event.pixelDelta().y()
         if delta > 0:
             self._apply_zoom(self.ZOOM_STEP)
         elif delta < 0:
