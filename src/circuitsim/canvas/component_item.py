@@ -152,7 +152,7 @@ def rect_intersects_segment(
     # Orthogonal vertical segment
     if abs(x1 - x2) < 1e-6:
         seg_x = x1
-        if rx1 <= seg_x <= ry2:
+        if rx1 <= seg_x <= rx2:
             seg_min_y = min(y1, y2)
             seg_max_y = max(y1, y2)
             if max(seg_min_y, ry1) <= min(seg_max_y, ry2):
@@ -934,6 +934,26 @@ class ComponentItem(QGraphicsObject):
         except Exception:
             pass
 
+    def _plate_intersects_scene_wire(self, local_plate: QRectF) -> bool:
+        """Return True if any non-preview wire segment in the scene crosses `local_plate`."""
+        sc = self.scene()
+        if sc is None:
+            return False
+        scene_rect = QRectF(
+            local_plate.x() + self.pos().x(),
+            local_plate.y() + self.pos().y(),
+            local_plate.width(),
+            local_plate.height(),
+        ).adjusted(-2.5, -2.5, 2.5, 2.5)
+        for item in sc.items(scene_rect):
+            pts = getattr(item, "points", None)
+            if not pts or len(pts) < 2 or not hasattr(item, "wire_id"):
+                continue
+            for idx in range(len(pts) - 1):
+                if rect_intersects_segment(scene_rect, pts[idx], pts[idx + 1]):
+                    return True
+        return False
+
     def _paint_impl(
         self,
         painter: QPainter,
@@ -1013,11 +1033,13 @@ class ComponentItem(QGraphicsObject):
             painter.setFont(font)
             fm = painter.fontMetrics()
 
-            # Background plate for name label so intersecting wires never cut through text (only if label exists)
+            # Background plate for name label so non-wire areas remain legible without cutting wires
             lbl_text = self.component.label or ""
             if lbl_text.strip():
                 lbl_box = fm.boundingRect(lbl_rect.toRect(), int(text_align), lbl_text)
-                painter.fillRect(QRectF(lbl_box).adjusted(-2.0, -1.0, 2.0, 1.0), QColor(palette.canvas_bg))
+                lbl_plate = QRectF(lbl_box).adjusted(-2.0, -1.0, 2.0, 1.0)
+                if not self._plate_intersects_scene_wire(lbl_plate):
+                    painter.fillRect(lbl_plate, QColor(palette.canvas_bg))
                 painter.setPen(QColor(palette.symbol_text))
                 painter.drawText(lbl_rect, text_align, lbl_text)
 
@@ -1034,9 +1056,11 @@ class ComponentItem(QGraphicsObject):
                     else format_component_value_summary(self.component)
                 )
                 if val_text and val_text.strip():
-                    # Background plate for value readout so intersecting wires never cut through text
+                    # Background plate for value readout; omitted if a wire passes through so wire stays visible
                     val_box = fm_val.boundingRect(val_rect.toRect(), int(text_align), val_text)
-                    painter.fillRect(QRectF(val_box).adjusted(-3.0, -1.0, 3.0, 1.0), QColor(palette.canvas_bg))
+                    val_plate = QRectF(val_box).adjusted(-3.0, -1.0, 3.0, 1.0)
+                    if not self._plate_intersects_scene_wire(val_plate):
+                        painter.fillRect(val_plate, QColor(palette.canvas_bg))
                     painter.drawText(val_rect, text_align, val_text)
 
             # Over-bright, over-current, or problem badge in upright coordinates

@@ -11,7 +11,7 @@ from PySide6.QtGui import QColor
 
 from circuitsim.app.themes import DARK_PALETTE, LIGHT_PALETTE, build_stylesheet
 from circuitsim.engine import MNASolver, SimulationSession
-from circuitsim.wiring.model import JunctionRef, TerminalRef
+from circuitsim.wiring.model import FreeEnd, JunctionRef, TerminalRef
 from circuitsim.wiring.router import find_overlapping_wire_segments
 from tests.ui_flow_helpers import (
     click_viewport,
@@ -587,49 +587,82 @@ def test_e4_repro_wire_mode_visibility_and_esc(tmp_path, qapp) -> None:
         win.close()
 
 
-@pytest.mark.xfail(strict=True, reason="E5 reproduction")
 def test_e5_repro_label_plates_cut_wire(tmp_path, qapp) -> None:
-    """E5 repro: opaque label/value plates must not erase a wire passing through the label rect."""
-    win, view, scene = create_window_and_view(tmp_path, zoom=1.0)
-    try:
-        vm = scene.place_new_component("voltmeter", QPointF(0.0, 0.0), rotation_deg=90)
-        vm.live_display_value = "12.00 V"
-        qapp.processEvents()
+    """E5: label/value plates never hide or erase a wire passing through the label rect."""
+    for theme in ("dark", "light"):
+        win, view, scene = create_window_and_view(tmp_path / f"e5_{theme}", zoom=1.0, theme=theme)
+        try:
+            palette = DARK_PALETTE if theme == "dark" else LIGHT_PALETTE
+            vm = scene.place_new_component("voltmeter", QPointF(0.0, 0.0), rotation_deg=90)
+            vm.live_display_value = "12.00 V"
+            qapp.processEvents()
 
-        # Rotate 90 puts label/value plates on the right side (x ~ 25..100), straddling 20px grid x=40, 60.
-        plate_rect = vm.candidate_label_rects_scene()[1]
-        x_grid = 60
-        for gx in (40, 60, 80, 20, 100):
-            if plate_rect.left() + 3.0 <= gx <= plate_rect.right() - 3.0:
-                x_grid = gx
-                break
+            # Candidate[1] at rotation=90 sits on right side straddling 20px grid line (x ~ 60 or 80 outside body obstacle).
+            plate_rect = vm.candidate_label_rects_scene()[1]
+            x_grid = 60
+            for gx in (60, 80, 100, 40):
+                if plate_rect.left() + 3.0 <= gx <= plate_rect.right() - 3.0:
+                    x_grid = gx
+                    break
+            assert plate_rect.left() + 3.0 <= x_grid <= plate_rect.right() - 3.0
 
-        assert plate_rect.left() + 3.0 <= x_grid <= plate_rect.right() - 3.0, (
-            f"No 20px grid line inside value plate {plate_rect}"
-        )
+            w = scene.add_wire(FreeEnd(x_grid, -120), FreeEnd(x_grid, 120))
+            assert w is not None
+            assert w.zValue() < vm.zValue()
+            # Force wires directly across BOTH the active label and value rects even after label avoidance!
+            lbl_local, val_local, _align = vm._upright_label_and_value_rects()
+            lbl_scene = QRectF(
+                lbl_local.x() + vm.pos().x(),
+                lbl_local.y() + vm.pos().y(),
+                lbl_local.width(),
+                lbl_local.height(),
+            )
+            mid_y = int(round(lbl_scene.center().y() / 20.0) * 20.0)
+            w_cross = scene.add_wire(FreeEnd(-140, mid_y), FreeEnd(140, mid_y))
+            assert w_cross is not None
+            qapp.processEvents()
 
-        win.act_wire_mode.setChecked(True)
-        draw_wire_click_to_click(view, (x_grid, -120), (x_grid, 120))
-        win.act_wire_mode.setChecked(False)
-        qapp.processEvents()
+            # Re-read final active value rect after label avoidance and cross it at an unobstructed vertical line >= 60.
+            fin_lbl_local, fin_val_local, _ = vm._upright_label_and_value_rects()
+            fin_val_scene = QRectF(
+                fin_val_local.x() + vm.pos().x(),
+                fin_val_local.y() + vm.pos().y(),
+                fin_val_local.width(),
+                fin_val_local.height(),
+            )
+            vx_grid = int(round(fin_val_scene.center().x() / 20.0) * 20.0)
+            if abs(vx_grid) < 60:
+                vx_grid = 60 if fin_val_scene.right() >= 60 else -60
+            w_forced = scene.add_wire(FreeEnd(vx_grid, -120), FreeEnd(vx_grid, 120))
+            assert w_forced is not None
+            qapp.processEvents()
 
-        render_rect = QRectF(-40.0, -120.0, 200.0, 240.0)
-        img = render_scene_image(scene, render_rect, bg_hex=DARK_PALETTE.canvas_bg)
+            render_rect = QRectF(-140.0, -120.0, 280.0, 240.0)
+            img = render_scene_image(scene, render_rect, bg_hex=palette.canvas_bg)
+            canvas_bg = QColor(palette.canvas_bg)
 
-        # Sample a reference wire pixel well outside any component/label plate (x = x_grid, y = -80).
-        px_x = int(round(x_grid - render_rect.left()))
-        px_ref_y = int(round(-80.0 - render_rect.top()))
-        ref_color = img.pixelColor(px_x, px_ref_y)
-        canvas_bg = QColor(DARK_PALETTE.canvas_bg)
-        assert ref_color != canvas_bg, "Reference wire pixel outside plate was not rendered"
+            # 1. Original vertical wire along x_grid passes straight through plate_rect and stays visible.
+            px_x = int(round(x_grid - render_rect.left()))
+            px_ref_y = int(round(-100.0 - render_rect.top()))
+            assert img.pixelColor(px_x, px_ref_y) != canvas_bg
+            inside_y_scene = plate_rect.top() + 1.0
+            px_in_y = int(round(inside_y_scene - render_rect.top()))
+            assert img.pixelColor(px_x, px_in_y) != canvas_bg
 
-        # Sample inside the top padding of the value plate (inside plate_rect, along the wire).
-        inside_y_scene = plate_rect.top() + 0.5
-        px_in_y = int(round(inside_y_scene - render_rect.top()))
-        inside_color = img.pixelColor(px_x, px_in_y)
-        assert inside_color != canvas_bg, (
-            f"Label plate overwrote wire at ({x_grid}, {inside_y_scene}) with canvas_bg {canvas_bg.name()}"
-        )
-    finally:
-        scene.undo_stack.setClean()
-        win.close()
+            # 2. Forced wire cutting right across the final active value plate also stays visible!
+            f_lbl_local, f_val_local, _ = vm._upright_label_and_value_rects()
+            f_val_scene = QRectF(
+                f_val_local.x() + vm.pos().x(),
+                f_val_local.y() + vm.pos().y(),
+                f_val_local.width(),
+                f_val_local.height(),
+            )
+            f_px_x = int(round(vx_grid - render_rect.left()))
+            f_in_y = int(round((f_val_scene.top() + 0.5) - render_rect.top()))
+            if f_val_scene.left() + 1.0 <= vx_grid <= f_val_scene.right() - 1.0:
+                assert img.pixelColor(f_px_x, f_in_y) != canvas_bg, (
+                    f"Active value plate erased forced wire at ({vx_grid}, {f_val_scene.top() + 0.5}) in {theme} theme"
+                )
+        finally:
+            scene.undo_stack.setClean()
+            win.close()

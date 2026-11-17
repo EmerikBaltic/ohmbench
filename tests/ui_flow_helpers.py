@@ -27,10 +27,13 @@ def create_window_and_view(
     height: int = 800,
 ) -> tuple[MainWindow, CircuitView, CircuitScene]:
     """Create and show an offscreen MainWindow at the requested zoom level."""
+    from circuitsim.app.themes import ThemeMode
+
     settings = AppSettings(data_dir=tmp_path / f"settings_{id(tmp_path)}_{zoom:.2f}")
     win = MainWindow(settings=settings)
-    if win.theme != theme:
-        win.set_theme(theme)  # type: ignore[arg-type]
+    target_theme = ThemeMode(theme)
+    if win.theme != target_theme:
+        win.apply_theme(target_theme)
     win.resize(width, height)
     win.show()
     app = QApplication.instance()
