@@ -35,6 +35,7 @@ from circuitsim.components.led import LED
 from circuitsim.components.lightbulb import Lightbulb
 from circuitsim.components.logic_gate import LogicGate
 from circuitsim.components.meters import Ammeter, Voltmeter
+from circuitsim.components.potentiometer import Potentiometer
 from circuitsim.components.resistor import Resistor
 from circuitsim.components.sources import (
     ACVoltageSource,
@@ -265,6 +266,8 @@ def format_component_canvas_text(comp: Component) -> str:
     """Return the value/readout string shown beneath a component on the schematic."""
     if isinstance(comp, Resistor):
         return format_engineering_value(comp.resistance, "Ω")
+    if isinstance(comp, Potentiometer):
+        return f"{format_engineering_value(comp.resistance, 'Ω')} ({comp.alpha * 100.0:.0f}%)"
     if isinstance(comp, DCVoltageSource):
         return format_engineering_value(comp.dc_voltage, "V")
     if isinstance(comp, ACVoltageSource):
@@ -952,6 +955,12 @@ class SimulationSession:
 
         if self.state == SimulationState.RUNNING:
             return self.step_chunk(steps=3)
+        if self.state == SimulationState.PAUSED:
+            try:
+                dc_res = self.solver.solve_dc()
+                return self.build_frame(node_voltages=dc_res.node_voltages)
+            except Exception:
+                return self.build_frame()
         return self.build_frame()
 
     def update_component_parameter(
@@ -988,6 +997,12 @@ class SimulationSession:
 
         if self.state == SimulationState.RUNNING:
             return self.step_chunk(steps=3)
+        if self.state == SimulationState.PAUSED:
+            try:
+                dc_res = self.solver.solve_dc()
+                return self.build_frame(node_voltages=dc_res.node_voltages)
+            except Exception:
+                return self.build_frame()
         return self.build_frame()
 
     def get_meter_reading_str(self, meter_name: str) -> str:

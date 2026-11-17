@@ -15,6 +15,7 @@ from circuitsim.components.led import LED
 from circuitsim.components.lightbulb import Lightbulb
 from circuitsim.components.logic_gate import LogicGate
 from circuitsim.components.meters import Ammeter, Voltmeter
+from circuitsim.components.potentiometer import Potentiometer
 from circuitsim.components.resistor import Resistor
 from circuitsim.components.sources import (
     ACVoltageSource,
@@ -41,6 +42,7 @@ _TAG_AC_VS = 10
 _TAG_DC_IS = 11
 _TAG_GROUND = 12
 _TAG_OTHER = 13
+_TAG_POTENTIOMETER = 14
 
 
 class IntegrationMethod(str, Enum):
@@ -226,6 +228,8 @@ class MNASolver:
                 tagged.append((comp, _TAG_LOGIC_GATE))
                 rhs_tagged.append((comp, _TAG_LOGIC_GATE))
                 logic_gates.append(comp)
+            elif isinstance(comp, Potentiometer):
+                tagged.append((comp, _TAG_POTENTIOMETER))
             elif isinstance(comp, DCVoltageSource):
                 tagged.append((comp, _TAG_DC_VS))
                 rhs_tagged.append((comp, _TAG_DC_VS))
@@ -366,6 +370,8 @@ class MNASolver:
                 sig.append(comp.dc_conductance)
             elif isinstance(comp, LogicGate):
                 sig.extend((comp.g_in, comp.g_out))
+            elif isinstance(comp, Potentiometer):
+                sig.extend((comp.g_aw, comp.g_wb))
             elif isinstance(comp, (DCVoltageSource, ACVoltageSource)):
                 sig.append(comp.r_internal)
         return tuple(sig)
@@ -386,6 +392,8 @@ class MNASolver:
                 sig.append(g_eq)
             elif tag == _TAG_LOGIC_GATE:
                 sig.extend((comp.g_in, comp.g_out))
+            elif tag == _TAG_POTENTIOMETER:
+                sig.extend((comp.g_aw, comp.g_wb))
             elif tag <= _TAG_AC_VS:
                 sig.append(comp.r_internal)
         return tuple(sig)
@@ -440,6 +448,9 @@ class MNASolver:
                     self._stamp_conductance(
                         matrix_a, comp.nodes[0], comp.nodes[1], g_eq
                     )
+            elif isinstance(comp, Potentiometer):
+                self._stamp_conductance(matrix_a, comp.node_a, comp.node_w, comp.g_aw)
+                self._stamp_conductance(matrix_a, comp.node_w, comp.node_b, comp.g_wb)
             elif isinstance(comp, LogicGate):
                 for in_node in comp.input_nodes:
                     idx_in = self._node_to_idx.get(in_node)
@@ -809,6 +820,20 @@ class MNASolver:
                 if ia is not None and ib is not None:
                     mat[ia, ib] -= g_led
                     mat[ib, ia] -= g_led
+            elif isinstance(comp, Potentiometer):
+                for na, nb, g in (
+                    (comp.node_a, comp.node_w, comp.g_aw),
+                    (comp.node_w, comp.node_b, comp.g_wb),
+                ):
+                    ia = node_to_idx.get(na)
+                    ib = node_to_idx.get(nb)
+                    if ia is not None:
+                        mat[ia, ia] += g
+                    if ib is not None:
+                        mat[ib, ib] += g
+                    if ia is not None and ib is not None:
+                        mat[ia, ib] -= g
+                        mat[ib, ia] -= g
             elif isinstance(comp, LogicGate):
                 for in_node in comp.input_nodes:
                     ii = node_to_idx.get(in_node)
@@ -988,6 +1013,18 @@ class MNASolver:
                 branch_currents[comp.name] = 0.0
                 continue
 
+            if isinstance(comp, Potentiometer):
+                va = node_voltages.get(comp.node_a, 0.0)
+                vw = node_voltages.get(comp.node_w, 0.0)
+                vb = node_voltages.get(comp.node_b, 0.0)
+                iaw = (va - vw) * comp.g_aw
+                iwb = (vw - vb) * comp.g_wb
+                comp.voltage = va - vb
+                comp.current = iaw
+                comp.power = (va - vw) * iaw + (vw - vb) * iwb
+                branch_currents[comp.name] = iaw
+                continue
+
             if isinstance(comp, LogicGate):
                 v_out = node_voltages.get(comp.output_node, 0.0)
                 i_out = (comp.drive_voltage - v_out) * comp.g_out
@@ -1159,6 +1196,20 @@ class MNASolver:
                     rhs[ia] -= comp.ind_current
                 if ib is not None:
                     rhs[ib] += comp.ind_current
+            elif isinstance(comp, Potentiometer):
+                for na, nb, g in (
+                    (comp.node_a, comp.node_w, comp.g_aw),
+                    (comp.node_w, comp.node_b, comp.g_wb),
+                ):
+                    ia = node_to_idx.get(na)
+                    ib = node_to_idx.get(nb)
+                    if ia is not None:
+                        mat[ia, ia] += g
+                    if ib is not None:
+                        mat[ib, ib] += g
+                    if ia is not None and ib is not None:
+                        mat[ia, ib] -= g
+                        mat[ib, ia] -= g
             elif isinstance(comp, LogicGate):
                 for in_node in comp.input_nodes:
                     ii = node_to_idx.get(in_node)
@@ -1429,6 +1480,18 @@ class MNASolver:
                 comp.current = 0.0
                 comp.power = 0.0
                 branch_currents[comp.name] = 0.0
+                continue
+
+            if tag == _TAG_POTENTIOMETER:
+                va = node_voltages.get(comp.node_a, 0.0)
+                vw = node_voltages.get(comp.node_w, 0.0)
+                vb = node_voltages.get(comp.node_b, 0.0)
+                iaw = (va - vw) * comp.g_aw
+                iwb = (vw - vb) * comp.g_wb
+                comp.voltage = va - vb
+                comp.current = iaw
+                comp.power = (va - vw) * iaw + (vw - vb) * iwb
+                branch_currents[comp.name] = iaw
                 continue
 
             if tag == _TAG_LOGIC_GATE:

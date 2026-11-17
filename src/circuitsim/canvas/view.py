@@ -435,13 +435,16 @@ class CircuitView(QGraphicsView):
                     event.accept()
                     return
 
-            # Check if clicking a Switch component body (to toggle on release if not dragged)
+            # Check if clicking a Switch component body (to toggle on release if not dragged,
+            # or hold closed for momentary pushbuttons)
             hit_item = self.circuit_scene.itemAt(scene_pt, self.transform())
             if isinstance(hit_item, ComponentItem) and isinstance(
                 hit_item.component, Switch
             ):
                 self._pressed_switch_item = hit_item
                 self._pressed_switch_pos = hit_item.pos()
+                if hit_item.component.momentary:
+                    self.circuit_scene.set_switch_item_state(hit_item, True)
 
             # Prepare for component selection / drag-move
             self.circuit_scene.begin_component_move_tracking()
@@ -567,12 +570,18 @@ class CircuitView(QGraphicsView):
 
             super().mouseReleaseEvent(event)
             moved = self.circuit_scene.commit_component_move_tracking()
-            if (
-                not moved
-                and self._pressed_switch_item is not None
-                and self._pressed_switch_item.pos() == self._pressed_switch_pos
+            if self._pressed_switch_item is not None and isinstance(
+                self._pressed_switch_item.component, Switch
             ):
-                self.circuit_scene.toggle_switch_item(self._pressed_switch_item)
+                if self._pressed_switch_item.component.momentary:
+                    self.circuit_scene.set_switch_item_state(
+                        self._pressed_switch_item, False
+                    )
+                elif (
+                    not moved
+                    and self._pressed_switch_item.pos() == self._pressed_switch_pos
+                ):
+                    self.circuit_scene.toggle_switch_item(self._pressed_switch_item)
             self._pressed_switch_item = None
             return
 

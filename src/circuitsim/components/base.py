@@ -26,6 +26,9 @@ class ComponentParameter:
     allow_negative: bool = False
     live_editable: bool = True
     choices: tuple[str, ...] = ()
+    min_value: float | None = None
+    max_value: float | None = None
+    description: str = ""
 
 
 _DEFAULT_PARAMETERS_BY_TYPE: dict[str, tuple[ComponentParameter, ...]] = {

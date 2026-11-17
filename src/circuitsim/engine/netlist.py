@@ -13,6 +13,7 @@ from circuitsim.components.led import LED
 from circuitsim.components.lightbulb import Lightbulb
 from circuitsim.components.logic_gate import LogicGate
 from circuitsim.components.meters import Ammeter, Voltmeter
+from circuitsim.components.potentiometer import Potentiometer
 from circuitsim.components.resistor import Resistor
 from circuitsim.components.sources import ACVoltageSource, DCCurrentSource, DCVoltageSource
 from circuitsim.components.switch import Switch
@@ -196,6 +197,22 @@ class Circuit:
                         mat[io, io] += comp.g_out
                     continue
 
+                if isinstance(comp, Potentiometer):
+                    for na, nb, g in (
+                        (comp.node_a, comp.node_w, comp.g_aw),
+                        (comp.node_w, comp.node_b, comp.g_wb),
+                    ):
+                        ia = node_to_idx.get(na)
+                        ib = node_to_idx.get(nb)
+                        if ia is not None:
+                            mat[ia, ia] += g
+                        if ib is not None:
+                            mat[ib, ib] += g
+                        if ia is not None and ib is not None:
+                            mat[ia, ib] -= g
+                            mat[ib, ia] -= g
+                    continue
+
                 g = 0.0
                 if isinstance(comp, (Resistor, Switch, Lightbulb, Voltmeter, Ammeter, LED)):
                     g = comp.conductance
@@ -320,6 +337,15 @@ class Circuit:
                 adjacency[CANONICAL_GND].add(c_out)
                 continue
 
+            if isinstance(comp, Potentiometer):
+                for u, v in ((comp.node_a, comp.node_w), (comp.node_w, comp.node_b)):
+                    cu, cv = canonical(u), canonical(v)
+                    terminal_degree[u] += 1
+                    terminal_degree[v] += 1
+                    adjacency[cu].add(cv)
+                    adjacency[cv].add(cu)
+                continue
+
             if len(comp.nodes) < 2:
                 continue
             n_a, n_b = comp.nodes[0], comp.nodes[1]
@@ -424,9 +450,28 @@ class Circuit:
         wire_short_dsu = _DisjointSet()
 
         for comp in non_ground_comps:
+            if isinstance(comp, Potentiometer):
+                for u, v in ((comp.node_a, comp.node_w), (comp.node_w, comp.node_b)):
+                    cu, cv = canonical(u), canonical(v)
+                    external_adj[cu].add(cv)
+                    external_adj[cv].add(cu)
+                    if cu != canonical_gnd and cv != canonical_gnd:
+                        passive_signal_adj[cu].add(cv)
+                        passive_signal_adj[cv].add(cu)
+                continue
+
             if isinstance(comp, LogicGate):
                 driven_seeds.add(canonical(comp.output_node))
                 continue
+            if isinstance(comp, Potentiometer):
+                for u, v in ((comp.node_a, comp.node_w), (comp.node_w, comp.node_b)):
+                    cu, cv = canonical(u), canonical(v)
+                    terminal_degree[u] += 1
+                    terminal_degree[v] += 1
+                    adjacency[cu].add(cv)
+                    adjacency[cv].add(cu)
+                continue
+
             if len(comp.nodes) < 2:
                 continue
             c_a = canonical(comp.nodes[0])

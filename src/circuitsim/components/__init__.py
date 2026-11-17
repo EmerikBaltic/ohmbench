@@ -19,6 +19,7 @@ from circuitsim.components.logic_gate import (
     normalize_logic_family,
 )
 from circuitsim.components.meters import Ammeter, MeterMode, Voltmeter
+from circuitsim.components.potentiometer import Potentiometer
 from circuitsim.components.resistor import Resistor
 from circuitsim.components.sources import (
     ACVoltageSource,
@@ -47,6 +48,7 @@ __all__ = [
     "Lightbulb",
     "LogicGate",
     "MeterMode",
+    "Potentiometer",
     "Resistor",
     "Switch",
     "Voltmeter",

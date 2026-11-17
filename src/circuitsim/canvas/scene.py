@@ -2743,6 +2743,17 @@ class CircuitScene(QGraphicsScene):
         self.selection_info_changed.emit(item if item.isSelected() else None)
         return new_closed
 
+    def set_switch_item_state(self, item: ComponentItem, closed: bool) -> bool:
+        """Explicitly set a `Switch` `ComponentItem` open/closed (used by momentary switches)."""
+        if not isinstance(item.component, Switch):
+            return False
+        new_closed = bool(closed)
+        if item.component.closed != new_closed:
+            item.animate_switch_state(new_closed)
+            self.switch_toggled_by_user.emit(item.component.name, new_closed)
+            self.selection_info_changed.emit(item if item.isSelected() else None)
+        return new_closed
+
     def edit_component_parameters(
         self,
         item: ComponentItem,

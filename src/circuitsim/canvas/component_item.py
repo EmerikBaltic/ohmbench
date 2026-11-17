@@ -49,6 +49,7 @@ from circuitsim.components import (
     Inductor,
     LED,
     Lightbulb,
+    Potentiometer,
     Resistor,
     Switch,
     Voltmeter,
@@ -58,6 +59,7 @@ from circuitsim.engine.simulation_session import ComponentTelemetry
 
 COMPONENT_PREFIXES: dict[str, str] = {
     "resistor": "R",
+    "potentiometer": "POT",
     "capacitor": "C",
     "inductor": "L",
     "dc_voltage": "V",
@@ -86,6 +88,8 @@ def format_component_value_summary(comp: Component) -> str:
     """Return a concise engineering-notation summary string for canvas display."""
     if isinstance(comp, Resistor):
         return format_engineering_value(comp.resistance, "Ω")
+    if isinstance(comp, Potentiometer):
+        return f"{format_engineering_value(comp.resistance, 'Ω')} ({comp.alpha * 100.0:.0f}%)"
     if isinstance(comp, Capacitor):
         return format_engineering_value(comp.capacitance, "F")
     if isinstance(comp, Inductor):
@@ -1010,6 +1014,11 @@ class ComponentItem(QGraphicsObject):
             if isinstance(self.component, Switch)
             else None
         )
+        wiper_arg = (
+            self.component.alpha
+            if isinstance(self.component, Potentiometer)
+            else None
+        )
         self.symbol_library.paint_symbol(
             painter,
             self.component.component_type,
@@ -1018,6 +1027,7 @@ class ComponentItem(QGraphicsObject):
             show_terminals=True,
             terminal_color=palette.terminal_dot,
             lever_angle_deg=lever_arg,
+            wiper_alpha=wiper_arg,
             rotation_deg=self.rotation_deg,
             flipped_h=self.flipped_h,
         )

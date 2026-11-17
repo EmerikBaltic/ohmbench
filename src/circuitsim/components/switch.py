@@ -61,6 +61,7 @@ class Switch(Component):
         i_hold: float | str = 1e-3,
         toggle_time: float | str | None = None,
         shortcut: str = "",
+        momentary: bool = False,
         label: str | None = None,
         show_value: bool = True,
         color: str = "#FFFFFF",
@@ -110,6 +111,7 @@ class Switch(Component):
             parse_engineering_value(toggle_time) if toggle_time is not None else None
         )
         self.shortcut: str = shortcut
+        self.momentary: bool = bool(momentary)
         self._timer_triggered: bool = False
 
         # Parasitic contact capacitor state and arc state

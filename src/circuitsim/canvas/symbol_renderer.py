@@ -126,6 +126,7 @@ class SymbolLibrary:
         show_terminals: bool = True,
         terminal_color: str = "#58A6FF",
         lever_angle_deg: float | None = None,
+        wiper_alpha: float | None = None,
         rotation_deg: int = 0,
         flipped_h: bool = False,
     ) -> bool:
@@ -152,6 +153,7 @@ class SymbolLibrary:
         if (
             svg_renderer is not None
             and lever_angle_deg is None
+            and wiper_alpha is None
             and state != "burned_out"
             and not use_procedural_gate
         ):
@@ -165,6 +167,7 @@ class SymbolLibrary:
                 stroke_color=stroke_color,
                 polarity_color=polarity_color,
                 lever_angle_deg=lever_angle_deg,
+                wiper_alpha=wiper_alpha,
                 rotation_deg=rotation_deg,
                 flipped_h=flipped_h,
             )
@@ -221,6 +224,7 @@ class SymbolLibrary:
         stroke_color: str = "#E6EDF3",
         polarity_color: str | None = None,
         lever_angle_deg: float | None = None,
+        wiper_alpha: float | None = None,
         rotation_deg: int = 0,
         flipped_h: bool = False,
     ) -> None:
@@ -237,6 +241,20 @@ class SymbolLibrary:
             painter.drawLine(QPointF(-40.0, 0.0), QPointF(-18.0, 0.0))
             painter.drawRect(QRectF(-18.0, -7.0, 36.0, 14.0))
             painter.drawLine(QPointF(18.0, 0.0), QPointF(40.0, 0.0))
+
+        elif component_id == "potentiometer":
+            # IEC resistor body with sliding wiper arrow on top lead (0, -40)
+            painter.drawLine(QPointF(-40.0, 0.0), QPointF(-18.0, 0.0))
+            painter.drawRect(QRectF(-18.0, -7.0, 36.0, 14.0))
+            painter.drawLine(QPointF(18.0, 0.0), QPointF(40.0, 0.0))
+            alpha_clamped = 0.5 if wiper_alpha is None else max(0.0, min(1.0, float(wiper_alpha)))
+            wx = -14.0 + 28.0 * (1.0 - alpha_clamped)
+            # Note: at alpha=0 (wiper near B on right), wx=+14; at alpha=1 (near A on left), wx=-14
+            painter.drawLine(QPointF(0.0, -40.0), QPointF(0.0, -18.0))
+            painter.drawLine(QPointF(0.0, -18.0), QPointF(wx, -18.0))
+            painter.drawLine(QPointF(wx, -18.0), QPointF(wx, -7.0))
+            painter.drawLine(QPointF(wx - 4.0, -12.0), QPointF(wx, -7.0))
+            painter.drawLine(QPointF(wx + 4.0, -12.0), QPointF(wx, -7.0))
 
         elif component_id == "capacitor":
             # Parallel plates at x = -4 and x = +4

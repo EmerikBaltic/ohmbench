@@ -240,10 +240,13 @@ def show_crash_dialog(
 
         box = create_crash_dialog(message, count=count, log_path=log_path, parent=parent)
 
-        if os.environ.get("QT_QPA_PLATFORM") == "offscreen":
-            # In offscreen platform, do not block on modal event loop
-            box.show()
-            return box
+        if (
+            os.environ.get("QT_QPA_PLATFORM") == "offscreen"
+            or bool(os.environ.get("PYTEST_CURRENT_TEST"))
+            or "pytest" in sys.modules
+        ):
+            # Never block on a modal QMessageBox event loop under pytest / offscreen
+            return False
 
         box.exec()
         quit_btn = box.property("quit_button")

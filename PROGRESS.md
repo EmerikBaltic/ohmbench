@@ -45,7 +45,7 @@ Run these manual checks in the live desktop window (`.\.venv\Scripts\python.exe 
 ### Queue Items
 - [x] `F0` (`done`): Baseline audit (`checkpoint/E-done` `305563c`, `400 passed, 1 xfailed` at Gate E) + `PHASE F QUEUE` + architecture table + `tests/workbench_helpers.py` & `tests/test_f0_workbench_helpers.py` (`400 passed, 1 deselected, 1 xfailed`).
 - [x] `F1` (`done`): Ergonomic schematic entry — direct hotkeys (`R/C/L/D/V/I/G/W/Ctrl+R/F/Esc`), secondary `place_tb` + `&Place` menu, Qt-free `passive_pin_markers` Pin-0 tick & hovered/selected current-direction arrow inside `body_rect`, `analyze_engineering_input` (`m` vs `Meg` warning), tabbed `QuickValueDialog` (`Parameters` + `Max Ratings`, DC/Sine AC/Pulse mode tabs, read-only SPICE preview) (`405 passed, 1 deselected, 1 xfailed`).
-- [ ] `F2` (`todo`): Real-time interactive controls — clickable SPST Switch/PushButton (`R_off=1e9`, `R_on=1e-3`) live resolve, 3-terminal Potentiometer (`A/W/B`, `alpha` in `[0.001, 0.999]`), live canvas/dock slider committing 1 undo step on release.
+- [x] `F2` (`done`): Interactive controls without inspector slider (`Potentiometer` 3-terminal `a/w/b` with `alpha` in `[0.001, 0.999]`, `Switch.momentary`, live click-to-toggle & PAUSED re-solve in `SimulationSession`, procedural + SVG potentiometer symbol, no inspector `QSlider`) (`3 passed in 1.59s`).
 - [ ] `F3` (`todo`): Visual intuition overlay — Qt-free `map_voltage_to_rgb` & `compute_current_dot_velocity`, animated current dots & voltage colors on wires, Alt-hover power probe (`P = V * I`).
 - [ ] `F4` (`todo`): Component stress, derating & smoke/overload warnings (`circuitsim.engine.stress`, `NORMAL < 80%`, `WARNING 80-100%`, `OVERLOAD > 100%`, LED limits, amber/red UI badges, live fault inspection).
 - [ ] `F5` (`todo`): Solver robustness — Gmin & Source stepping convergence recovery, junction `delta V` damping, ideal loop regularization, deterministic symmetric oscillator startup perturbation (`+1 uV`), Shockley `N/I_s/R_s/V_br` diode clipping.
@@ -57,6 +57,17 @@ Run these manual checks in the live desktop window (`.\.venv\Scripts\python.exe 
 - [ ] `F11` (`todo`): Mixed-signal `MCUBlock` (10 MOhm analog ADC inputs `A0/A1`, 25 Ohm Thevenin digital outputs `D0/D1/TX/RX`, local offline Python callback, `read_adc`), analog resistor ladder & 2-MCU co-simulation.
 - [ ] `F12` (`todo`): Toggleable physical package/pinout label overlay + `AGENT_INSTRUCTIONS.md` & `PROGRESS.md` final docs update.
 - [ ] `GATE F` (`todo`): Full suite 3x + `python -m pytest -q` + end-to-end workbench smoke test + `git tag checkpoint/F-done`.
+
+## PHASE G QUEUE (OWNER QOL & BUG FIXES)
+- [x] `G1` (`done`): Fixed `ComponentParameter` (`min_value`, `max_value`, `description` optional defaults) crash on component instantiation and disabled blocking modal `.exec()` crash dialogs in `crash_handler.py` under pytest / `QT_QPA_PLATFORM=offscreen`.
+- [x] `G2` (`done`): Removed inspector `QSlider` widget and signal handlers from `MainWindow` / `CircuitScene`; verified `info_dock` has zero `QSlider` children.
+- [ ] `G3` (`todo`): Fix scrollwheel zoom in `CircuitView.wheelEvent` to anchor strictly at viewport center without drifting.
+- [ ] `G4` (`todo`): Ignore auto-repeat hotkey events and prevent overlapping non-voltmeter placement / drops.
+- [ ] `G5` (`todo`): Auto-connect touching wire `FreeEnd`s, terminals, junctions, and wire interiors/corners (`_auto_connect_touching_endpoints`, resolves E2).
+- [ ] `G6` (`todo`): Fix orthogonal wire router so aligned vertical/horizontal wires route straight without 1-unit side jogs.
+- [ ] `G7` (`todo`): Voltmeter parallel overlay & drag-out auto-wiring (zero graph mutation during `mouseMoveEvent`; auto-wire on `mouseReleaseEvent` only).
+- [ ] `G8` (`todo`): Programmable Shortcuts tab in Settings (`AppSettings.shortcuts` + UI editor/dialog + duplicate resolution + reset to defaults).
+- [ ] `GATE G` (`todo`): Verify `tests/test_g_qol_fixes.py`, `tests/test_f2_interactive_controls.py`, and full `pytest -q`; tag `checkpoint/G-done`.
 
 ## FLASH QUEUE
 - Phase 1 Task 1: Housekeeping (.gitignore, switch breakdown voltage hint, label collision avoidance) - [done]

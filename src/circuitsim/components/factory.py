@@ -14,6 +14,7 @@ from circuitsim.components.led import LED
 from circuitsim.components.lightbulb import Lightbulb
 from circuitsim.components.logic_gate import GATE_COMPONENT_TYPES, GATE_OPERATIONS, LogicGate
 from circuitsim.components.meters import Ammeter, Voltmeter
+from circuitsim.components.potentiometer import Potentiometer
 from circuitsim.components.resistor import Resistor
 from circuitsim.components.sources import (
     ACVoltageSource,
@@ -26,6 +27,7 @@ KNOWN_COMPONENT_TYPES: tuple[str, ...] = (
     "resistor",
     "capacitor",
     "inductor",
+    "potentiometer",
     "dc_voltage",
     "ac_voltage",
     "dc_current",
@@ -48,6 +50,8 @@ def create_default_component_model(component_id: str, name: str) -> Component:
         return Capacitor(name, n0, n1, capacitance=1e-6)
     if component_id == "inductor":
         return Inductor(name, n0, n1, inductance=10e-3, dcr=1.0)
+    if component_id == "potentiometer":
+        return Potentiometer(name, f"{name}_a", f"{name}_w", f"{name}_b", resistance=10_000.0, alpha=0.5)
     if component_id == "dc_voltage":
         return DCVoltageSource(name, n0, n1, voltage=12.0)
     if component_id == "ac_voltage":

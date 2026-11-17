@@ -59,6 +59,7 @@ _EXTRA_SETTINGS: dict[str, dict[str, str]] = {
         "r_off": "float",
         "c_parasitic": "float",
         "toggle_time": "float_or_none",
+        "momentary": "bool",
     },
     "ac_voltage": {"waveform": "str", "phase_deg": "float", "duty_cycle": "float"},
     "lightbulb": {"use_filament_model": "bool", "burnout_enabled": "bool"},
