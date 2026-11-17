@@ -726,7 +726,10 @@ class CircuitView(QGraphicsView):
         event.accept()
 
     def keyPressEvent(self, event: QKeyEvent) -> None:
-        if event.key() == Qt.Key.Key_Space and not event.isAutoRepeat():
+        if event.isAutoRepeat():
+            event.accept()
+            return
+        if event.key() == Qt.Key.Key_Space:
             self._space_held = True
             self._update_cursor_for_scene_pos(self._last_scene_pos)
             event.accept()

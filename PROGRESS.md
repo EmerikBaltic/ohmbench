@@ -62,7 +62,7 @@ Run these manual checks in the live desktop window (`.\.venv\Scripts\python.exe 
 - [x] `G1` (`done`): Fixed `ComponentParameter` (`min_value`, `max_value`, `description` optional defaults) crash on component instantiation and disabled blocking modal `.exec()` crash dialogs in `crash_handler.py` under pytest / `QT_QPA_PLATFORM=offscreen`.
 - [x] `G2` (`done`): Removed inspector `QSlider` widget and signal handlers from `MainWindow` / `CircuitScene`; verified `info_dock` has zero `QSlider` children.
 - [x] `G3` (`done`): Fixed `CircuitView.wheelEvent` / `_apply_zoom` to anchor strictly at true viewport center `(w//2, h//2)` with dynamic `sceneRect` coverage (`tests/test_g_qol_fixes.py: 1 passed`).
-- [ ] `G4` (`todo`): Ignore auto-repeat hotkey events and prevent overlapping non-voltmeter placement / drops.
+- [x] `G4` (`done`): Ignored auto-repeat hotkey events in `CircuitView.keyPressEvent` and added `_find_nearest_free_grid_pos` non-overlapping body placement/drop guards in `CircuitScene` (`tests/test_g_qol_fixes.py: 2 passed`).
 - [ ] `G5` (`todo`): Auto-connect touching wire `FreeEnd`s, terminals, junctions, and wire interiors/corners (`_auto_connect_touching_endpoints`, resolves E2).
 - [ ] `G6` (`todo`): Fix orthogonal wire router so aligned vertical/horizontal wires route straight without 1-unit side jogs.
 - [ ] `G7` (`todo`): Voltmeter parallel overlay & drag-out auto-wiring (zero graph mutation during `mouseMoveEvent`; auto-wire on `mouseReleaseEvent` only).

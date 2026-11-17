@@ -639,6 +639,82 @@ class CircuitScene(QGraphicsScene):
             self.removeItem(self._ghost_item)
             self._ghost_item = None
 
+    def _component_body_rect_at(
+        self,
+        component_id: str,
+        cx: float,
+        cy: float,
+        rotation_deg: int = 0,
+    ) -> QRectF:
+        meta = self.symbol_library.get_metadata(component_id)
+        w_px, h_px = meta.pixel_size
+        if rotation_deg in (90, 270):
+            w_px, h_px = h_px, w_px
+        margin = 2.0
+        rw = max(4.0, float(w_px) - 2.0 * margin)
+        rh = max(4.0, float(h_px) - 2.0 * margin)
+        return QRectF(float(cx) - rw / 2.0, float(cy) - rh / 2.0, rw, rh)
+
+    def _overlaps_any_component_body(
+        self,
+        component_id: str,
+        cx: float,
+        cy: float,
+        rotation_deg: int = 0,
+        *,
+        exclude: set[ComponentItem] | None = None,
+    ) -> bool:
+        cand = self._component_body_rect_at(component_id, cx, cy, rotation_deg)
+        excl = exclude or set()
+        for existing in self._placed_items:
+            if existing in excl:
+                continue
+            other = self._component_body_rect_at(
+                existing.component.component_type,
+                existing.pos().x(),
+                existing.pos().y(),
+                existing.rotation_deg,
+            )
+            if cand.intersects(other):
+                return True
+        return False
+
+    def _find_nearest_free_grid_pos(
+        self,
+        component_id: str,
+        cx: float,
+        cy: float,
+        rotation_deg: int = 0,
+        *,
+        exclude: set[ComponentItem] | None = None,
+    ) -> tuple[float, float]:
+        sx, sy = snap_to_grid(cx, cy, GRID_PITCH_PX)
+        if component_id == "voltmeter" or not self._overlaps_any_component_body(
+            component_id, sx, sy, rotation_deg, exclude=exclude
+        ):
+            return (sx, sy)
+        best: tuple[float, float] | None = None
+        best_dist2 = float("inf")
+        # Search grid offsets outward (step=20 px) preferring +(60, 0) / +(0, 60) nearest cells
+        for ring in range(1, 20):
+            for dx_g in range(-ring, ring + 1):
+                for dy_g in range(-ring, ring + 1):
+                    if max(abs(dx_g), abs(dy_g)) != ring:
+                        continue
+                    tx = sx + dx_g * GRID_PITCH_PX
+                    ty = sy + dy_g * GRID_PITCH_PX
+                    d2 = (tx - sx) ** 2 + (ty - sy) ** 2
+                    if d2 >= best_dist2:
+                        continue
+                    if not self._overlaps_any_component_body(
+                        component_id, tx, ty, rotation_deg, exclude=exclude
+                    ):
+                        best = (tx, ty)
+                        best_dist2 = d2
+            if best is not None and ring >= 5:
+                break
+        return best if best is not None else (sx, sy + 60.0)
+
     def place_new_component(
         self,
         component_id: str,
@@ -666,7 +742,7 @@ class CircuitScene(QGraphicsScene):
         )
         px = scene_pos[0] if isinstance(scene_pos, (tuple, list)) else scene_pos.x()
         py = scene_pos[1] if isinstance(scene_pos, (tuple, list)) else scene_pos.y()
-        sx, sy = snap_to_grid(px, py, GRID_PITCH_PX)
+        sx, sy = self._find_nearest_free_grid_pos(component_id, px, py, rotation_deg)
         item.setPos(sx, sy)
         if rotation_deg:
             item.set_rotation_deg(rotation_deg)
@@ -2228,6 +2304,31 @@ class CircuitScene(QGraphicsScene):
             self._sync_graphics_from_wire_graph(frozen_polylines=pre_drop_polylines)
             self.update_label_positions()
             return False
+
+        # G4: Prevent non-voltmeter single/batch drag drops from landing overlapped on another body
+        excl_moved = set(moved_new.keys())
+        self._suppress_live_reroute = True
+        try:
+            for item in list(moved_new.keys()):
+                if item.component.component_type == "voltmeter":
+                    continue
+                cur_x, cur_y = moved_new[item]
+                free_x, free_y = self._find_nearest_free_grid_pos(
+                    item.component.component_type,
+                    cur_x,
+                    cur_y,
+                    item.rotation_deg,
+                    exclude=excl_moved - {item},
+                )
+                if (free_x, free_y) != (cur_x, cur_y):
+                    item.setPos(free_x, free_y)
+                    moved_new[item] = (free_x, free_y)
+            moved_items = [
+                (item, moved_old[item], moved_new[item])
+                for item in moved_new
+            ]
+        finally:
+            self._suppress_live_reroute = False
 
         target_graph = self._moved_graph_from_drag_start(moved_items)
         if len(moved_items) == 1:
