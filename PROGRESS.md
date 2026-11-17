@@ -26,6 +26,38 @@ Run these manual checks in the live desktop window (`.\.venv\Scripts\python.exe 
 5. **E5 (Label Plates Over Wires)**: Place a voltmeter (`Rot`), wire across its readout/label region, run simulation -> wire remains cleanly visible through label/value text rather than being erased by an opaque box (check both Dark and Light themes).
 6. **E6 (Startup Console Cleanliness)**: Launch the app from PowerShell (`.\.venv\Scripts\python.exe -m circuitsim.main`) and switch Dark/Light themes -> verify zero `"QFont::setPointSize: Point size <= 0 (-1)"` warnings print to stderr.
 
+## PHASE F QUEUE (WORKBENCH UPGRADE)
+- **Baseline Gate E**: Tag `checkpoint/E-done` (`305563c` on `wire-redesign`), `400 passed, 1 xfailed` (sole xfail is owner-skipped `E2`) across all 4 Gate E runs (`pytest.exe -q` x3 + `python.exe -m pytest -q` x1).
+
+### Architecture Mapping Table
+| Layer / Package | Responsibility | Qt-Free? | Key Modules |
+|---|---|---|---|
+| `circuitsim.components` | Physical models, ratings, presets, pins (Resistors, Potentiometer, Switch, Diodes/LED, Sources, MCUBlock) | Yes | `base.py`, `resistor.py`, `capacitor.py`, `inductor.py`, `led.py`, `sources.py`, `switch.py`, `potentiometer.py` (F2), `mcu.py` (F11) |
+| `circuitsim.wiring` | Immutable `WireGraph`, orthogonal `router`, `netlist` extractor, v2 serializer, visual color/dot helpers | Yes | `model.py`, `router.py`, `netlist.py`, `serializer.py` |
+| `circuitsim.engine` | MNA solver, nonlinear convergence recovery, AC/Bode sweep, stress/derating, parameter/Monte-Carlo sweeps, session | Yes | `solver.py`, `netlist.py`, `simulation_session.py`, `errors.py`, `stress.py` (F4), `ac_analysis.py` (F6), `sweep.py` (F10) |
+| `circuitsim.io` | `.circ` save/load, `.wav` signal I/O, `.model`/`.subckt` SPICE importer, URL codec, KiCad `.kicad_sch` exporter | Yes | `circ_serializer.py`, `wav_signal.py` (F7), `spice_import.py` (F8), `share_codec.py` (F9), `kicad_export.py` (F9) |
+| `circuitsim.templates` | Pre-built verified reference Test Jigs (`WireGraph` circuits) | Yes | `__init__.py` / `test_jigs.py` (F7) |
+| `circuitsim.scope` | Multi-channel oscilloscope capture buffer, triggers, measurements, FFT, math | Yes | `core.py`, `capture.py`, `trigger.py`, `measurements.py`, `math_fft.py` |
+| `circuitsim.canvas` | Interactive schematic scene/view, undo commands, symbol rendering, overlays, pub SVG/PNG export | Qt 6 | `scene.py`, `view.py`, `commands.py`, `component_item.py`, `wire_item.py`, `symbol_geometry.py`, `symbol_renderer.py`, `export.py` |
+| `circuitsim.dialogs` | Engineering notation value parser (`p, n, u, m, k, Meg, G`), tabbed Parameter & SPICE import dialogs | Qt 6 (parser Qt-free) | `value_parser.py` (Qt-free), `quick_edit_dialog.py`, `preferences_dialog.py`, `spice_import_dialog.py` (F8) |
+| `circuitsim.app` | Main window, dock panels, themes, live controls, virtual instrument bench, worker thread | Qt 6 | `main_window.py`, `palette_dock.py`, `problems_panel.py`, `themes.py`, `sim_worker.py`, `bode_scope_panel.py` (F6) |
+
+### Queue Items
+- [x] `F0` (`done`): Baseline audit (`checkpoint/E-done` `305563c`, `400 passed, 1 xfailed` at Gate E) + `PHASE F QUEUE` + architecture table + `tests/workbench_helpers.py` & `tests/test_f0_workbench_helpers.py` (`400 passed, 1 deselected, 1 xfailed`).
+- [ ] `F1` (`todo`): Ergonomic schematic entry — direct hotkeys (`R/C/L/D/V/I/G/W/Ctrl+R/F/Esc`), Pin-0/polarity markers (`+` / pin-1 tick / current-direction indicator), engineering parser (`m` vs `Meg` warning), tabbed DC/AC/Pulse parameter dialog with SPICE preview & max ratings.
+- [ ] `F2` (`todo`): Real-time interactive controls — clickable SPST Switch/PushButton (`R_off=1e9`, `R_on=1e-3`) live resolve, 3-terminal Potentiometer (`A/W/B`, `alpha` in `[0.001, 0.999]`), live canvas/dock slider committing 1 undo step on release.
+- [ ] `F3` (`todo`): Visual intuition overlay — Qt-free `map_voltage_to_rgb` & `compute_current_dot_velocity`, animated current dots & voltage colors on wires, Alt-hover power probe (`P = V * I`).
+- [ ] `F4` (`todo`): Component stress, derating & smoke/overload warnings (`circuitsim.engine.stress`, `NORMAL < 80%`, `WARNING 80-100%`, `OVERLOAD > 100%`, LED limits, amber/red UI badges, live fault inspection).
+- [ ] `F5` (`todo`): Solver robustness — Gmin & Source stepping convergence recovery, junction `delta V` damping, ideal loop regularization, deterministic symmetric oscillator startup perturbation (`+1 uV`), Shockley `N/I_s/R_s/V_br` diode clipping.
+- [ ] `F6` (`todo`): Benchtop virtual instruments — Qt-free `circuitsim.engine.ac_analysis` (`V(jw)`, dB, deg, `Z_in`, `Gamma`), multi-channel Oscilloscope + Bode/Z_in panel (`V_pp`, `V_rms`, `V_avg`, freq, cursors).
+- [ ] `F7` (`todo`): Audio `.wav` I/O (`circuitsim.io.wav_signal`, `WavVoltageSource`, resample export) + 6 built-in Test Jigs (`circuitsim.templates` + UI menu).
+- [ ] `F8` (`todo`): 3rd-party SPICE `.MODEL`/`.SUBCKT` importer (`circuitsim.io.spice_import`), explicit pin-order mapper, encrypted vendor detector (`EncryptedModelError`), UI import dialog.
+- [ ] `F9` (`todo`): Share URL codec (`ohmbench://c/...`), KiCad `.kicad_sch` S-expression exporter, publication high-contrast light-background SVG/PNG export without UI chrome.
+- [ ] `F10` (`todo`): Parallel parameter sweep & seeded Monte Carlo (`circuitsim.engine.sweep`) + `WireItem`/`ComponentItem` geometry cache guard for 60+ parts.
+- [ ] `F11` (`todo`): Mixed-signal `MCUBlock` (10 MOhm analog ADC inputs `A0/A1`, 25 Ohm Thevenin digital outputs `D0/D1/TX/RX`, local offline Python callback, `read_adc`), analog resistor ladder & 2-MCU co-simulation.
+- [ ] `F12` (`todo`): Toggleable physical package/pinout label overlay + `AGENT_INSTRUCTIONS.md` & `PROGRESS.md` final docs update.
+- [ ] `GATE F` (`todo`): Full suite 3x + `python -m pytest -q` + end-to-end workbench smoke test + `git tag checkpoint/F-done`.
+
 ## FLASH QUEUE
 - Phase 1 Task 1: Housekeeping (.gitignore, switch breakdown voltage hint, label collision avoidance) - [done]
 - Phase 1 Task 2: Recent Files (File > Open Recent, 8 files, injected path, missing file handling) - [done]
