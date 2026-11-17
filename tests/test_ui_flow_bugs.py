@@ -504,13 +504,17 @@ def test_e3_vertical_bent_rotated_flipped_and_pass_over_without_drop(
         win.close()
 
 
-@pytest.mark.xfail(strict=True, reason="E4 reproduction")
 def test_e4_repro_wire_mode_visibility_and_esc(tmp_path, qapp) -> None:
-    """E4 repro: Wire mode must style :checked buttons, show status text, and exit on Esc."""
+    """E4: Wire mode styles :checked buttons in both themes, shows status text, sets cursor, and exits on Esc."""
     dark_css = build_stylesheet(DARK_PALETTE)
     light_css = build_stylesheet(LIGHT_PALETTE)
-    assert "QToolButton:checked" in dark_css
-    assert "QToolButton:checked" in light_css
+    for palette, css in ((DARK_PALETTE, dark_css), (LIGHT_PALETTE, light_css)):
+        assert "QToolButton:checked" in css
+        assert palette.selection_accent in css
+        assert palette.ghost_tint in css
+        # Checked rule has its own background distinct from normal (transparent) and hover.
+        checked_block = css.split("QToolButton:checked", 1)[1].split("}", 1)[0]
+        assert f"background-color: {palette.selection_accent}" in checked_block
 
     win, view, scene = create_window_and_view(tmp_path, zoom=1.0)
     try:
@@ -518,17 +522,51 @@ def test_e4_repro_wire_mode_visibility_and_esc(tmp_path, qapp) -> None:
         qapp.processEvents()
         p_vp = terminal_scene_point(v1, "pos")
 
+        # Tool mode exclusivity & one-shot toolbars (Rot, Flip, Del, Junc are non-checkable one-shots).
+        for one_shot in (win.act_rotate, win.act_flip, win.act_delete, win.act_junction):
+            assert not one_shot.isCheckable()
+        assert win.act_wire_mode.isCheckable()
+
+        # Outside Wire mode, clicking open canvas does NOT start a wire.
+        click_viewport(view, scene_to_viewport_point(view, -120, -120))
+        assert scene.is_drawing_wire is False
+        assert view.cursor().shape() == Qt.CursorShape.ArrowCursor
+
+        # Enter via toolbar button: checked, crosshair cursor, status bar prompt.
         win.act_wire_mode.trigger()
         qapp.processEvents()
         assert view.wire_mode_enabled is True
         assert win.act_wire_mode.isChecked() is True
-        status = win.statusBar().currentMessage()
-        assert "Wire mode" in status and "Esc" in status, f"Unexpected status bar text: {status!r}"
+        assert view.cursor().shape() == Qt.CursorShape.CrossCursor
+        assert (
+            win.statusBar().currentMessage()
+            == "Wire mode - click a terminal to start, Esc to leave"
+        )
 
-        # Start a wire on V1.pos, move to empty canvas, press Esc -> preview cancelled AND leaves Wire mode.
+        # Pressing the toolbar button again exits Wire mode and clears status & cursor.
+        win.act_wire_mode.trigger()
+        qapp.processEvents()
+        assert view.wire_mode_enabled is False
+        assert win.act_wire_mode.isChecked() is False
+        assert view.cursor().shape() == Qt.CursorShape.ArrowCursor
+        assert win.statusBar().currentMessage() == ""
+
+        # Re-enter via W key; Esc WITHOUT wire in progress leaves mode cleanly.
+        press_key(view.viewport(), Qt.Key.Key_W)
+        assert view.wire_mode_enabled is True
+        assert win.act_wire_mode.isChecked() is True
+        press_key(view.viewport(), Qt.Key.Key_Escape)
+        assert view.wire_mode_enabled is False
+        assert win.act_wire_mode.isChecked() is False
+        assert view.cursor().shape() == Qt.CursorShape.ArrowCursor
+
+        # Re-enter, start a wire on V1.pos, move to empty canvas, press Esc -> preview cancelled AND leaves Wire mode.
+        win.act_wire_mode.trigger()
+        qapp.processEvents()
         click_viewport(view, scene_to_viewport_point(view, *p_vp))
         assert scene.is_drawing_wire is True
         from PySide6.QtTest import QTest
+
         QTest.mouseMove(view.viewport(), scene_to_viewport_point(view, -120, -120))
         qapp.processEvents()
 
@@ -536,6 +574,14 @@ def test_e4_repro_wire_mode_visibility_and_esc(tmp_path, qapp) -> None:
         assert scene.is_drawing_wire is False
         assert view.wire_mode_enabled is False
         assert win.act_wire_mode.isChecked() is False
+        assert view.cursor().shape() == Qt.CursorShape.ArrowCursor
+        assert win.statusBar().currentMessage() == ""
+
+        # Normal selection behavior restored after leaving Wire mode.
+        scene.clearSelection()
+        click_viewport(view, scene_to_viewport_point(view, 0, 0))
+        assert scene.is_drawing_wire is False
+        assert v1.isSelected() is True
     finally:
         scene.undo_stack.setClean()
         win.close()

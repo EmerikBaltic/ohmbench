@@ -1200,6 +1200,12 @@ class MainWindow(QMainWindow):
                 self.act_wire_mode.setChecked(enabled)
             finally:
                 self.act_wire_mode.blockSignals(blocked)
+        if enabled:
+            self.statusBar().showMessage(
+                "Wire mode - click a terminal to start, Esc to leave"
+            )
+        else:
+            self.statusBar().clearMessage()
 
     def _on_scene_status_notice(self, message: str) -> None:
         self.statusBar().showMessage(message, 5000)

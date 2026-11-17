@@ -616,6 +616,8 @@ class CircuitView(QGraphicsView):
             elif self.circuit_scene.is_drawing_wire:
                 self._wire_drag_active = False
                 self.circuit_scene.cancel_wire_preview()
+                if self._wire_mode_enabled:
+                    self.set_wire_mode(False)
             elif self._wire_mode_enabled:
                 self.set_wire_mode(False)
             else:

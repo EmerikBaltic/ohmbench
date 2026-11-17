@@ -128,7 +128,9 @@ def test_phase5_1_interactive_wire_drawing_preview_snap_junction_free_end_and_ca
         assert scene.is_drawing_wire is False
         assert scene._preview_wire_item is None
         assert scene.undo_stack.count() == undo_0 + 1
-        # Esc while preview was active cancels preview but keeps W mode on.
+        # Esc while preview was active cancels preview and exits W mode cleanly (E4).
+        assert view.wire_mode_enabled is False
+        QTest.keyClick(view, Qt.Key.Key_W)
         assert view.wire_mode_enabled is True
 
         # Start again and cancel with RightButton -> no context menu opens & 0 undo steps.

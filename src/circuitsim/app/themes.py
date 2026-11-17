@@ -117,6 +117,16 @@ def build_stylesheet(palette: ThemePalette) -> str:
     QToolButton:hover {{
         border: 1px solid {palette.selection_accent};
     }}
+    QToolButton:checked {{
+        background-color: {palette.selection_accent};
+        border: 1px solid {palette.selection_accent};
+        color: #FFFFFF;
+    }}
+    QToolButton:checked:hover {{
+        background-color: {palette.ghost_tint};
+        border: 1px solid {palette.selection_accent};
+        color: #FFFFFF;
+    }}
     QDockWidget {{
         titlebar-close-icon: url(none);
         font-weight: 600;
