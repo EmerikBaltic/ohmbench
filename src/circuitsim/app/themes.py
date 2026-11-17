@@ -84,7 +84,7 @@ def build_stylesheet(palette: ThemePalette) -> str:
         background-color: {palette.window_bg};
         color: {palette.symbol_stroke};
         font-family: "Segoe UI", sans-serif;
-        font-size: 13px;
+        font-size: 10pt;
     }}
     QMenuBar {{
         background-color: {palette.panel_bg};

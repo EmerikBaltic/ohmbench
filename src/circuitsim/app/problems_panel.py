@@ -156,7 +156,7 @@ class ProblemsPanel(QWidget):
         header_layout.addWidget(self.title_label)
 
         self.count_label = QLabel("(0)")
-        self.count_label.setStyleSheet("color: #8B949E; font-size: 11px;")
+        self.count_label.setStyleSheet("color: #8B949E; font-size: 8pt;")
         header_layout.addWidget(self.count_label)
 
         header_layout.addStretch()
@@ -221,10 +221,10 @@ class ProblemsPanel(QWidget):
 
         if is_dark:
             self.close_btn.set_theme_colors("#8B949E", "#30363D", "#F0F6FC")
-            self.count_label.setStyleSheet("color: #8B949E; font-size: 11px;")
+            self.count_label.setStyleSheet("color: #8B949E; font-size: 8pt;")
         else:
             self.close_btn.set_theme_colors("#57606A", "#E1E4E8", "#24292F")
-            self.count_label.setStyleSheet("color: #57606A; font-size: 11px;")
+            self.count_label.setStyleSheet("color: #57606A; font-size: 8pt;")
 
     def _on_item_clicked(self, item: QTreeWidgetItem, column: int) -> None:
         _ = column

@@ -290,3 +290,12 @@ Goal: I can run the app on a computer that has no Python installed.
 
 Start with the FIRST STEP in section 2. Do not write code until I approve
 the plan.
+
+---
+
+## 12. UI BUG RULE
+
+Every UI bug fix MUST follow this discipline:
+1. **Reproduce first with a real-input test**: write a failing offscreen Qt test (`QTest` mouse/key events sent through `CircuitView` / `MainWindow`, at multiple zoom levels where hit-testing applies) before writing the fix.
+2. **Assert on explicit model state & physics**: assert on `WireGraph` attachments (`TerminalRef`, `JunctionRef`, `FreeEnd`), component placement/selection, and solved circuit values (node voltages / branch currents derived from hand calculation), never on rendered pixels to decide connectivity (pixel checks are only for visual-rendering issues such as label overlap/themes).
+3. **Preserve Qt-free engine boundaries**: keep `circuitsim.wiring`, `circuitsim.engine`, `circuitsim.components`, and `circuitsim.io` free of Qt imports; compute terminal positions & polarities solely from the shared transform function.

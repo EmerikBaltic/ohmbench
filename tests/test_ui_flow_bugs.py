@@ -666,3 +666,34 @@ def test_e5_repro_label_plates_cut_wire(tmp_path, qapp) -> None:
         finally:
             scene.undo_stack.setClean()
             win.close()
+
+
+def test_e6_no_qfont_pointsize_warning_on_startup(tmp_path, qapp) -> None:
+    """E6(a): Launching MainWindow and switching themes emits zero QFont::setPointSize (-1) warnings."""
+    from PySide6.QtCore import QtMsgType, qInstallMessageHandler
+    from circuitsim.app.main_window import MainWindow
+    from circuitsim.app.settings import AppSettings
+    from circuitsim.app.themes import ThemeMode
+
+    captured: list[str] = []
+
+    def _handler(msg_type, context, message: str) -> None:
+        _ = (msg_type, context)
+        captured.append(str(message))
+
+    prev = qInstallMessageHandler(_handler)
+    try:
+        settings = AppSettings(data_dir=tmp_path / "e6_font_warn")
+        win = MainWindow(settings=settings)
+        win.show()
+        qapp.processEvents()
+        win.apply_theme(ThemeMode.LIGHT)
+        qapp.processEvents()
+        win.apply_theme(ThemeMode.DARK)
+        qapp.processEvents()
+        win.close()
+    finally:
+        qInstallMessageHandler(prev)
+
+    bad = [m for m in captured if "setPointSize" in m or "Point size <= 0" in m]
+    assert not bad, f"Unexpected QFont pointSize warning(s) at startup: {bad}"
