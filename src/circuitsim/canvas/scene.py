@@ -261,9 +261,11 @@ class CircuitScene(QGraphicsScene):
             if not self._wire_graph.has_wire(candidate):
                 return candidate
 
-    def _terminal_pos_map(self) -> dict[tuple[str, str], PointPx]:
+    def _terminal_pos_map(
+        self, *, extra_items: Sequence[ComponentItem] = ()
+    ) -> dict[tuple[str, str], PointPx]:
         mapping: dict[tuple[str, str], PointPx] = {}
-        for item in self._placed_items:
+        for item in (*self._placed_items, *extra_items):
             cname = item.component.name
             for tname, pt in item.terminal_scene_positions_px().items():
                 mapping[(cname, tname)] = pt
@@ -752,6 +754,9 @@ class CircuitScene(QGraphicsScene):
         self._record_pin_to_pin_bonds_for(item, self._placed_items)
         old_graph = self._wire_graph
         new_graph = self._apply_component_split_on_drop(item, old_graph)
+        new_graph = self._auto_connect_graph_endpoints(
+            new_graph, extra_items=(item,)
+        )
         if new_graph != old_graph:
             self.undo_stack.push(
                 AddComponentCommand(
@@ -792,7 +797,8 @@ class CircuitScene(QGraphicsScene):
             for item in self._placed_items
         }
 
-    TERMINAL_SNAP_RADIUS_PX: float = 10.0  # Snap radius of half a grid cell (10 px)
+    TERMINAL_SNAP_RADIUS_PX: float = 10.0  # Endpoint-drag terminal snap radius (10 px)
+    AUTO_CONNECT_TOLERANCE_PX: float = 12.5  # Zoom-independent scene tolerance (>= 12.0 px)
 
     def find_terminal_near(
         self,
@@ -840,41 +846,38 @@ class CircuitScene(QGraphicsScene):
         pos: QPointF | tuple[float, float],
         *,
         graph: WireGraph | None = None,
+        tolerance_px: float | None = None,
     ) -> tuple[Attachment, PointPx]:
         """Resolve cursor `pos` to `(TerminalRef | JunctionRef | FreeEnd, point_px)`."""
         g = graph if graph is not None else self._wire_graph
+        tol = self.AUTO_CONNECT_TOLERANCE_PX if tolerance_px is None else float(tolerance_px)
         sx = pos.x() if isinstance(pos, QPointF) else float(pos[0])
         sy = pos.y() if isinstance(pos, QPointF) else float(pos[1])
-        term_hit = self.find_terminal_near(
-            (sx, sy), tolerance_px=self.TERMINAL_SNAP_RADIUS_PX
-        )
+        term_hit = self.find_terminal_near((sx, sy), tolerance_px=tol)
         if term_hit is not None:
             return (TerminalRef(term_hit[0].component.name, term_hit[1]), term_hit[2])
-        j_ref = self._find_junction_at(
-            (sx, sy),
-            g,
-            tolerance_px=self.TERMINAL_SNAP_RADIUS_PX,
-        )
+        j_ref = self._find_junction_at((sx, sy), g, tolerance_px=tol)
         if j_ref is not None:
             return (j_ref, g.junction(j_ref.id).pos)
         snapped = wire_snap_px((sx, sy))
         return (FreeEnd(*snapped), snapped)
 
     def is_snap_target_at(self, pos: QPointF | tuple[float, float]) -> bool:
-        """Return True if `pos` is within 10 px of a terminal or existing junction."""
-        if (
-            self.find_terminal_near(pos, tolerance_px=self.TERMINAL_SNAP_RADIUS_PX)
-            is not None
-        ):
+        """Return True if `pos` is within auto-connect tolerance of a terminal, junction, wire, or FreeEnd."""
+        tol = self.AUTO_CONNECT_TOLERANCE_PX
+        if self.find_terminal_near(pos, tolerance_px=tol) is not None:
             return True
-        return (
-            self._find_junction_at(
-                pos,
-                self._wire_graph,
-                tolerance_px=self.TERMINAL_SNAP_RADIUS_PX,
-            )
-            is not None
-        )
+        if self._find_junction_at(pos, self._wire_graph, tolerance_px=tol) is not None:
+            return True
+        sx = pos.x() if isinstance(pos, QPointF) else float(pos[0])
+        sy = pos.y() if isinstance(pos, QPointF) else float(pos[1])
+        if self._nearest_point_on_wire_segments((sx, sy), self._wire_graph, tol) is not None:
+            return True
+        for w in self._wire_graph.wires:
+            for att in (w.end_a, w.end_b):
+                if isinstance(att, FreeEnd) and math.hypot(att.x - sx, att.y - sy) <= tol:
+                    return True
+        return False
 
     def add_wire_preview_waypoint(
         self, pos: QPointF | tuple[float, float]
@@ -1081,19 +1084,41 @@ class CircuitScene(QGraphicsScene):
             hints_list.pop()
         hints = tuple(hints_list)
 
-        free_on_wire = (
-            isinstance(att_a, FreeEnd)
-            and self._point_hits_existing_wire((att_a.x, att_a.y), self._wire_graph)
-        ) or (
-            isinstance(att_b, FreeEnd)
-            and self._point_hits_existing_wire((att_b.x, att_b.y), self._wire_graph)
-        )
-        wire = self.add_wire(att_a, att_b, hints=hints)
-        if wire is not None and free_on_wire:
-            self._emit_status_notice(
-                "Wire ends on another wire: junctions come in the next update"
+        wid = self._next_unused_wire_id(self._wire_graph)
+        try:
+            base_graph = self._wire_graph.add_wire(
+                att_a, att_b, hints=hints, wire_id=wid
             )
-        return wire
+        except WireGraphError:
+            return None
+        auto_graph = self._auto_connect_graph_endpoints(base_graph)
+        if auto_graph.has_wire(wid):
+            w_obj = auto_graph.wire(wid)
+            pts_final = self._compute_wire_points_from_graph(w_obj, auto_graph)
+            wire = WireItem(
+                wid,
+                pts_final,
+                theme=self.theme,
+                end_a=w_obj.end_a,
+                end_b=w_obj.end_b,
+                hints=w_obj.hints,
+            )
+            self.undo_stack.push(
+                AddWireCommand(
+                    self, wire, old_graph=self._wire_graph, new_graph=auto_graph
+                )
+            )
+            return wire
+        if auto_graph != self._wire_graph:
+            self.undo_stack.push(
+                SetWireGraphCommand(
+                    self,
+                    self._wire_graph,
+                    auto_graph,
+                    description="Auto-connect Wire",
+                )
+            )
+        return None
 
     def cancel_wire_preview(self) -> None:
         """Cancel any active wire preview without creating a wire."""
@@ -1378,7 +1403,7 @@ class CircuitScene(QGraphicsScene):
             return ()
 
         target_att, target_pt = self._resolve_wire_attachment(
-            scene_pos, graph=old_graph
+            scene_pos, graph=old_graph, tolerance_px=self.TERMINAL_SNAP_RADIUS_PX
         )
         old_wire = old_graph.wire(wid)
         other_att = old_wire.end_b if which == "end_a" else old_wire.end_a
@@ -1461,7 +1486,7 @@ class CircuitScene(QGraphicsScene):
         old_wire = old_graph.wire(wid)
         other_att = old_wire.end_b if which == "end_a" else old_wire.end_a
         target_att, _target_pt = self._resolve_wire_attachment(
-            scene_pos, graph=old_graph
+            scene_pos, graph=old_graph, tolerance_px=self.TERMINAL_SNAP_RADIUS_PX
         )
         item = self._wire_items_by_id.get(wid)
         pref = {wid: item} if item is not None else None
@@ -1502,6 +1527,8 @@ class CircuitScene(QGraphicsScene):
             self.refresh_connectivity_visuals()
             return False
 
+        if isinstance(target_att, FreeEnd):
+            new_graph = self._auto_connect_graph_endpoints(new_graph)
         self.undo_stack.push(
             SetWireGraphCommand(
                 self,
@@ -1511,12 +1538,6 @@ class CircuitScene(QGraphicsScene):
                 description=f"Edit Wire {wid} End",
             )
         )
-        if isinstance(target_att, FreeEnd) and self._point_hits_existing_wire(
-            (target_att.x, target_att.y), new_graph, exclude_wire_id=wid
-        ):
-            self._emit_status_notice(
-                "Wire ends on another wire: junctions come in the next update"
-            )
         return True
 
     def cancel_wire_endpoint_drag(self) -> None:
@@ -1879,6 +1900,166 @@ class CircuitScene(QGraphicsScene):
                     break
         return working
 
+    def _auto_connect_graph_endpoints(
+        self,
+        graph: WireGraph,
+        *,
+        tolerance_px: float | None = None,
+        extra_items: Sequence[ComponentItem] = (),
+    ) -> WireGraph:
+        """Deterministically upgrade touching `FreeEnd`s in `graph` to explicit refs/junctions."""
+        from circuitsim.canvas.connectivity import point_strictly_inside_wire
+
+        tol = self.AUTO_CONNECT_TOLERANCE_PX if tolerance_px is None else float(tolerance_px)
+        term_map = self._terminal_pos_map(extra_items=extra_items)
+        working = graph
+
+        def _reconnect_or_drop_dup(
+            g: WireGraph, wid: str, which: str, att: Attachment, hints: tuple[PointPx, ...]
+        ) -> WireGraph:
+            try:
+                return g.reconnect_wire_end(wid, which, att, hints=hints)
+            except WireGraphError:
+                return g.remove_wire(wid)
+
+        for _ in range(max(16, len(working.wires) * 4)):
+            changed = False
+            for w in working.wires:
+                for which_end, att, other_att in (
+                    ("end_a", w.end_a, w.end_b),
+                    ("end_b", w.end_b, w.end_a),
+                ):
+                    if not isinstance(att, FreeEnd):
+                        continue
+                    fx, fy = float(att.x), float(att.y)
+
+                    # 1. Nearest component terminal within tolerance
+                    best_term: TerminalRef | None = None
+                    best_term_dist = tol
+                    for (cname, tname), (tx, ty) in term_map.items():
+                        cand_ref = TerminalRef(cname, tname)
+                        if cand_ref == other_att:
+                            continue
+                        dist = math.hypot(tx - fx, ty - fy)
+                        if dist <= best_term_dist:
+                            best_term_dist = dist
+                            best_term = cand_ref
+                    if best_term is not None:
+                        working = _reconnect_or_drop_dup(
+                            working, w.id, which_end, best_term, w.hints
+                        )
+                        changed = True
+                        break
+
+                    # 2. Nearest existing junction within tolerance
+                    best_jref: JunctionRef | None = None
+                    best_jdist = tol
+                    for junc in working.junctions:
+                        jref = JunctionRef(junc.id)
+                        if jref == other_att:
+                            continue
+                        dist = math.hypot(junc.pos[0] - fx, junc.pos[1] - fy)
+                        if dist <= best_jdist:
+                            best_jdist = dist
+                            best_jref = jref
+                    if best_jref is not None:
+                        working = _reconnect_or_drop_dup(
+                            working, w.id, which_end, best_jref, w.hints
+                        )
+                        changed = True
+                        break
+
+                    # 3. Interior segment OR corner/bend of another wire
+                    best_split: tuple[float, Wire, tuple[PointPx, ...], PointPx] | None = None
+                    for w_other in working.wires:
+                        if w_other.id == w.id:
+                            continue
+                        pts_other = (
+                            self._wire_polyline_in_graph(w_other, working, term_map)
+                            if not extra_items
+                            else self._compute_wire_points_from_graph(
+                                w_other, working, term_map=term_map
+                            )
+                        )
+                        if len(pts_other) < 2:
+                            continue
+                        for idx_seg in range(len(pts_other) - 1):
+                            ax, ay = pts_other[idx_seg]
+                            bx, by = pts_other[idx_seg + 1]
+                            if ax == bx:
+                                lo, hi = min(ay, by), max(ay, by)
+                                cy = min(max(fy, float(lo)), float(hi))
+                                cx = float(ax)
+                            elif ay == by:
+                                lo, hi = min(ax, bx), max(ax, bx)
+                                cx = min(max(fx, float(lo)), float(hi))
+                                cy = float(ay)
+                            else:
+                                continue
+                            dist = math.hypot(cx - fx, cy - fy)
+                            if dist <= tol:
+                                cand_pt = wire_snap_px((cx, cy))
+                                if point_strictly_inside_wire(cand_pt, pts_other):
+                                    if best_split is None or dist < best_split[0]:
+                                        best_split = (dist, w_other, pts_other, cand_pt)
+                    if best_split is not None:
+                        _dist, w_other, pts_other, split_pt = best_split
+                        hb = self._hints_before_point(split_pt, w_other, pts_other)
+                        split_res = working.split_wire_at(
+                            w_other.id, split_pt, hints_before=hb
+                        )
+                        jref = JunctionRef(split_res.junction_id)
+                        working = _reconnect_or_drop_dup(
+                            split_res.graph, w.id, which_end, jref, w.hints
+                        )
+                        changed = True
+                        break
+
+                    # 4. Another wire's FreeEnd within tolerance
+                    best_free: tuple[float, Wire, str, PointPx] | None = None
+                    for w_other in working.wires:
+                        if w_other.id == w.id:
+                            continue
+                        for o_which, o_att in (
+                            ("end_a", w_other.end_a),
+                            ("end_b", w_other.end_b),
+                        ):
+                            if not isinstance(o_att, FreeEnd):
+                                continue
+                            dist = math.hypot(o_att.x - fx, o_att.y - fy)
+                            if dist <= tol:
+                                if best_free is None or dist < best_free[0]:
+                                    best_free = (dist, w_other, o_which, o_att.pos)
+                    if best_free is not None:
+                        _dist, w_other, o_which, jpos = best_free
+                        jid = working.new_junction_id()
+                        jref = JunctionRef(jid)
+                        g1 = working.add_junction(jpos, jid)
+                        g2 = _reconnect_or_drop_dup(g1, w.id, which_end, jref, w.hints)
+                        working = _reconnect_or_drop_dup(
+                            g2, w_other.id, o_which, jref, w_other.hints
+                        )
+                        changed = True
+                        break
+                if changed:
+                    break
+            if not changed:
+                break
+        return working
+
+    def _auto_connect_touching_endpoints(
+        self, *, tolerance_px: float | None = None
+    ) -> bool:
+        """Apply `_auto_connect_graph_endpoints` directly onto the current scene graph."""
+        old_graph = self._wire_graph
+        new_graph = self._auto_connect_graph_endpoints(
+            old_graph, tolerance_px=tolerance_px
+        )
+        if new_graph == old_graph:
+            return False
+        self.set_wire_graph(new_graph)
+        return True
+
     def _bond_overlapping_terminals(
         self, graph: WireGraph, pt: PointPx, primary: TerminalRef
     ) -> WireGraph:
@@ -1963,15 +2144,15 @@ class CircuitScene(QGraphicsScene):
         if len(points) < 2:
             return None
 
-        # Snap endpoints to nearest terminal if within snap radius (half a grid cell = 10 px)
+        # Snap endpoints to nearest terminal if within auto-connect snap radius
         raw_pts = [normalize_point_px(p, snap=False) for p in points]
         term_start = self.find_terminal_near(
-            raw_pts[0], tolerance_px=self.TERMINAL_SNAP_RADIUS_PX
+            raw_pts[0], tolerance_px=self.AUTO_CONNECT_TOLERANCE_PX
         )
         if term_start is not None:
             raw_pts[0] = term_start[2]
         term_end = self.find_terminal_near(
-            raw_pts[-1], tolerance_px=self.TERMINAL_SNAP_RADIUS_PX
+            raw_pts[-1], tolerance_px=self.AUTO_CONNECT_TOLERANCE_PX
         )
         if term_end is not None:
             raw_pts[-1] = term_end[2]
@@ -2042,14 +2223,27 @@ class CircuitScene(QGraphicsScene):
             )
         except WireGraphError:
             return None
-
+        new_graph = self._auto_connect_graph_endpoints(new_graph)
+        if not new_graph.has_wire(wid):
+            if new_graph != self._wire_graph:
+                self.undo_stack.push(
+                    SetWireGraphCommand(
+                        self,
+                        self._wire_graph,
+                        new_graph,
+                        description="Auto-connect Wire",
+                    )
+                )
+            return None
+        w_obj = new_graph.wire(wid)
+        pts = self._compute_wire_points_from_graph(w_obj, new_graph)
         wire = WireItem(
             wid,
             pts,
             theme=self.theme,
-            end_a=att_a,
-            end_b=att_b,
-            hints=norm_hints,
+            end_a=w_obj.end_a,
+            end_b=w_obj.end_b,
+            hints=w_obj.hints,
         )
         self.undo_stack.push(
             AddWireCommand(
@@ -2337,6 +2531,7 @@ class CircuitScene(QGraphicsScene):
                 target_graph,
                 pre_drop_polylines=pre_drop_polylines,
             )
+        target_graph = self._auto_connect_graph_endpoints(target_graph)
         self._wire_graph = target_graph
         self._sync_graphics_from_wire_graph()
 

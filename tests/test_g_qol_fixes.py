@@ -12,7 +12,14 @@ from PySide6.QtWidgets import QApplication
 from circuitsim.canvas.scene import CircuitScene
 from circuitsim.canvas.symbol_renderer import SymbolLibrary
 from circuitsim.canvas.view import CircuitView
-from tests.ui_flow_helpers import click_viewport, scene_to_viewport_point
+from circuitsim.engine import MNASolver
+from circuitsim.wiring.model import FreeEnd, JunctionRef, TerminalRef
+from tests.ui_flow_helpers import (
+    click_viewport,
+    draw_wire_click_to_click,
+    scene_to_viewport_point,
+    terminal_scene_point,
+)
 
 
 def test_g3_scrollwheel_zoom_anchors_to_viewport_center(qapp) -> None:
@@ -144,6 +151,63 @@ def test_g4_hotkey_autorepeat_ignored_and_no_overlapping_placement(qapp) -> None
         rect0 = scene._component_body_rect_at(r0.component.component_type, r0.pos().x(), r0.pos().y(), r0.rotation_deg)
         rect1 = scene._component_body_rect_at(r1.component.component_type, r1.pos().x(), r1.pos().y(), r1.rotation_deg)
         assert not rect0.intersects(rect1)
+    finally:
+        view.close()
+        scene.shutdown_scene()
+        qapp.processEvents()
+
+
+def test_g5_auto_connect_touching_endpoints_and_gnd_tap(qapp) -> None:
+    """G5 (resolves E2): Wires touching terminals within 12 px or wire interiors/corners auto-connect without FreeEnds."""
+    scene = CircuitScene(SymbolLibrary())
+    view = CircuitView(scene)
+    view.resize(1000, 720)
+    view.show()
+    view.set_view_state(1.0, (0.0, 0.0))
+    qapp.processEvents()
+
+    try:
+        v1 = scene.place_new_component("dc_voltage", QPointF(-160.0, 0.0), rotation_deg=90)
+        r1 = scene.place_new_component("resistor", QPointF(-40.0, -40.0))
+        d1 = scene.place_new_component("led", QPointF(120.0, -40.0))
+        gnd = scene.place_new_component("ground", QPointF(0.0, 120.0))
+        scene.edit_component_parameters(v1, {"dc_voltage": 12.0})
+        scene.edit_component_parameters(r1, {"resistance": 1000.0})
+
+        p_vp = terminal_scene_point(v1, "pos")
+        p_vn = terminal_scene_point(v1, "neg")
+        p_ra = terminal_scene_point(r1, "a")
+        p_rb = terminal_scene_point(r1, "b")
+        p_da = terminal_scene_point(d1, "anode")
+        p_dk = terminal_scene_point(d1, "cathode")
+        p_gnd = terminal_scene_point(gnd, "gnd")
+
+        view.set_wire_mode(True)
+        # V1.pos -> R1.a
+        draw_wire_click_to_click(view, p_vp, p_ra)
+        # R1.b -> within 6 scene px of LED1.anode (tests snap tolerance + auto-connect)
+        draw_wire_click_to_click(view, p_rb, (p_da[0] + 6, p_da[1]))
+        # Bottom wire: LED1.cathode down and across to V1.neg along y = 40
+        draw_wire_click_to_click(view, p_dk, p_vn, waypoints_scene=[(p_dk[0], p_vn[1])])
+        # GND wire ends directly on the interior of the bottom wire at (0, 40)
+        draw_wire_click_to_click(view, p_gnd, (p_gnd[0], p_vn[1]))
+        view.set_wire_mode(False)
+        qapp.processEvents()
+
+        # Assert zero FreeEnds remain across the entire circuit graph
+        for w in scene.wire_graph.wires:
+            assert not isinstance(w.end_a, FreeEnd), f"Unexpected FreeEnd on {w.id}.end_a: {w.end_a}"
+            assert not isinstance(w.end_b, FreeEnd), f"Unexpected FreeEnd on {w.id}.end_b: {w.end_b}"
+
+        # Assert a JunctionRef exists at the GND tap (0, 40)
+        assert len(scene.wire_graph.junctions) >= 1
+        assert any(j.pos == (p_gnd[0], p_vn[1]) for j in scene.wire_graph.junctions)
+
+        conn = scene.extract_connectivity_result()
+        assert not conn.unconnected_components
+        sol = MNASolver(conn.circuit).solve_dc()
+        # 12 V across 1k resistor + ~2.0 V LED -> ~10.0 mA forward current
+        assert math.isclose(abs(sol.branch_currents["R1"]), 0.010, abs_tol=1e-3)
     finally:
         view.close()
         scene.shutdown_scene()

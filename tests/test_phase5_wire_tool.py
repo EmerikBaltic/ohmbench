@@ -241,7 +241,7 @@ def test_phase5_1_interactive_wire_drawing_preview_snap_junction_free_end_and_ca
         assert w_from_j.end_a == JunctionRef(jid)
         assert w_from_j.end_b == FreeEnd(-80, 180)
 
-        # 8. Ending on the interior of another wire (far from terminals/junctions) creates FreeEnd + status note in 5.1.
+        # 8. Ending on the interior of another wire auto-splits into a junction (updated in G5).
         w_target = scene.add_wire(FreeEnd(0, 260), FreeEnd(160, 260))
         assert w_target is not None
         wires_before = len(scene.wire_graph.wires)
@@ -250,17 +250,14 @@ def test_phase5_1_interactive_wire_drawing_preview_snap_junction_free_end_and_ca
         scene.start_wire_preview((80, 320))
         w_on_wire = scene.finish_wire_preview((80, 260))
         assert w_on_wire is not None
-        assert w_on_wire.end_b == FreeEnd(80, 260)
-        # Target wire was NOT split and NO junction was created in 5.1.
-        assert len(scene.wire_graph.wires) == wires_before + 1
-        assert len(scene.wire_graph.junctions) == junctions_before
-        expected_note = "Wire ends on another wire: junctions come in the next update"
-        assert scene.last_status_notice == expected_note
-        assert win.statusBar().currentMessage() == expected_note
+        assert isinstance(w_on_wire.end_b, JunctionRef)
+        assert len(scene.wire_graph.wires) == wires_before + 2
+        assert len(scene.wire_graph.junctions) == junctions_before + 1
 
-        # Undo reverts w_on_wire in 1 undo step.
+        # Undo reverts w_on_wire and the junction split in 1 undo step.
         scene.undo_stack.undo()
         assert len(scene.wire_graph.wires) == wires_before
+        assert len(scene.wire_graph.junctions) == junctions_before
     finally:
         win.circuit_scene.undo_stack.setClean()
         win.close()
