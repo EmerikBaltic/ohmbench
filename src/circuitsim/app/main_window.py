@@ -307,10 +307,11 @@ class MainWindow(QMainWindow):
         edit_menu.addAction(self.act_select_all)
 
         edit_menu.addSeparator()
-        self.act_rotate = QAction("&Rotate (R)", self)
+        self.act_rotate = QAction("&Rotate (Ctrl+R)", self)
         self.act_rotate.setIconText("Rot")
+        self.act_rotate.setShortcut(QKeySequence("Ctrl+R"))
         self.act_rotate.setToolTip(
-            "Rotate selected component(s) 90° clockwise (Shortcut: R)"
+            "Rotate selected component(s) 90° clockwise (Shortcut: Ctrl+R)"
         )
         self.act_rotate.triggered.connect(self._rotate_selected)
         edit_menu.addAction(self.act_rotate)
@@ -363,6 +364,27 @@ class MainWindow(QMainWindow):
         self.act_toggle_theme.setToolTip("Toggle between Dark and Light themes (Shortcut: Ctrl+T)")
         self.act_toggle_theme.triggered.connect(self.toggle_theme)
         self.view_menu.addAction(self.act_toggle_theme)
+
+        # Place menu (cross-platform accessible entry alongside canvas hotkeys)
+        self.place_menu = menu_bar.addMenu("&Place")
+        self.place_actions: dict[str, QAction] = {}
+        for comp_id, menu_label, tb_text, key_hint in (
+            ("resistor", "&Resistor (R)", "R", "R"),
+            ("capacitor", "&Capacitor (C)", "C", "C"),
+            ("inductor", "&Inductor (L)", "L", "L"),
+            ("led", "&Diode / LED (D)", "D", "D"),
+            ("dc_voltage", "&Voltage Source (V)", "V", "V"),
+            ("dc_current", "Current &Source (I)", "I", "I"),
+            ("ground", "&Ground (G)", "G", "G"),
+        ):
+            act = QAction(menu_label, self)
+            act.setIconText(tb_text)
+            act.setToolTip(f"Place {menu_label.replace('&', '')} (Canvas key: {key_hint})")
+            act.triggered.connect(
+                lambda _checked=False, cid=comp_id: self.circuit_view.start_component_placement(cid)
+            )
+            self.place_menu.addAction(act)
+            self.place_actions[comp_id] = act
 
         self.view_menu.addSeparator()
         act_zoom_in = QAction("Zoom &In", self)
@@ -463,6 +485,13 @@ class MainWindow(QMainWindow):
         main_tb.addAction(self.act_toggle_theme)
         self.addToolBar(Qt.ToolBarArea.TopToolBarArea, main_tb)
 
+        self.addToolBarBreak(Qt.ToolBarArea.TopToolBarArea)
+        self.place_tb = QToolBar("Quick Place", self)
+        self.place_tb.setMovable(False)
+        for cid in ("resistor", "capacitor", "inductor", "led", "dc_voltage", "dc_current", "ground"):
+            self.place_tb.addAction(self.place_actions[cid])
+        self.addToolBar(Qt.ToolBarArea.TopToolBarArea, self.place_tb)
+
     def _build_docks(self) -> None:
         self.setDockOptions(
             QMainWindow.DockOption.AllowNestedDocks
@@ -557,6 +586,7 @@ class MainWindow(QMainWindow):
         self.circuit_view.cursor_grid_moved.connect(self._on_cursor_moved)
         self.circuit_view.zoom_changed.connect(self._on_zoom_changed)
         self.circuit_view.wire_mode_changed.connect(self._on_wire_mode_changed)
+        self.circuit_view.placement_mode_changed.connect(self._on_placement_mode_changed)
         self.circuit_scene.component_placed.connect(self._on_component_placed)
         self.circuit_scene.selection_info_changed.connect(
             self._update_info_panel
@@ -1166,6 +1196,8 @@ class MainWindow(QMainWindow):
         self.circuit_scene.place_new_component(component_id, QPointF(center_pt))
 
     def _rotate_selected(self) -> None:
+        if self.circuit_view.rotate_placement_preview():
+            return
         if self.circuit_scene.rotate_selected():
             selected = [
                 it
@@ -1192,6 +1224,14 @@ class MainWindow(QMainWindow):
 
     def _on_zoom_changed(self, zoom: float) -> None:
         self.status_zoom.setText(f"Zoom: {int(round(zoom * 100.0))}%")
+
+    def _on_placement_mode_changed(self, component_id: str) -> None:
+        if component_id:
+            self.statusBar().showMessage(
+                f"Place {component_id} - click canvas to place, Ctrl+R to rotate, Esc to cancel"
+            )
+        elif not self.circuit_view.wire_mode_enabled:
+            self.statusBar().clearMessage()
 
     def _on_wire_mode_changed(self, enabled: bool) -> None:
         if self.act_wire_mode.isChecked() != enabled:
@@ -1327,6 +1367,7 @@ class MainWindow(QMainWindow):
         # 4. Disconnect handlers from the scene, undo stack, and worker before destruction
         for sig, slot in (
             (self.circuit_view.wire_mode_changed, self._on_wire_mode_changed),
+            (self.circuit_view.placement_mode_changed, self._on_placement_mode_changed),
             (self.circuit_scene.undo_stack.cleanChanged, self._on_undo_clean_changed),
             (self.circuit_scene.component_placed, self._on_component_placed),
             (self.circuit_scene.selection_info_changed, self._update_info_panel),

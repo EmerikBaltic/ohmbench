@@ -1021,6 +1021,34 @@ class ComponentItem(QGraphicsObject):
             rotation_deg=self.rotation_deg,
             flipped_h=self.flipped_h,
         )
+        # Pin-0 / positive-branch-current reference marker (Pin 0 -> Pin 1) inside body bounds
+        if not self.is_ghost and self.component.component_type in (
+            "resistor",
+            "capacitor",
+            "inductor",
+        ):
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.setBrush(QBrush(QColor(palette.symbol_label)))
+            painter.drawEllipse(QPointF(-26.0, -7.0), 1.8, 1.8)
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+        if (
+            not self.is_ghost
+            and (self.isSelected() or self._is_hovered)
+            and self.component.component_type
+            in (
+                "resistor",
+                "capacitor",
+                "inductor",
+                "dc_voltage",
+                "ac_voltage",
+                "dc_current",
+            )
+        ):
+            arr_col = QColor(palette.selection_accent)
+            painter.setPen(QPen(arr_col, 1.4))
+            painter.drawLine(QPointF(-10.0, -14.0), QPointF(10.0, -14.0))
+            painter.drawLine(QPointF(6.0, -17.0), QPointF(10.0, -14.0))
+            painter.drawLine(QPointF(6.0, -11.0), QPointF(10.0, -14.0))
         painter.restore()
 
         # 3. Upright component label, value/meter readout, and warning badges (never rotated/flipped)

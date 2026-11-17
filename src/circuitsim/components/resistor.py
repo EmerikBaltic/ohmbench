@@ -44,6 +44,7 @@ class Resistor(Component):
         self.resistance: float = parsed_r
         self.tolerance_pct: float = float(tolerance_pct)
         self.power_rating: float = float(power_rating)
+        self.max_power: float = float(power_rating)
 
     @property
     def component_type(self) -> str:

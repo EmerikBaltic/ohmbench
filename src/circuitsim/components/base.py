@@ -147,6 +147,40 @@ class Component(ABC):
         self.current: float = 0.0
         self.power: float = 0.0
 
+        # Maximum continuous operating ratings used by parameter dialog and stress checks (F1 / F4).
+        self.max_power: float = 0.25
+        self.max_voltage: float = 50.0
+        self.max_current: float = 0.5
+
+    def get_max_ratings(self) -> dict[str, float]:
+        """Return max ratings `{max_power, max_voltage, max_current}` for stress checks."""
+        return {
+            "max_power": float(self.max_power),
+            "max_voltage": float(self.max_voltage),
+            "max_current": float(self.max_current),
+        }
+
+    def set_max_ratings(
+        self,
+        *,
+        max_power: float | None = None,
+        max_voltage: float | None = None,
+        max_current: float | None = None,
+    ) -> None:
+        """Update positive continuous rating limits."""
+        if max_power is not None:
+            if max_power <= 0.0:
+                raise ValueError("max_power must be > 0 W.")
+            self.max_power = float(max_power)
+        if max_voltage is not None:
+            if max_voltage <= 0.0:
+                raise ValueError("max_voltage must be > 0 V.")
+            self.max_voltage = float(max_voltage)
+        if max_current is not None:
+            if max_current <= 0.0:
+                raise ValueError("max_current must be > 0 A.")
+            self.max_current = float(max_current)
+
     @property
     @abstractmethod
     def component_type(self) -> str:

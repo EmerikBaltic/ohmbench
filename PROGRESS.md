@@ -44,7 +44,7 @@ Run these manual checks in the live desktop window (`.\.venv\Scripts\python.exe 
 
 ### Queue Items
 - [x] `F0` (`done`): Baseline audit (`checkpoint/E-done` `305563c`, `400 passed, 1 xfailed` at Gate E) + `PHASE F QUEUE` + architecture table + `tests/workbench_helpers.py` & `tests/test_f0_workbench_helpers.py` (`400 passed, 1 deselected, 1 xfailed`).
-- [ ] `F1` (`todo`): Ergonomic schematic entry — direct hotkeys (`R/C/L/D/V/I/G/W/Ctrl+R/F/Esc`), Pin-0/polarity markers (`+` / pin-1 tick / current-direction indicator), engineering parser (`m` vs `Meg` warning), tabbed DC/AC/Pulse parameter dialog with SPICE preview & max ratings.
+- [x] `F1` (`done`): Ergonomic schematic entry — direct hotkeys (`R/C/L/D/V/I/G/W/Ctrl+R/F/Esc`), secondary `place_tb` + `&Place` menu, Qt-free `passive_pin_markers` Pin-0 tick & hovered/selected current-direction arrow inside `body_rect`, `analyze_engineering_input` (`m` vs `Meg` warning), tabbed `QuickValueDialog` (`Parameters` + `Max Ratings`, DC/Sine AC/Pulse mode tabs, read-only SPICE preview) (`405 passed, 1 deselected, 1 xfailed`).
 - [ ] `F2` (`todo`): Real-time interactive controls — clickable SPST Switch/PushButton (`R_off=1e9`, `R_on=1e-3`) live resolve, 3-terminal Potentiometer (`A/W/B`, `alpha` in `[0.001, 0.999]`), live canvas/dock slider committing 1 undo step on release.
 - [ ] `F3` (`todo`): Visual intuition overlay — Qt-free `map_voltage_to_rgb` & `compute_current_dot_velocity`, animated current dots & voltage colors on wires, Alt-hover power probe (`P = V * I`).
 - [ ] `F4` (`todo`): Component stress, derating & smoke/overload warnings (`circuitsim.engine.stress`, `NORMAL < 80%`, `WARNING 80-100%`, `OVERLOAD > 100%`, LED limits, amber/red UI badges, live fault inspection).

@@ -173,6 +173,38 @@ def parse_engineering_value(text: str | float | int) -> float:
     return base_value * APP_PREFIX_MULTIPLIERS[prefix]
 
 
+def analyze_engineering_input(
+    text: str | float | int,
+) -> tuple[float | None, str | None, str | None]:
+    """Parse engineering notation and return `(value, warning_message, error_message)`.
+
+    Warns clearly on SPICE/UI prefix pitfalls such as bare uppercase `'M'`
+    (Mega = 1e6 here vs milli = 1e-3 in standard SPICE) or lowercase `'mhz'`
+    (parsed as millihertz 1e-3 Hz rather than Megahertz).
+    """
+    try:
+        val = parse_engineering_value(text)
+    except ValueError as exc:
+        return None, None, str(exc)
+
+    warning: str | None = None
+    if isinstance(text, str):
+        match = _VALUE_PATTERN.match(text.strip().replace(",", ".", 1) if text.count(",") == 1 and "." not in text else text.strip())
+        if match is not None:
+            raw_suffix = re.sub(r"\s+", "", match.group("suffix"))
+            if "mhz" in raw_suffix:
+                warning = (
+                    "Note: 'mhz' (lowercase 'm') parses as millihertz (1e-3 Hz). "
+                    "Use 'MHz' or 'MegHz' for megahertz (1e6 Hz)."
+                )
+            elif raw_suffix.startswith("M") and not raw_suffix.lower().startswith("meg"):
+                warning = (
+                    "Note: uppercase 'M' parses as Mega (1e6) in the UI "
+                    "(use 'Meg' for explicit Mega, or lowercase 'm' for milli 1e-3)."
+                )
+    return val, warning, None
+
+
 def parse_spice_value(text: str | float | int) -> float:
     """Parse a SPICE-notation value string (case-insensitive) into a float.
 

@@ -35,10 +35,20 @@ class CircuitView(QGraphicsView):
     cursor_grid_moved = Signal(float, float, int, int)  # (x_px, y_px, gx, gy)
     zoom_changed = Signal(float)  # Zoom factor (1.0 = 100%)
     wire_mode_changed = Signal(bool)  # Synced with toolbar Wire button
+    placement_mode_changed = Signal(str)  # Active placement component_id or ""
 
     MIN_ZOOM: float = 0.25
     MAX_ZOOM: float = 4.0
     ZOOM_STEP: float = 1.15
+    _PLACEMENT_HOTKEYS: dict[Qt.Key, str] = {
+        Qt.Key.Key_R: "resistor",
+        Qt.Key.Key_C: "capacitor",
+        Qt.Key.Key_L: "inductor",
+        Qt.Key.Key_D: "led",
+        Qt.Key.Key_V: "dc_voltage",
+        Qt.Key.Key_I: "dc_current",
+        Qt.Key.Key_G: "ground",
+    }
 
     def __init__(self, circuit_scene: CircuitScene) -> None:
         super().__init__(circuit_scene)
@@ -50,6 +60,8 @@ class CircuitView(QGraphicsView):
         self._last_scene_pos: QPointF = QPointF(0.0, 0.0)
         self._wire_drag_active: bool = False
         self._wire_mode_enabled: bool = False
+        self._placing_component_type: str | None = None
+        self._placing_rotation_deg: int = 0
         self._suppress_next_context_menu: bool = False
         self._pressed_switch_item: ComponentItem | None = None
         self._pressed_switch_pos: QPointF = QPointF()
@@ -79,9 +91,51 @@ class CircuitView(QGraphicsView):
     def wire_mode_enabled(self) -> bool:
         return self._wire_mode_enabled
 
+    @property
+    def placing_component_type(self) -> str | None:
+        return self._placing_component_type
+
+    def start_component_placement(self, component_id: str) -> None:
+        """Activate LTspice-style click-to-place ghost mode for `component_id`."""
+        if self._wire_mode_enabled:
+            self.set_wire_mode(False)
+        self._placing_component_type = component_id
+        self._placing_rotation_deg = 0
+        self.circuit_scene.show_ghost_preview(
+            component_id,
+            self._last_scene_pos,
+            rotation_deg=self._placing_rotation_deg,
+        )
+        self._update_cursor_for_scene_pos(self._last_scene_pos)
+        self.placement_mode_changed.emit(component_id)
+
+    def cancel_component_placement(self) -> None:
+        """Leave active component placement mode and return to normal pointer."""
+        if self._placing_component_type is None:
+            return
+        self._placing_component_type = None
+        self._placing_rotation_deg = 0
+        self.circuit_scene.hide_ghost_preview()
+        self._update_cursor_for_scene_pos(self._last_scene_pos)
+        self.placement_mode_changed.emit("")
+
+    def rotate_placement_preview(self) -> bool:
+        """Rotate active placement ghost 90 deg CW if placing a part; return True if handled."""
+        if self._placing_component_type is None:
+            return False
+        self._placing_rotation_deg = (self._placing_rotation_deg + 90) % 360
+        self.circuit_scene.show_ghost_preview(
+            self._placing_component_type,
+            self._last_scene_pos,
+            rotation_deg=self._placing_rotation_deg,
+        )
+        return True
+
     def set_wire_mode(self, enabled: bool) -> None:
         """Toggle dedicated Wire Drawing mode."""
         new_val = bool(enabled)
+        if new_val and self._placing_component_type is not None:
+            self.cancel_component_placement()
         if new_val != self._wire_mode_enabled:
             self._wire_mode_enabled = new_val
             if not self._wire_mode_enabled:
@@ -186,6 +240,9 @@ class CircuitView(QGraphicsView):
                 else Qt.CursorShape.SizeHorCursor
             )
             return
+        if self._placing_component_type is not None:
+            self.setCursor(Qt.CursorShape.CrossCursor)
+            return
         hovered_pt = self.circuit_scene.update_hover_highlight(scene_pt)
         if (
             self._wire_mode_enabled
@@ -271,8 +328,13 @@ class CircuitView(QGraphicsView):
             event.accept()
             return
 
-        # 2. Right-click cancels active wire drawing or active wire segment drag
+        # 2. Right-click cancels active placement, active wire drawing, or active wire segment drag
         if event.button() == Qt.MouseButton.RightButton:
+            if self._placing_component_type is not None:
+                self._suppress_next_context_menu = True
+                self.cancel_component_placement()
+                event.accept()
+                return
             if self.circuit_scene.is_drawing_wire:
                 self._wire_drag_active = False
                 self._suppress_next_context_menu = True
@@ -299,8 +361,23 @@ class CircuitView(QGraphicsView):
                 event.accept()
                 return
 
-        # 3. Left-click wire drawing / endpoint drag / segment drag / component selection
+        # 3. Left-click placement / wire drawing / endpoint drag / segment drag / component selection
         if event.button() == Qt.MouseButton.LeftButton:
+            if self._placing_component_type is not None:
+                placed = self.circuit_scene.place_new_component(
+                    self._placing_component_type,
+                    scene_pt,
+                    rotation_deg=self._placing_rotation_deg,
+                )
+                self.circuit_scene.clearSelection()
+                placed.setSelected(True)
+                self.circuit_scene.show_ghost_preview(
+                    self._placing_component_type,
+                    scene_pt,
+                    rotation_deg=self._placing_rotation_deg,
+                )
+                event.accept()
+                return
             if self.circuit_scene.is_drawing_wire:
                 self._wire_drag_active = False
                 if self.circuit_scene.is_snap_target_at(scene_pt):
@@ -391,6 +468,16 @@ class CircuitView(QGraphicsView):
             self.verticalScrollBar().setValue(
                 self.verticalScrollBar().value() - delta.y()
             )
+            event.accept()
+            return
+
+        if self._placing_component_type is not None:
+            self.circuit_scene.show_ghost_preview(
+                self._placing_component_type,
+                scene_pt,
+                rotation_deg=self._placing_rotation_deg,
+            )
+            self._update_cursor_for_scene_pos(scene_pt)
             event.accept()
             return
 
@@ -607,7 +694,9 @@ class CircuitView(QGraphicsView):
             event.accept()
             return
         if event.key() == Qt.Key.Key_Escape:
-            if self.circuit_scene.is_dragging_junction:
+            if self._placing_component_type is not None:
+                self.cancel_component_placement()
+            elif self.circuit_scene.is_dragging_junction:
                 self.circuit_scene.cancel_junction_drag()
             elif self.circuit_scene.is_dragging_wire_endpoint:
                 self.circuit_scene.cancel_wire_endpoint_drag()
@@ -625,10 +714,20 @@ class CircuitView(QGraphicsView):
             self._update_cursor_for_scene_pos(self._last_scene_pos)
             event.accept()
             return
-        if event.key() == Qt.Key.Key_R and not event.modifiers():
-            self.circuit_scene.rotate_selected()
+        if (
+            event.key() == Qt.Key.Key_R
+            and event.modifiers() == Qt.KeyboardModifier.ControlModifier
+        ):
+            if not self.rotate_placement_preview():
+                self.circuit_scene.rotate_selected()
             event.accept()
             return
+        if not event.modifiers():
+            comp_id = self._PLACEMENT_HOTKEYS.get(Qt.Key(event.key()))
+            if comp_id is not None:
+                self.start_component_placement(comp_id)
+                event.accept()
+                return
         if event.key() == Qt.Key.Key_F and not event.modifiers():
             self.circuit_scene.flip_selected()
             event.accept()

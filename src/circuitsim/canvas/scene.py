@@ -611,7 +611,9 @@ class CircuitScene(QGraphicsScene):
     # Palette Ghost Preview & Component Placement
     # ------------------------------------------------------------------
 
-    def show_ghost_preview(self, component_id: str, scene_pos: QPointF) -> None:
+    def show_ghost_preview(
+        self, component_id: str, scene_pos: QPointF, *, rotation_deg: int = 0
+    ) -> None:
         """Create or move the snapping ghost preview item for `component_id`."""
         if (
             self._ghost_item is None
@@ -627,6 +629,8 @@ class CircuitScene(QGraphicsScene):
             )
             self.addItem(self._ghost_item)
 
+        if rotation_deg % 360 != self._ghost_item.rotation_deg:
+            self._ghost_item.set_rotation_deg(rotation_deg % 360)
         self._ghost_item.set_snapped_pos(scene_pos.x(), scene_pos.y())
 
     def hide_ghost_preview(self) -> None:
