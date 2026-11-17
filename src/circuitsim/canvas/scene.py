@@ -45,7 +45,11 @@ from circuitsim.canvas.connectivity import (
     point_on_wire,
     simplify_orthogonal_points,
 )
-from circuitsim.canvas.symbol_geometry import GRID_PITCH_PX, snap_to_grid
+from circuitsim.canvas.symbol_geometry import (
+    GRID_PITCH_PX,
+    snap_to_grid,
+    transform_terminal_position,
+)
 from circuitsim.canvas.symbol_renderer import SymbolLibrary
 from circuitsim.canvas.wire_item import JunctionItem, WireItem
 from circuitsim.components.base import Component
@@ -753,10 +757,20 @@ class CircuitScene(QGraphicsScene):
 
         self._record_pin_to_pin_bonds_for(item, self._placed_items)
         old_graph = self._wire_graph
-        new_graph = self._apply_component_split_on_drop(item, old_graph)
-        new_graph = self._auto_connect_graph_endpoints(
-            new_graph, extra_items=(item,)
+        overlay = (
+            self._find_overlaid_2terminal_target(item, (sx, sy), self._placed_items)
+            if component_id == "voltmeter"
+            else None
         )
+        if overlay is not None:
+            new_graph = self._connect_voltmeter_parallel_with(
+                item, overlay[0], overlay[1], overlay[2], old_graph
+            )
+        else:
+            new_graph = self._apply_component_split_on_drop(item, old_graph)
+            new_graph = self._auto_connect_graph_endpoints(
+                new_graph, extra_items=(item,)
+            )
         if new_graph != old_graph:
             self.undo_stack.push(
                 AddComponentCommand(
@@ -769,6 +783,75 @@ class CircuitScene(QGraphicsScene):
         else:
             self.undo_stack.push(AddComponentCommand(self, item))
         return item
+
+    def _find_overlaid_2terminal_target(
+        self,
+        vm_item: ComponentItem,
+        center_xy: tuple[float, float],
+        candidates: Sequence[ComponentItem],
+        *,
+        tolerance_px: float = 10.0,
+    ) -> tuple[ComponentItem, str, str] | None:
+        """Return `(target, term_for_pos, term_for_neg)` if `vm_item` overlays a 2-terminal part."""
+        if vm_item.component.component_type != "voltmeter":
+            return None
+        vm_terms = {
+            t.name: normalize_point_px(
+                transform_terminal_position(
+                    t.grid_pos,
+                    center_xy,
+                    rotation_deg=vm_item.rotation_deg,
+                    flipped_h=vm_item.flipped_h,
+                    grid_px=GRID_PITCH_PX,
+                ),
+                snap=True,
+            )
+            for t in vm_item.metadata.terminals
+        }
+        p_pos = vm_terms.get("pos")
+        p_neg = vm_terms.get("neg")
+        if p_pos is None or p_neg is None:
+            return None
+
+        best: tuple[float, ComponentItem, str, str] | None = None
+        for other in candidates:
+            if other is vm_item or other.component.component_type == "voltmeter":
+                continue
+            if len(other.metadata.terminals) != 2:
+                continue
+            o_terms = other.terminal_scene_positions_px()
+            t0, t1 = (t.name for t in other.metadata.terminals)
+            o0, o1 = o_terms[t0], o_terms[t1]
+            # Try straight pairing (pos->t0, neg->t1) vs swapped (pos->t1, neg->t0)
+            for cand_pos, cand_neg in ((t0, t1), (t1, t0)):
+                op, on = o_terms[cand_pos], o_terms[cand_neg]
+                dp = math.hypot(p_pos[0] - op[0], p_pos[1] - op[1])
+                dn = math.hypot(p_neg[0] - on[0], p_neg[1] - on[1])
+                if dp <= tolerance_px and dn <= tolerance_px:
+                    score = dp + dn
+                    if best is None or score < best[0]:
+                        best = (score, other, cand_pos, cand_neg)
+        return (best[1], best[2], best[3]) if best is not None else None
+
+    def _connect_voltmeter_parallel_with(
+        self,
+        vm_item: ComponentItem,
+        target_item: ComponentItem,
+        term_for_pos: str,
+        term_for_neg: str,
+        graph: WireGraph,
+    ) -> WireGraph:
+        """Wire `vm_item` (`pos`, `neg`) in parallel across `target_item`."""
+        vm_name = vm_item.component.name
+        t_name = target_item.component.name
+        working = graph
+        for vm_t, tgt_t in (("pos", term_for_pos), ("neg", term_for_neg)):
+            a = TerminalRef(vm_name, vm_t)
+            b = TerminalRef(t_name, tgt_t)
+            if self._find_duplicate_graph_wire(working, a, b) is None:
+                wid = self._next_unused_wire_id(working)
+                working = working.add_wire(a, b, wire_id=wid)
+        return working
 
     def _record_pin_to_pin_bonds_for(
         self,
@@ -2453,7 +2536,7 @@ class CircuitScene(QGraphicsScene):
         )
 
     def on_component_position_changed(self, item: ComponentItem) -> None:
-        """Re-route wires attached to moved components in real time during mouse drag."""
+        """Update visual wire polylines during mouse drag WITHOUT mutating `wire_graph` (G7)."""
         _ = item
         if self._suppress_live_reroute or not self._move_tracking_active:
             return
@@ -2463,15 +2546,30 @@ class CircuitScene(QGraphicsScene):
             if (comp.pos().x(), comp.pos().y()) != old_pos
         ]
         moved_names = {comp.component.name for comp, _o, _n in moved_items}
-        self._wire_graph = self._moved_graph_from_drag_start(moved_items)
-        frozen = {
-            w.id: self._move_start_wire_points[w.id]
-            for w in self._wire_graph.wires
-            if w.id in self._move_start_wire_points
-            and not (isinstance(w.end_a, TerminalRef) and w.end_a.component in moved_names)
-            and not (isinstance(w.end_b, TerminalRef) and w.end_b.component in moved_names)
-        }
-        self._sync_graphics_from_wire_graph(frozen_polylines=frozen)
+        preview_graph = self._moved_graph_from_drag_start(moved_items)
+        tmap = self._terminal_pos_map()
+        dmap = self._terminal_dir_map()
+        obs = self._component_obstacles_px()
+        for w in preview_graph.wires:
+            witem = self._wire_items_by_id.get(w.id)
+            if witem is None:
+                continue
+            attached_to_moved = (
+                (isinstance(w.end_a, TerminalRef) and w.end_a.component in moved_names)
+                or (isinstance(w.end_b, TerminalRef) and w.end_b.component in moved_names)
+            )
+            if not attached_to_moved and w.id in self._move_start_wire_points:
+                witem.set_points(self._move_start_wire_points[w.id])
+            else:
+                pts = self._compute_wire_points_from_graph(
+                    w,
+                    preview_graph,
+                    term_map=tmap,
+                    dir_map=dmap,
+                    obstacles=obs,
+                    fallback_points=witem.points or None,
+                )
+                witem.set_points(pts)
         self.refresh_connectivity_visuals()
 
     def commit_component_move_tracking(self) -> bool:
@@ -2526,11 +2624,43 @@ class CircuitScene(QGraphicsScene):
 
         target_graph = self._moved_graph_from_drag_start(moved_items)
         if len(moved_items) == 1:
-            target_graph = self._apply_component_split_on_drop(
-                moved_items[0][0],
-                target_graph,
-                pre_drop_polylines=pre_drop_polylines,
-            )
+            moved_item, old_xy, new_xy = moved_items[0]
+            if moved_item.component.component_type == "voltmeter":
+                vm_name = moved_item.component.name
+                has_wires = bool(
+                    target_graph.attached_wires(TerminalRef(vm_name, "pos"))
+                    or target_graph.attached_wires(TerminalRef(vm_name, "neg"))
+                )
+                candidates = [c for c in self._placed_items if c is not moved_item]
+                overlay_target = None
+                if not has_wires:
+                    overlay_target = self._find_overlaid_2terminal_target(
+                        moved_item, old_xy, candidates
+                    )
+                    if overlay_target is None:
+                        overlay_target = self._find_overlaid_2terminal_target(
+                            moved_item, new_xy, candidates
+                        )
+                if overlay_target is not None:
+                    target_graph = self._connect_voltmeter_parallel_with(
+                        moved_item,
+                        overlay_target[0],
+                        overlay_target[1],
+                        overlay_target[2],
+                        target_graph,
+                    )
+                else:
+                    target_graph = self._apply_component_split_on_drop(
+                        moved_item,
+                        target_graph,
+                        pre_drop_polylines=pre_drop_polylines,
+                    )
+            else:
+                target_graph = self._apply_component_split_on_drop(
+                    moved_item,
+                    target_graph,
+                    pre_drop_polylines=pre_drop_polylines,
+                )
         target_graph = self._auto_connect_graph_endpoints(target_graph)
         self._wire_graph = target_graph
         self._sync_graphics_from_wire_graph()

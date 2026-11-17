@@ -12,11 +12,12 @@ from PySide6.QtWidgets import QApplication
 from circuitsim.canvas.scene import CircuitScene
 from circuitsim.canvas.symbol_renderer import SymbolLibrary
 from circuitsim.canvas.view import CircuitView
-from circuitsim.engine import MNASolver
+from circuitsim.engine import MNASolver, SimulationSession
 from circuitsim.wiring.model import FreeEnd, JunctionRef, TerminalRef
 from circuitsim.wiring.router import route as wire_route
 from tests.ui_flow_helpers import (
     click_viewport,
+    drag_viewport,
     draw_wire_click_to_click,
     scene_to_viewport_point,
     terminal_scene_point,
@@ -235,5 +236,89 @@ def test_g6_straight_vertical_and_l_route_without_side_jogs(qapp) -> None:
         assert w.points == ((x_t, y_t), (x_t, y_t + 100))
         assert all(px == x_t for px, _py in w.points)
     finally:
+        scene.shutdown_scene()
+        qapp.processEvents()
+
+
+def test_g7_voltmeter_parallel_overlay_and_no_random_drag_connections(qapp) -> None:
+    """G7: Overlaid voltmeter auto-wires in parallel & survives 60px drag; passing parts/wires during drag never mutates WireGraph."""
+    scene = CircuitScene(SymbolLibrary())
+    view = CircuitView(scene)
+    view.resize(1000, 720)
+    view.show()
+    view.set_view_state(1.0, (0.0, 0.0))
+    qapp.processEvents()
+
+    try:
+        v1 = scene.place_new_component("dc_voltage", QPointF(-160.0, 0.0), rotation_deg=90)
+        r1 = scene.place_new_component("resistor", QPointF(-40.0, -40.0))
+        d1 = scene.place_new_component("led", QPointF(120.0, -40.0))
+        gnd = scene.place_new_component("ground", QPointF(-160.0, 120.0))
+        scene.edit_component_parameters(v1, {"dc_voltage": 12.0})
+        scene.edit_component_parameters(r1, {"resistance": 1000.0})
+
+        p_vp = terminal_scene_point(v1, "pos")
+        p_vn = terminal_scene_point(v1, "neg")
+        p_ra = terminal_scene_point(r1, "a")
+        p_rb = terminal_scene_point(r1, "b")
+        p_da = terminal_scene_point(d1, "anode")
+        p_dk = terminal_scene_point(d1, "cathode")
+        p_gnd = terminal_scene_point(gnd, "gnd")
+
+        scene.add_wire(TerminalRef("V1", "pos"), TerminalRef("R1", "a"))
+        scene.add_wire(TerminalRef("R1", "b"), TerminalRef("led1", "anode"))
+        scene.add_wire(TerminalRef("led1", "cathode"), TerminalRef("V1", "neg"))
+        scene.add_wire(TerminalRef("V1", "neg"), TerminalRef("GND1", "gnd"))
+        qapp.processEvents()
+
+        # (a) Place VM1 overlaid on led1, then drag VM1 60 px straight up and release
+        vm1 = scene.place_new_component("voltmeter", d1.pos(), rotation_deg=d1.rotation_deg)
+        qapp.processEvents()
+
+        # Drag VM1 straight up by 60 px using real QTest mouse events
+        vm_start_vp = scene_to_viewport_point(view, vm1.pos().x(), vm1.pos().y())
+        vm_end_vp = scene_to_viewport_point(view, vm1.pos().x(), vm1.pos().y() - 60.0)
+        drag_viewport(view, vm_start_vp, vm_end_vp, steps=8)
+
+        assert (vm1.pos().x(), vm1.pos().y()) == (d1.pos().x(), d1.pos().y() - 60.0)
+        vm_wires = [
+            w
+            for w in scene.wire_graph.wires
+            if (isinstance(w.end_a, TerminalRef) and w.end_a.component == "VM1")
+            or (isinstance(w.end_b, TerminalRef) and w.end_b.component == "VM1")
+        ]
+        assert len(vm_wires) == 2
+
+        conn = scene.extract_connectivity_result()
+        assert conn.component_nodes["VM1"]["pos"] == conn.component_nodes["led1"]["anode"]
+        assert conn.component_nodes["VM1"]["neg"] == conn.component_nodes["led1"]["cathode"]
+        frame = SimulationSession(connectivity=conn).start()
+        assert math.isclose(frame.components["VM1"].voltage, 2.0, abs_tol=0.15)
+
+        # (b) Drag VM2 and A1 directly across R1 and existing wires -> zero WireGraph mutation during move or empty drop
+        vm2 = scene.place_new_component("voltmeter", QPointF(-40.0, 120.0))
+        a1 = scene.place_new_component("ammeter", QPointF(80.0, 120.0))
+        qapp.processEvents()
+        graph_before = scene.wire_graph
+
+        for comp_item, target_empty_y in ((vm2, -140.0), (a1, -140.0)):
+            cx = comp_item.pos().x()
+            p0 = scene_to_viewport_point(view, cx, comp_item.pos().y())
+            p_mid = scene_to_viewport_point(view, cx, -40.0)  # right over R1 / wires
+            p_end = scene_to_viewport_point(view, cx, target_empty_y)
+            QTest.mousePress(view.viewport(), Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier, p0)
+            qapp.processEvents()
+            assert scene.wire_graph == graph_before
+            QTest.mouseMove(view.viewport(), p_mid)
+            qapp.processEvents()
+            assert scene.wire_graph == graph_before
+            QTest.mouseMove(view.viewport(), p_end)
+            qapp.processEvents()
+            assert scene.wire_graph == graph_before
+            QTest.mouseRelease(view.viewport(), Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier, p_end)
+            qapp.processEvents()
+            assert scene.wire_graph == graph_before
+    finally:
+        view.close()
         scene.shutdown_scene()
         qapp.processEvents()
