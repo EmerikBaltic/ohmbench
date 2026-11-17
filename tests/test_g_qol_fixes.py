@@ -9,9 +9,12 @@ from PySide6.QtGui import QKeyEvent, QWheelEvent
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication
 
+from circuitsim.app.main_window import MainWindow
+from circuitsim.app.settings import DEFAULT_SHORTCUTS, AppSettings
 from circuitsim.canvas.scene import CircuitScene
 from circuitsim.canvas.symbol_renderer import SymbolLibrary
 from circuitsim.canvas.view import CircuitView
+from circuitsim.dialogs.preferences_dialog import PreferencesDialog, ShortcutsDialog
 from circuitsim.engine import MNASolver, SimulationSession
 from circuitsim.wiring.model import FreeEnd, JunctionRef, TerminalRef
 from circuitsim.wiring.router import route as wire_route
@@ -19,6 +22,7 @@ from tests.ui_flow_helpers import (
     click_viewport,
     drag_viewport,
     draw_wire_click_to_click,
+    press_key,
     scene_to_viewport_point,
     terminal_scene_point,
 )
@@ -321,4 +325,97 @@ def test_g7_voltmeter_parallel_overlay_and_no_random_drag_connections(qapp) -> N
     finally:
         view.close()
         scene.shutdown_scene()
+        qapp.processEvents()
+
+
+def test_g8_programmable_shortcuts_tab_duplicate_resolution_and_dispatch(tmp_path, qapp) -> None:
+    """G8: AppSettings.shortcuts, Preferences/ShortcutsDialog rebinding, duplicate resolution, and reset to defaults."""
+    data_dir = tmp_path / "g8_settings"
+    settings = AppSettings(data_dir=data_dir)
+    for required_key in (
+        "rotate",
+        "flip",
+        "wire_mode",
+        "junction",
+        "delete",
+        "place_resistor",
+        "place_capacitor",
+        "place_inductor",
+        "place_diode",
+        "place_dc_voltage",
+        "place_ground",
+        "place_voltmeter",
+        "place_ammeter",
+    ):
+        assert required_key in settings.shortcuts
+
+    win = MainWindow(settings=settings)
+    win.resize(1000, 720)
+    win.show()
+    qapp.processEvents()
+    view = win.circuit_view
+    scene = win.circuit_scene
+    view.set_view_state(1.0, (0.0, 0.0))
+
+    try:
+        # PreferencesDialog includes General + Shortcuts tabs
+        pref_dlg = PreferencesDialog(settings, win)
+        assert pref_dlg.tabs.count() >= 2
+        assert pref_dlg.tabs.tabText(1) == "Shortcuts"
+        pref_dlg.close()
+
+        # Test duplicate conflict resolution inside ShortcutsDialog
+        sc_dlg = ShortcutsDialog(settings, win)
+        sc_dlg.editor.set_binding("rotate", "F")  # conflicts with default flip='F'
+        assert sc_dlg.editor.get_bindings()["flip"] == ""  # auto-cleared duplicate
+        assert "Reassigned" in sc_dlg.editor.conflict_label.text()
+
+        # Rebind rotate -> 'Q', flip -> 'X', place_resistor -> 'T' and save
+        sc_dlg.editor.set_binding("rotate", "Q")
+        sc_dlg.editor.set_binding("flip", "X")
+        sc_dlg.editor.set_binding("place_resistor", "T")
+        sc_dlg._on_accept()
+        sc_dlg.close()
+        qapp.processEvents()
+
+        assert settings.shortcuts["rotate"] == "Q"
+        assert settings.shortcuts["flip"] == "X"
+        assert settings.shortcuts["place_resistor"] == "T"
+        # Persistence check via fresh AppSettings instance
+        assert AppSettings(data_dir=data_dir).shortcuts["rotate"] == "Q"
+
+        # Old 'R' no longer enters resistor placement; new 'T' enters resistor placement
+        press_key(view.viewport(), Qt.Key.Key_R)
+        assert view.placing_component_type is None
+
+        press_key(view.viewport(), Qt.Key.Key_T)
+        assert view.placing_component_type == "resistor"
+        click_viewport(view, scene_to_viewport_point(view, 0.0, 0.0))
+        press_key(view.viewport(), Qt.Key.Key_Escape)
+        assert len(scene.placed_items) == 1
+        r1 = scene.placed_items[0]
+
+        # Trigger rebound rotate ('Q') and flip ('X') in CircuitView
+        scene.clearSelection()
+        r1.setSelected(True)
+        press_key(view.viewport(), Qt.Key.Key_Q)
+        assert r1.rotation_deg == 90
+        press_key(view.viewport(), Qt.Key.Key_X)
+        assert r1.flipped_h is True
+
+        # Reset to Defaults via UI dialog button
+        sc_dlg2 = ShortcutsDialog(settings, win)
+        sc_dlg2.editor.btn_reset_defaults.click()
+        sc_dlg2._on_accept()
+        sc_dlg2.close()
+        qapp.processEvents()
+        assert settings.shortcuts == DEFAULT_SHORTCUTS
+
+        # Default 'R' works again
+        press_key(view.viewport(), Qt.Key.Key_R)
+        assert view.placing_component_type == "resistor"
+        press_key(view.viewport(), Qt.Key.Key_Escape)
+    finally:
+        win._is_closing = True
+        win.close()
         qapp.processEvents()

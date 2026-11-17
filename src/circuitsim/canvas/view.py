@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from PySide6.QtCore import QEvent, QPoint, QPointF, QRectF, Qt, Signal
+from PySide6.QtCore import QEvent, QKeyCombination, QPoint, QPointF, QRectF, Qt, Signal
 from PySide6.QtGui import (
     QAction,
     QContextMenuEvent,
@@ -19,6 +19,7 @@ from PySide6.QtGui import (
 )
 from PySide6.QtWidgets import QGraphicsView, QMenu, QToolTip
 
+from circuitsim.app.settings import DEFAULT_SHORTCUTS, AppSettings
 from circuitsim.canvas.component_item import ComponentItem
 from circuitsim.canvas.scene import CircuitScene
 from circuitsim.canvas.symbol_geometry import GRID_PITCH_PX, snap_to_grid
@@ -49,10 +50,24 @@ class CircuitView(QGraphicsView):
         Qt.Key.Key_I: "dc_current",
         Qt.Key.Key_G: "ground",
     }
+    _PLACEMENT_ACTION_MAP: dict[str, str] = {
+        "place_resistor": "resistor",
+        "place_capacitor": "capacitor",
+        "place_inductor": "inductor",
+        "place_diode": "led",
+        "place_dc_voltage": "dc_voltage",
+        "place_dc_current": "dc_current",
+        "place_ground": "ground",
+        "place_voltmeter": "voltmeter",
+        "place_ammeter": "ammeter",
+    }
 
-    def __init__(self, circuit_scene: CircuitScene) -> None:
+    def __init__(
+        self, circuit_scene: CircuitScene, settings: AppSettings | None = None
+    ) -> None:
         super().__init__(circuit_scene)
         self.circuit_scene: CircuitScene = circuit_scene
+        self._settings: AppSettings | None = settings
         self._zoom_factor: float = 1.0
         self._is_panning: bool = False
         self._space_held: bool = False
@@ -725,6 +740,43 @@ class CircuitView(QGraphicsView):
         menu.exec(event.globalPos())
         event.accept()
 
+    def set_settings(self, settings: AppSettings | None) -> None:
+        self._settings = settings
+
+    def _active_shortcuts(self) -> dict[str, str]:
+        settings = self._settings or getattr(self.circuit_scene, "settings", None)
+        if settings is not None and hasattr(settings, "shortcuts"):
+            return dict(settings.shortcuts)
+        return dict(DEFAULT_SHORTCUTS)
+
+    @staticmethod
+    def _event_matches_shortcut(event: QKeyEvent, seq_str: str) -> bool:
+        clean = seq_str.strip()
+        if not clean:
+            return False
+        key_val = event.key()
+        if key_val in (
+            int(Qt.Key.Key_Control),
+            int(Qt.Key.Key_Shift),
+            int(Qt.Key.Key_Alt),
+            int(Qt.Key.Key_Meta),
+        ):
+            return False
+        relevant_mods = event.modifiers() & (
+            Qt.KeyboardModifier.ControlModifier
+            | Qt.KeyboardModifier.AltModifier
+            | Qt.KeyboardModifier.ShiftModifier
+            | Qt.KeyboardModifier.MetaModifier
+        )
+        combo = QKeyCombination(relevant_mods, Qt.Key(key_val))
+        pressed = QKeySequence(combo).toString(
+            QKeySequence.SequenceFormat.PortableText
+        ).strip().lower()
+        target = QKeySequence(clean).toString(
+            QKeySequence.SequenceFormat.PortableText
+        ).strip().lower()
+        return bool(target) and pressed == target
+
     def keyPressEvent(self, event: QKeyEvent) -> None:
         if event.isAutoRepeat():
             event.accept()
@@ -755,32 +807,6 @@ class CircuitView(QGraphicsView):
             self._update_cursor_for_scene_pos(self._last_scene_pos)
             event.accept()
             return
-        if (
-            event.key() == Qt.Key.Key_R
-            and event.modifiers() == Qt.KeyboardModifier.ControlModifier
-        ):
-            if not self.rotate_placement_preview():
-                self.circuit_scene.rotate_selected()
-            event.accept()
-            return
-        if not event.modifiers():
-            comp_id = self._PLACEMENT_HOTKEYS.get(Qt.Key(event.key()))
-            if comp_id is not None:
-                self.start_component_placement(comp_id)
-                event.accept()
-                return
-        if event.key() == Qt.Key.Key_F and not event.modifiers():
-            self.circuit_scene.flip_selected()
-            event.accept()
-            return
-        if event.key() == Qt.Key.Key_J and not event.modifiers():
-            self.circuit_scene.toggle_junction_at(self._last_scene_pos)
-            event.accept()
-            return
-        if event.key() == Qt.Key.Key_W and not event.modifiers():
-            self.set_wire_mode(not self._wire_mode_enabled)
-            event.accept()
-            return
         if event.key() == Qt.Key.Key_Backspace and self.circuit_scene.is_drawing_wire:
             self.circuit_scene.pop_wire_preview_waypoint(self._last_scene_pos)
             self._update_cursor_for_scene_pos(self._last_scene_pos)
@@ -794,7 +820,38 @@ class CircuitView(QGraphicsView):
             self.circuit_scene.select_all()
             event.accept()
             return
-        if event.key() in (Qt.Key.Key_Delete, Qt.Key.Key_Backspace):
+
+        shortcuts = self._active_shortcuts()
+        if self._event_matches_shortcut(event, shortcuts.get("rotate", DEFAULT_SHORTCUTS["rotate"])):
+            if not self.rotate_placement_preview():
+                self.circuit_scene.rotate_selected()
+            event.accept()
+            return
+        if self._event_matches_shortcut(event, shortcuts.get("flip", DEFAULT_SHORTCUTS["flip"])):
+            self.circuit_scene.flip_selected()
+            event.accept()
+            return
+        if self._event_matches_shortcut(event, shortcuts.get("junction", DEFAULT_SHORTCUTS["junction"])):
+            self.circuit_scene.toggle_junction_at(self._last_scene_pos)
+            event.accept()
+            return
+        if self._event_matches_shortcut(event, shortcuts.get("wire_mode", DEFAULT_SHORTCUTS["wire_mode"])):
+            self.set_wire_mode(not self._wire_mode_enabled)
+            event.accept()
+            return
+        for action_id, comp_id in self._PLACEMENT_ACTION_MAP.items():
+            if self._event_matches_shortcut(
+                event, shortcuts.get(action_id, DEFAULT_SHORTCUTS[action_id])
+            ):
+                self.start_component_placement(comp_id)
+                event.accept()
+                return
+        del_seq = shortcuts.get("delete", DEFAULT_SHORTCUTS["delete"])
+        if self._event_matches_shortcut(event, del_seq) or (
+            event.key() == Qt.Key.Key_Backspace
+            and not event.modifiers()
+            and "backspace" not in {v.strip().lower() for v in shortcuts.values()}
+        ):
             self.circuit_scene.delete_selected(detach_unselected_wires=True)
             event.accept()
             return

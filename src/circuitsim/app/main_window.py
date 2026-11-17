@@ -51,7 +51,7 @@ from circuitsim.canvas.scene import CircuitScene
 from circuitsim.canvas.symbol_renderer import SymbolLibrary
 from circuitsim.canvas.view import CircuitView
 from circuitsim.components.lightbulb import Lightbulb
-from circuitsim.dialogs.preferences_dialog import PreferencesDialog
+from circuitsim.dialogs.preferences_dialog import PreferencesDialog, ShortcutsDialog
 from circuitsim.dialogs.value_parser import (
     format_engineering_value,
     set_global_number_format,
@@ -161,7 +161,7 @@ class MainWindow(QMainWindow):
         self.circuit_scene = CircuitScene(
             self.symbol_library, theme=self.theme, settings=self.settings, parent=self
         )
-        self.circuit_view = CircuitView(self.circuit_scene)
+        self.circuit_view = CircuitView(self.circuit_scene, settings=self.settings)
         self.setCentralWidget(self.circuit_view)
 
         self.sim_controller = SimulationWorkerController(self)
@@ -178,6 +178,8 @@ class MainWindow(QMainWindow):
         self._build_docks()
         self._build_status_bar()
         self._connect_signals()
+        self.settings.register_shortcuts_listener(self.apply_shortcuts)
+        self.apply_shortcuts()
         self.circuit_scene.undo_stack.cleanChanged.connect(self._on_undo_clean_changed)
         self.apply_theme(self.theme)
         self._update_window_title()
@@ -346,9 +348,14 @@ class MainWindow(QMainWindow):
 
         edit_menu.addSeparator()
         self.act_preferences = QAction("&Preferences...", self)
-        self.act_preferences.setToolTip("Application preferences (number format, etc.)")
+        self.act_preferences.setToolTip("Application preferences (number format, shortcuts, etc.)")
         self.act_preferences.triggered.connect(self._open_preferences_dialog)
         edit_menu.addAction(self.act_preferences)
+
+        self.act_shortcuts = QAction("&Shortcuts...", self)
+        self.act_shortcuts.setToolTip("Configure keyboard shortcuts")
+        self.act_shortcuts.triggered.connect(self._open_shortcuts_dialog)
+        edit_menu.addAction(self.act_shortcuts)
 
         # View menu
         self.view_menu = menu_bar.addMenu("&View")
@@ -923,14 +930,60 @@ class MainWindow(QMainWindow):
         )
         QMessageBox.about(self, f"About {APP_NAME}", text)
 
+    def apply_shortcuts(self) -> None:
+        """Apply configurable shortcuts from `self.settings.shortcuts` to window actions."""
+        sc = self.settings.shortcuts
+        rot_seq = sc.get("rotate", "Ctrl+R")
+        self.act_rotate.setShortcut(QKeySequence(rot_seq) if rot_seq else QKeySequence())
+        self.act_rotate.setToolTip(
+            f"Rotate selected component(s) 90° clockwise (Shortcut: {rot_seq or 'None'})"
+        )
+        flip_seq = sc.get("flip", "F")
+        self.act_flip.setToolTip(
+            f"Flip selected component(s) horizontally (Shortcut: {flip_seq or 'None'})"
+        )
+        wire_seq = sc.get("wire_mode", "W")
+        self.act_wire_mode.setToolTip(
+            f"Toggle Wire Drawing mode (Shortcut: {wire_seq or 'None'})."
+        )
+        junc_seq = sc.get("junction", "J")
+        self.act_junction.setToolTip(
+            f"Place or remove an explicit junction dot (Shortcut: {junc_seq or 'None'})"
+        )
+        del_seq = sc.get("delete", "Del")
+        self.act_delete.setShortcut(QKeySequence(del_seq) if del_seq else QKeySequence())
+        place_action_keys = {
+            "resistor": "place_resistor",
+            "capacitor": "place_capacitor",
+            "inductor": "place_inductor",
+            "led": "place_diode",
+            "dc_voltage": "place_dc_voltage",
+            "dc_current": "place_dc_current",
+            "ground": "place_ground",
+        }
+        for cid, act_key in place_action_keys.items():
+            act = self.place_actions.get(cid)
+            if act is not None:
+                key_hint = sc.get(act_key, "")
+                act.setIconText(key_hint or cid[0].upper())
+                act.setToolTip(f"Place {cid} (Canvas key: {key_hint or 'None'})")
+
     def _open_preferences_dialog(self) -> None:
         dlg = PreferencesDialog(self.settings, self)
         if dlg.exec() == PreferencesDialog.DialogCode.Accepted:
+            self.apply_shortcuts()
             self.circuit_scene.update()
             self.statusBar().showMessage(
                 f"Preferences saved (number format: {self.settings.get_number_format()})",
                 3000,
             )
+
+    def _open_shortcuts_dialog(self) -> None:
+        dlg = ShortcutsDialog(self.settings, self)
+        if dlg.exec() == ShortcutsDialog.DialogCode.Accepted:
+            self.apply_shortcuts()
+            self.circuit_scene.update()
+            self.statusBar().showMessage("Keyboard shortcuts updated", 3000)
 
     def _update_recent_files_menu(self) -> None:
         self.recent_menu.clear()
@@ -1362,6 +1415,7 @@ class MainWindow(QMainWindow):
             pass
 
         # 3. Stop the simulation worker thread and wait for it
+        self.settings.unregister_shortcuts_listener(self.apply_shortcuts)
         self.sim_controller.shutdown()
 
         # 4. Disconnect handlers from the scene, undo stack, and worker before destruction

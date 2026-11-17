@@ -16,6 +16,40 @@ MAX_RECENT_FILES: int = 8
 SETTINGS_FILENAME: str = "settings.json"
 MIGRATABLE_USER_FILES: tuple[str, ...] = ("settings.json", "crash.log", "recent_files.json")
 
+DEFAULT_SHORTCUTS: dict[str, str] = {
+    "rotate": "Ctrl+R",
+    "flip": "F",
+    "wire_mode": "W",
+    "junction": "J",
+    "delete": "Del",
+    "place_resistor": "R",
+    "place_capacitor": "C",
+    "place_inductor": "L",
+    "place_diode": "D",
+    "place_dc_voltage": "V",
+    "place_dc_current": "I",
+    "place_ground": "G",
+    "place_voltmeter": "U",
+    "place_ammeter": "A",
+}
+
+SHORTCUT_LABELS: dict[str, str] = {
+    "rotate": "Rotate 90° CW",
+    "flip": "Flip Horizontal",
+    "wire_mode": "Toggle Wire Mode",
+    "junction": "Toggle Junction Dot",
+    "delete": "Delete Selected",
+    "place_resistor": "Place Resistor",
+    "place_capacitor": "Place Capacitor",
+    "place_inductor": "Place Inductor",
+    "place_diode": "Place Diode / LED",
+    "place_dc_voltage": "Place DC Voltage Source",
+    "place_dc_current": "Place DC Current Source",
+    "place_ground": "Place Ground",
+    "place_voltmeter": "Place Voltmeter",
+    "place_ammeter": "Place Ammeter",
+}
+
 
 def get_default_data_dir() -> Path:
     """Return default user application data directory for Ohmbench."""
@@ -138,7 +172,9 @@ class AppSettings:
         self._data: dict[str, Any] = {
             "recent_files": [],
             "number_format": "auto",  # auto, dot, comma
+            "shortcuts": dict(DEFAULT_SHORTCUTS),
         }
+        self._shortcut_listeners: list[Any] = []
         self.load()
 
     def load(self) -> None:
@@ -149,7 +185,14 @@ class AppSettings:
             with open(self.file_path, "r", encoding="utf-8") as f:
                 loaded = json.load(f)
             if isinstance(loaded, dict):
+                raw_shortcuts = loaded.pop("shortcuts", None)
                 self._data.update(loaded)
+                merged_sc = dict(DEFAULT_SHORTCUTS)
+                if isinstance(raw_shortcuts, dict):
+                    for k, v in raw_shortcuts.items():
+                        if k in merged_sc:
+                            merged_sc[str(k)] = str(v)
+                self._data["shortcuts"] = merged_sc
         except Exception:
             # If damaged or unreadable, ignore and keep defaults
             pass
@@ -225,3 +268,60 @@ class AppSettings:
             )
         self._data["new_meters_mode"] = mode_clean
         self.save()
+
+    # -------------------------------------------------------------
+    # Programmable keyboard shortcuts (G8)
+    # -------------------------------------------------------------
+    @property
+    def shortcuts(self) -> dict[str, str]:
+        """Return live mapping of action_id -> shortcut string."""
+        raw = self._data.get("shortcuts")
+        if not isinstance(raw, dict):
+            raw = dict(DEFAULT_SHORTCUTS)
+            self._data["shortcuts"] = raw
+        for k, v in DEFAULT_SHORTCUTS.items():
+            raw.setdefault(k, v)
+        return raw
+
+    @shortcuts.setter
+    def shortcuts(self, mapping: dict[str, str]) -> None:
+        self.set_shortcuts(mapping)
+
+    def register_shortcuts_listener(self, cb: Any) -> None:
+        if cb not in self._shortcut_listeners:
+            self._shortcut_listeners.append(cb)
+
+    def unregister_shortcuts_listener(self, cb: Any) -> None:
+        if cb in self._shortcut_listeners:
+            self._shortcut_listeners.remove(cb)
+
+    def _notify_shortcut_listeners(self) -> None:
+        for cb in list(self._shortcut_listeners):
+            try:
+                cb()
+            except Exception:
+                pass
+
+    def get_shortcut(self, action_id: str) -> str:
+        return str(self.shortcuts.get(action_id, DEFAULT_SHORTCUTS.get(action_id, "")))
+
+    def set_shortcut(self, action_id: str, sequence: str) -> None:
+        merged = dict(self.shortcuts)
+        merged[str(action_id)] = str(sequence).strip()
+        self._data["shortcuts"] = merged
+        self.save()
+        self._notify_shortcut_listeners()
+
+    def set_shortcuts(self, mapping: dict[str, str]) -> None:
+        merged = dict(DEFAULT_SHORTCUTS)
+        for k, v in mapping.items():
+            merged[str(k)] = str(v).strip()
+        self._data["shortcuts"] = merged
+        self.save()
+        self._notify_shortcut_listeners()
+
+    def reset_shortcuts(self) -> dict[str, str]:
+        self._data["shortcuts"] = dict(DEFAULT_SHORTCUTS)
+        self.save()
+        self._notify_shortcut_listeners()
+        return dict(self._data["shortcuts"])

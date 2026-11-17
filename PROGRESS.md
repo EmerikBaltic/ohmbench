@@ -66,7 +66,7 @@ Run these manual checks in the live desktop window (`.\.venv\Scripts\python.exe 
 - [x] `G5` (`done`): Added `AUTO_CONNECT_TOLERANCE_PX = 12.5` and `_auto_connect_graph_endpoints` / `_auto_connect_touching_endpoints` in `CircuitScene` across wire finish/add, component place/move, and endpoint drag; updated `is_snap_target_at` to finish clicks onto wire interiors/FreeEnds; removed `E2` `xfail` (`test_g_qol_fixes.py: 3 passed`, `test_e2: 1 passed`).
 - [x] `G6` (`done`): Updated `circuitsim.wiring.router.route()` 0-bend straight orthogonal path to route perpendicular aligned wires straight without 1-unit side jogs while preserving obstacle avoidance and opposed-terminal loops (`tests/test_g_qol_fixes.py: 4 passed`).
 - [x] `G7` (`done`): Kept `scene.wire_graph` immutable during `mouseMoveEvent` drag previews (`on_component_position_changed`), added `_find_overlaid_2terminal_target` and `_connect_voltmeter_parallel_with` for overlaid `voltmeter` auto-wiring on placement and release (`tests/test_g_qol_fixes.py: 5 passed`).
-- [ ] `G8` (`todo`): Programmable Shortcuts tab in Settings (`AppSettings.shortcuts` + UI editor/dialog + duplicate resolution + reset to defaults).
+- [x] `G8` (`done`): Added `AppSettings.shortcuts` (`DEFAULT_SHORTCUTS` for rotate/flip/wire_mode/junction/delete and all component placements), `PreferencesDialog` **"Shortcuts"** tab + standalone `ShortcutsDialog` with duplicate conflict resolution & Reset to Defaults, and live dispatch in `CircuitView` / `MainWindow` (`tests/test_g_qol_fixes.py: 6 passed`).
 - [ ] `GATE G` (`todo`): Verify `tests/test_g_qol_fixes.py`, `tests/test_f2_interactive_controls.py`, and full `pytest -q`; tag `checkpoint/G-done`.
 
 ## FLASH QUEUE
