@@ -653,12 +653,14 @@ class CircuitScene(QGraphicsScene):
         rotation_deg: int = 0,
     ) -> QRectF:
         meta = self.symbol_library.get_metadata(component_id)
-        w_px, h_px = meta.pixel_size
+        raw_w, raw_h = meta.pixel_size
+        # Inset terminal lead extensions (>= 80 px axis) so touching pins at corners do not collide
+        inset_x = 22.0 if raw_w >= 80 else 2.0
+        inset_y = 22.0 if raw_h >= 80 else 2.0
+        rw = max(12.0, float(raw_w) - 2.0 * inset_x)
+        rh = max(12.0, float(raw_h) - 2.0 * inset_y)
         if rotation_deg in (90, 270):
-            w_px, h_px = h_px, w_px
-        margin = 2.0
-        rw = max(4.0, float(w_px) - 2.0 * margin)
-        rh = max(4.0, float(h_px) - 2.0 * margin)
+            rw, rh = rh, rw
         return QRectF(float(cx) - rw / 2.0, float(cy) - rh / 2.0, rw, rh)
 
     def _overlaps_any_component_body(
@@ -2057,6 +2059,8 @@ class CircuitScene(QGraphicsScene):
                     for w_other in working.wires:
                         if w_other.id == w.id:
                             continue
+                        if other_att in (w_other.end_a, w_other.end_b):
+                            continue
                         pts_other = (
                             self._wire_polyline_in_graph(w_other, working, term_map)
                             if not extra_items
@@ -2227,15 +2231,15 @@ class CircuitScene(QGraphicsScene):
         if len(points) < 2:
             return None
 
-        # Snap endpoints to nearest terminal if within auto-connect snap radius
+        # Snap endpoints to nearest terminal if within snap radius (half a grid cell = 10 px)
         raw_pts = [normalize_point_px(p, snap=False) for p in points]
         term_start = self.find_terminal_near(
-            raw_pts[0], tolerance_px=self.AUTO_CONNECT_TOLERANCE_PX
+            raw_pts[0], tolerance_px=self.TERMINAL_SNAP_RADIUS_PX
         )
         if term_start is not None:
             raw_pts[0] = term_start[2]
         term_end = self.find_terminal_near(
-            raw_pts[-1], tolerance_px=self.AUTO_CONNECT_TOLERANCE_PX
+            raw_pts[-1], tolerance_px=self.TERMINAL_SNAP_RADIUS_PX
         )
         if term_end is not None:
             raw_pts[-1] = term_end[2]
@@ -2306,27 +2310,15 @@ class CircuitScene(QGraphicsScene):
             )
         except WireGraphError:
             return None
-        new_graph = self._auto_connect_graph_endpoints(new_graph)
-        if not new_graph.has_wire(wid):
-            if new_graph != self._wire_graph:
-                self.undo_stack.push(
-                    SetWireGraphCommand(
-                        self,
-                        self._wire_graph,
-                        new_graph,
-                        description="Auto-connect Wire",
-                    )
-                )
-            return None
-        w_obj = new_graph.wire(wid)
-        pts = self._compute_wire_points_from_graph(w_obj, new_graph)
+
+        pts = self._compute_wire_points_from_graph(new_graph.wire(wid), new_graph)
         wire = WireItem(
             wid,
             pts,
             theme=self.theme,
-            end_a=w_obj.end_a,
-            end_b=w_obj.end_b,
-            hints=w_obj.hints,
+            end_a=att_a,
+            end_b=att_b,
+            hints=norm_hints,
         )
         self.undo_stack.push(
             AddWireCommand(
@@ -2610,7 +2602,7 @@ class CircuitScene(QGraphicsScene):
                     cur_x,
                     cur_y,
                     item.rotation_deg,
-                    exclude=excl_moved - {item},
+                    exclude=excl_moved,
                 )
                 if (free_x, free_y) != (cur_x, cur_y):
                     item.setPos(free_x, free_y)

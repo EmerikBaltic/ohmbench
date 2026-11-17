@@ -95,7 +95,7 @@ class CircuitView(QGraphicsView):
         self.setTransformationAnchor(
             QGraphicsView.ViewportAnchor.AnchorViewCenter
         )
-        self.setResizeAnchor(QGraphicsView.ViewportAnchor.AnchorViewCenter)
+        self.setResizeAnchor(QGraphicsView.ViewportAnchor.NoAnchor)
         self.centerOn(0.0, 0.0)
 
     @property

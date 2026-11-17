@@ -387,7 +387,8 @@ def route(
             )
             backtracks_start = s_dir is not None and step_dir == (-s_dir[0], -s_dir[1])
             backtracks_end = e_dir is not None and step_dir == e_dir
-            if not backtracks_start and not backtracks_end:
+            same_facing_pins = s_dir is not None and e_dir is not None and s_dir == e_dir
+            if not backtracks_start and not backtracks_end and not same_facing_pins:
                 return cand
 
     # --- 1-bend (L-shape) ---

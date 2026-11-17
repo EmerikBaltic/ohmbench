@@ -918,12 +918,13 @@ def test_phase5_4_wire_endpoint_editing_acceptance_s3_and_snap_orientations(
         view.contextMenuEvent(ctx)
         assert ctx.isAccepted() is True
 
-        # 4d. Dropping FreeEnd on interior of another wire emits junctions-next-update notice.
+        # 4d. Dropping FreeEnd on interior of another wire auto-splits into a junction (updated in G5).
         assert w_top is not None and len(w_top.points) >= 2
         top_mid = (
             (w_top.points[0][0] + w_top.points[1][0]) // 2,
             (w_top.points[0][1] + w_top.points[1][1]) // 2,
         )
+        junc_before_4d = len(scene.wire_graph.junctions)
         QTest.mousePress(
             vp, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier, _vpos(win, -280, 420)
         )
@@ -931,7 +932,8 @@ def test_phase5_4_wire_endpoint_editing_acceptance_s3_and_snap_orientations(
         QTest.mouseRelease(
             vp, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier, _vpos(win, *top_mid)
         )
-        assert "junctions come in the next update" in scene.last_status_notice.lower()
+        assert isinstance(scene.wire_graph.wire(w_probe.wire_id).end_b, JunctionRef)
+        assert len(scene.wire_graph.junctions) == junc_before_4d + 1
     finally:
         win.circuit_scene.undo_stack.setClean()
         win.close()
