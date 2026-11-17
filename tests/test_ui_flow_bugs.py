@@ -697,3 +697,42 @@ def test_e6_no_qfont_pointsize_warning_on_startup(tmp_path, qapp) -> None:
 
     bad = [m for m in captured if "setPointSize" in m or "Point size <= 0" in m]
     assert not bad, f"Unexpected QFont pointSize warning(s) at startup: {bad}"
+
+
+def test_gate_e_startup_divider_smoke(tmp_path, qapp) -> None:
+    """Gate E smoke: launch offscreen app, wire 10V / 1k / 2k divider via real clicks, simulate -> 6.667 V."""
+    win, view, scene = create_window_and_view(tmp_path, zoom=1.0)
+    try:
+        v1 = scene.place_new_component("dc_voltage", QPointF(-160.0, 0.0), rotation_deg=90)
+        r1 = scene.place_new_component("resistor", QPointF(0.0, -40.0))
+        r2 = scene.place_new_component("resistor", QPointF(160.0, 0.0), rotation_deg=90)
+        gnd = scene.place_new_component("ground", QPointF(-160.0, 120.0))
+        scene.edit_component_parameters(v1, {"dc_voltage": 10.0})
+        scene.edit_component_parameters(r1, {"resistance": 1000.0})
+        scene.edit_component_parameters(r2, {"resistance": 2000.0})
+        qapp.processEvents()
+
+        p_vp = terminal_scene_point(v1, "pos")
+        p_vn = terminal_scene_point(v1, "neg")
+        p_r1a = terminal_scene_point(r1, "a")
+        p_r1b = terminal_scene_point(r1, "b")
+        p_r2a = terminal_scene_point(r2, "a")
+        p_r2b = terminal_scene_point(r2, "b")
+        p_gnd = terminal_scene_point(gnd, "gnd")
+
+        win.act_wire_mode.trigger()
+        draw_wire_click_to_click(view, p_vp, p_r1a)
+        draw_wire_click_to_click(view, p_r1b, p_r2a)
+        draw_wire_click_to_click(view, p_r2b, p_vn)
+        draw_wire_click_to_click(view, p_vn, p_gnd)
+        press_key(view.viewport(), Qt.Key.Key_Escape)
+        assert win.act_wire_mode.isChecked() is False
+
+        conn = scene.extract_connectivity_result()
+        frame = SimulationSession(connectivity=conn).start()
+        v_r2 = abs(frame.components["R2"].voltage)
+        # Hand calc: V_mid = 10.0 * 2000 / (1000 + 2000) = 6.666667 V
+        assert math.isclose(v_r2, 10.0 * 2000.0 / 3000.0, rel_tol=1e-5)
+    finally:
+        scene.undo_stack.setClean()
+        win.close()
