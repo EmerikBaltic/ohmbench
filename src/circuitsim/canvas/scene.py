@@ -172,6 +172,7 @@ class CircuitScene(QGraphicsScene):
         self._suppress_selection_info: bool = False
         self._move_start_positions: dict[ComponentItem, tuple[float, float]] = {}
         self._move_start_graph: WireGraph = self._wire_graph
+        self._move_start_wire_points: dict[str, tuple[PointPx, ...]] = {}
 
         # Internal clipboard for Copy / Cut / Paste
         self._clipboard: _ClipboardData | None = None
@@ -280,9 +281,13 @@ class CircuitScene(QGraphicsScene):
                 )
         return mapping
 
-    def _component_obstacles_px(self) -> tuple[tuple[int, int, int, int], ...]:
+    def _component_obstacles_px(
+        self, *, exclude_names: set[str] | frozenset[str] = frozenset()
+    ) -> tuple[tuple[int, int, int, int], ...]:
         rects: list[tuple[int, int, int, int]] = []
         for item in self._placed_items:
+            if item.component.name in exclude_names:
+                continue
             r = item.scene_body_rect()
             rects.append(
                 (
@@ -408,12 +413,14 @@ class CircuitScene(QGraphicsScene):
         *,
         preferred_wire_items: dict[str, WireItem] | None = None,
         select_wire_ids: set[str] | None = None,
+        frozen_polylines: dict[str, tuple[PointPx, ...]] | None = None,
     ) -> None:
         graph = self._wire_graph
         term_map = self._terminal_pos_map()
         dir_map = self._terminal_dir_map()
         obstacles = self._component_obstacles_px()
         pref = preferred_wire_items or {}
+        frozen = frozen_polylines or {}
         want_ids = {w.id for w in graph.wires}
 
         # Remove graphics items whose wires are no longer in the graph.
@@ -431,14 +438,17 @@ class CircuitScene(QGraphicsScene):
                 max_w_num = max(max_w_num, int(wire.id[1:]))
             existing = self._wire_items_by_id.get(wire.id) or pref.get(wire.id)
             fallback = existing.points if existing is not None else None
-            pts = self._compute_wire_points_from_graph(
-                wire,
-                graph,
-                term_map=term_map,
-                dir_map=dir_map,
-                obstacles=obstacles,
-                fallback_points=fallback,
-            )
+            if wire.id in frozen and len(frozen[wire.id]) >= 2:
+                pts = frozen[wire.id]
+            else:
+                pts = self._compute_wire_points_from_graph(
+                    wire,
+                    graph,
+                    term_map=term_map,
+                    dir_map=dir_map,
+                    obstacles=obstacles,
+                    fallback_points=fallback,
+                )
             if existing is not None:
                 existing.end_a = wire.end_a
                 existing.end_b = wire.end_b
@@ -1683,8 +1693,31 @@ class CircuitScene(QGraphicsScene):
                 break
         return count
 
+    def _drop_candidate_wire_polyline(
+        self,
+        wire: Wire,
+        graph: WireGraph,
+        term_map: dict[tuple[str, str], PointPx],
+        obstacles: tuple[tuple[int, int, int, int], ...],
+        pre_drop_polylines: dict[str, tuple[PointPx, ...]] | None,
+    ) -> tuple[PointPx, ...]:
+        """Return `wire`'s routed polyline ignoring the dropped component's own obstacle."""
+        if pre_drop_polylines is not None and wire.id in pre_drop_polylines:
+            cached = pre_drop_polylines[wire.id]
+            p_a = self._attachment_pos_px(wire.end_a, graph, term_map)
+            p_b = self._attachment_pos_px(wire.end_b, graph, term_map)
+            if len(cached) >= 2 and p_a == cached[0] and p_b == cached[-1]:
+                return cached
+        return self._compute_wire_points_from_graph(
+            wire, graph, term_map=term_map, obstacles=obstacles
+        )
+
     def _apply_component_split_on_drop(
-        self, item: ComponentItem, graph: WireGraph
+        self,
+        item: ComponentItem,
+        graph: WireGraph,
+        *,
+        pre_drop_polylines: dict[str, tuple[PointPx, ...]] | None = None,
     ) -> WireGraph:
         """Split a wire inline or tap a junction when an unconnected `item` is dropped onto wires."""
         from circuitsim.canvas.connectivity import point_strictly_inside_wire
@@ -1697,12 +1730,15 @@ class CircuitScene(QGraphicsScene):
             return graph
 
         term_map = self._terminal_pos_map()
+        obstacles = self._component_obstacles_px(exclude_names={cname})
 
-        # Case A: 2-terminal component dropped inline onto the interior of one wire.
+        # Case A: 2-terminal component dropped inline onto the interior/bend of one wire.
         if len(terms) == 2:
             (t1, p1), (t2, p2) = list(terms.items())
             for w in graph.wires:
-                pts = self._wire_polyline_in_graph(w, graph, term_map)
+                pts = self._drop_candidate_wire_polyline(
+                    w, graph, term_map, obstacles, pre_drop_polylines
+                )
                 if len(pts) < 2:
                     continue
                 if point_strictly_inside_wire(p1, pts) and point_strictly_inside_wire(p2, pts):
@@ -1715,15 +1751,16 @@ class CircuitScene(QGraphicsScene):
                         else:
                             first_t, d_first = t2, d2
                             second_t, d_second = t1, d1
+                        hint_source = list(w.hints) if w.hints else list(pts[1:-1])
                         hints_a = [
                             h
-                            for h in w.hints
+                            for h in hint_source
                             if (dh := self._arc_distance_along_polyline(h, pts)) is not None
                             and dh < d_first
                         ]
                         hints_b = [
                             h
-                            for h in w.hints
+                            for h in hint_source
                             if (dh := self._arc_distance_along_polyline(h, pts)) is not None
                             and dh > d_second
                         ]
@@ -1737,16 +1774,25 @@ class CircuitScene(QGraphicsScene):
 
         # Case B: Single-terminal (or non-inline multi-terminal) tap onto wire interior(s).
         working = graph
+        tapped_wire_ids: set[str] = set()
         for t_name, pt in sorted(terms.items()):
             j_exact = self._find_junction_at(pt, working, tolerance_px=0.5)
             if j_exact is not None:
+                if len(terms) == 2 and tapped_wire_ids:
+                    continue
                 working = working.add_wire(j_exact, TerminalRef(cname, t_name))
                 continue
             for w in working.wires:
-                pts = self._wire_polyline_in_graph(w, working, term_map)
+                if len(terms) == 2 and tapped_wire_ids and w.id in tapped_wire_ids:
+                    continue
+                pts = self._drop_candidate_wire_polyline(
+                    w, working, term_map, obstacles, pre_drop_polylines
+                )
                 if len(pts) >= 2 and point_strictly_inside_wire(pt, pts):
                     hb = self._hints_before_point(pt, w, pts)
                     split_res = working.split_wire_at(w.id, pt, hints_before=hb)
+                    tapped_wire_ids.add(w.id)
+                    tapped_wire_ids.add(split_res.second_wire_id)
                     working = split_res.graph.add_wire(
                         JunctionRef(split_res.junction_id), TerminalRef(cname, t_name)
                     )
@@ -2107,6 +2153,9 @@ class CircuitScene(QGraphicsScene):
             for item in self._placed_items
         }
         self._move_start_graph = self._wire_graph
+        self._move_start_wire_points = {
+            wid: witem.points for wid, witem in self._wire_items_by_id.items()
+        }
 
     def _moved_graph_from_drag_start(
         self,
@@ -2139,8 +2188,16 @@ class CircuitScene(QGraphicsScene):
             for comp, old_pos in self._move_start_positions.items()
             if (comp.pos().x(), comp.pos().y()) != old_pos
         ]
+        moved_names = {comp.component.name for comp, _o, _n in moved_items}
         self._wire_graph = self._moved_graph_from_drag_start(moved_items)
-        self._sync_graphics_from_wire_graph()
+        frozen = {
+            w.id: self._move_start_wire_points[w.id]
+            for w in self._wire_graph.wires
+            if w.id in self._move_start_wire_points
+            and not (isinstance(w.end_a, TerminalRef) and w.end_a.component in moved_names)
+            and not (isinstance(w.end_b, TerminalRef) and w.end_b.component in moved_names)
+        }
+        self._sync_graphics_from_wire_graph(frozen_polylines=frozen)
         self.refresh_connectivity_visuals()
 
     def commit_component_move_tracking(self) -> bool:
@@ -2159,19 +2216,24 @@ class CircuitScene(QGraphicsScene):
                 moved_new[item] = cur_pos
                 moved_items.append((item, old_pos, cur_pos))
 
+        pre_drop_polylines = dict(self._move_start_wire_points)
+        self._move_start_wire_points = {}
+
         if not moved_new:
             self._wire_graph = self._move_start_graph
+            self._sync_graphics_from_wire_graph(frozen_polylines=pre_drop_polylines)
             self.update_label_positions()
             return False
 
         target_graph = self._moved_graph_from_drag_start(moved_items)
         if len(moved_items) == 1:
             target_graph = self._apply_component_split_on_drop(
-                moved_items[0][0], target_graph
+                moved_items[0][0],
+                target_graph,
+                pre_drop_polylines=pre_drop_polylines,
             )
-        if target_graph != self._wire_graph:
-            self._wire_graph = target_graph
-            self._sync_graphics_from_wire_graph()
+        self._wire_graph = target_graph
+        self._sync_graphics_from_wire_graph()
 
         self.undo_stack.push(
             MoveComponentsCommand(

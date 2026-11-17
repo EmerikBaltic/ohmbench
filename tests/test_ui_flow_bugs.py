@@ -10,7 +10,9 @@ from PySide6.QtCore import QPointF, QRectF, Qt
 from PySide6.QtGui import QColor
 
 from circuitsim.app.themes import DARK_PALETTE, LIGHT_PALETTE, build_stylesheet
-from circuitsim.engine import MNASolver
+from circuitsim.engine import MNASolver, SimulationSession
+from circuitsim.wiring.model import JunctionRef, TerminalRef
+from circuitsim.wiring.router import find_overlapping_wire_segments
 from tests.ui_flow_helpers import (
     click_viewport,
     create_window_and_view,
@@ -312,7 +314,6 @@ def test_e2_repro_terminal_snap_zoom_and_wire_on_wire(tmp_path, qapp) -> None:
         win.close()
 
 
-@pytest.mark.xfail(strict=True, reason="E3 reproduction")
 def test_e3_repro_drop_2terminal_part_on_wire(tmp_path, qapp) -> None:
     """E3 repro: dragging a 2-terminal ammeter onto a wire splits inline without shorting it."""
     win, view, scene = create_window_and_view(tmp_path, zoom=1.0)
@@ -338,31 +339,166 @@ def test_e3_repro_drop_2terminal_part_on_wire(tmp_path, qapp) -> None:
         p_gnd = terminal_scene_point(gnd, "gnd")
 
         win.act_wire_mode.setChecked(True)
-        # Straight horizontal top wire across y = -40: (-160, -40) .. (160, -40).
+        # Top wire from V1.pos (-160, -40) to R1.top (160, -40) routes at y = -60 (both pins exit upward).
         draw_wire_click_to_click(view, p_vp, r1_top)
         draw_wire_click_to_click(view, p_vn, r1_bot)
         draw_wire_click_to_click(view, p_vn, p_gnd)
         win.act_wire_mode.setChecked(False)
         qapp.processEvents()
 
-        # Drag ammeter A1 from (0, 140) up across the bottom wire to (0, -40) onto the top wire.
+        orig_graph = scene.wire_graph
+        wires_before = len(orig_graph.wires)
+        undo_before = scene.undo_stack.count()
+
+        # Drop ammeter A1 onto the horizontal run of top wire W1 (at y = w_top.points[1][1], i.e. -60).
+        w_top = scene.placed_wires[0]
+        drop_y = float(w_top.points[1][1])
         start_vp = scene_to_viewport_point(view, a1.pos().x(), a1.pos().y())
-        drop_vp = scene_to_viewport_point(view, 0.0, -40.0)
+        drop_vp = scene_to_viewport_point(view, 0.0, drop_y)
         drag_viewport(view, start_vp, drop_vp, steps=12)
 
-        assert (a1.pos().x(), a1.pos().y()) == (0.0, -40.0)
+        assert (a1.pos().x(), a1.pos().y()) == (0.0, drop_y)
+        assert len(scene.wire_graph.wires) == wires_before + 1
+        assert len(scene.wire_graph.junctions) == 0
+        a1_wire_pts = {
+            w.wire_id: w.points
+            for w in scene.placed_wires
+            if (isinstance(w.end_a, TerminalRef) and w.end_a.component == "A1")
+            or (isinstance(w.end_b, TerminalRef) and w.end_b.component == "A1")
+        }
+        assert len(a1_wire_pts) == 2
+        assert find_overlapping_wire_segments(a1_wire_pts) == []
+        assert scene.undo_stack.count() == undo_before + 1
+
         conn = scene.extract_connectivity_result()
         assert "A1" not in conn.unconnected_components, "Ammeter A1 was left disconnected after drop onto wire!"
         n_a1_a = conn.component_nodes["A1"]["pos"]
         n_a1_b = conn.component_nodes["A1"]["neg"]
         assert n_a1_a != n_a1_b, "Ammeter was shorted by unsplit parallel wire / double junction tap!"
 
-        from circuitsim.engine import SimulationSession
-
         frame = SimulationSession(connectivity=conn).start()
         i_a1 = abs(frame.components["A1"].current)
         # Hand calc: 12.0 V / 500.0 Ohm = 0.024 A (24.0 mA).
         assert math.isclose(i_a1, 0.024, rel_tol=1e-4), f"Expected 24.0 mA through A1, got {i_a1}"
+
+        # 1 undo restores exact original graph and ammeter position.
+        scene.undo_stack.undo()
+        assert scene.wire_graph == orig_graph
+        assert (a1.pos().x(), a1.pos().y()) == (0.0, 140.0)
+    finally:
+        scene.undo_stack.setClean()
+        win.close()
+
+
+@pytest.mark.parametrize("zoom", [0.5, 1.0, 2.0])
+def test_e3_vertical_bent_rotated_flipped_and_pass_over_without_drop(
+    tmp_path, qapp, zoom: float
+) -> None:
+    """E3: vertical & bent wires, flipped/rotated parts, 1-terminal tap, and non-drop drag stability."""
+    win, view, scene = create_window_and_view(tmp_path, zoom=zoom)
+    try:
+        v1 = scene.place_new_component("dc_voltage", QPointF(-200.0, 0.0), rotation_deg=90)
+        r1 = scene.place_new_component("resistor", QPointF(200.0, 160.0), rotation_deg=90)
+        gnd = scene.place_new_component("ground", QPointF(0.0, 280.0))
+        a_vert = scene.place_new_component("ammeter", QPointF(-80.0, 280.0), rotation_deg=90, flipped_h=True)
+        a_flip = scene.place_new_component("ammeter", QPointF(0.0, -160.0), rotation_deg=180)
+        scene.edit_component_parameters(v1, {"dc_voltage": 12.0})
+        scene.edit_component_parameters(r1, {"resistance": 500.0})
+        qapp.processEvents()
+
+        r1_terms = r1.terminal_scene_positions_px()
+        r1_top = min(r1_terms.items(), key=lambda kv: kv[1][1])  # ("a"/"b", (200, 120))
+        r1_bot = max(r1_terms.items(), key=lambda kv: kv[1][1])  # ("a"/"b", (200, 200))
+
+        # Bent top wire with explicit L-corner (200, -40): (-200, -40) -> (200, -40) -> (200, 120)
+        scene.add_wire(
+            TerminalRef("V1", "pos"),
+            TerminalRef("R1", r1_top[0]),
+            hints=((200, -40),),
+        )
+        w_bot = scene.add_wire(
+            TerminalRef("V1", "neg"),
+            TerminalRef("R1", r1_bot[0]),
+            hints=((-200, 200),),
+        )
+        assert w_bot is not None
+        # Connect ground via explicit T-junction at (0, 200) so zero segments overlap.
+        split_g = scene.wire_graph.split_wire_at(w_bot.wire_id, (0, 200))
+        scene.set_wire_graph(split_g.graph)
+        scene.add_wire(JunctionRef(split_g.junction_id), TerminalRef("GND1", "gnd"))
+        qapp.processEvents()
+
+        polylines_before = {w.wire_id: w.points for w in scene.placed_wires}
+        orig_graph = scene.wire_graph
+
+        # 1. Drag a_flip over both horizontal runs WITHOUT dropping on a wire -> graph & polylines freeze during drag.
+        scene.clearSelection()
+        a_flip.setSelected(True)
+        scene.begin_component_move_tracking()
+        for y in (-40.0, 0.0, 40.0, 100.0, 120.0):
+            a_flip.setPos(QPointF(-80.0, y))
+            scene.on_component_position_changed(a_flip)
+            assert scene.wire_graph == orig_graph
+            for wid, pts in polylines_before.items():
+                assert scene._wire_items_by_id[wid].points == pts
+        assert scene.commit_component_move_tracking() is True
+        assert scene.wire_graph == orig_graph
+        scene.undo_stack.undo()
+        scene.clearSelection()
+        view.centerOn(0.0, 0.0)
+        qapp.processEvents()
+
+        # 2. Drag rotated 90 + flipped_h a_vert onto vertical leg (200, 40) of bent top wire via real mouse drag!
+        start_vp = scene_to_viewport_point(view, a_vert.pos().x(), a_vert.pos().y())
+        drop_vert_vp = scene_to_viewport_point(view, 200.0, 40.0)
+        graph_pre_vert = scene.wire_graph
+        undo_pre = scene.undo_stack.index()
+        drag_viewport(view, start_vp, drop_vert_vp, steps=8)
+        assert (a_vert.pos().x(), a_vert.pos().y()) == (200.0, 40.0)
+        assert len(scene.wire_graph.wires) == len(graph_pre_vert.wires) + 1
+        assert len(scene.wire_graph.junctions) == 1  # only the ground junction!
+        assert find_overlapping_wire_segments({w.wire_id: w.points for w in scene.placed_wires}) == []
+        assert scene.undo_stack.index() == undo_pre + 1
+        conn_v = scene.extract_connectivity_result()
+        frame_v = SimulationSession(connectivity=conn_v).start()
+        assert math.isclose(abs(frame_v.components["A1"].current), 0.024, rel_tol=1e-4)
+
+        # Undo vertical drop and test 180-deg rotated horizontal drop on top horizontal leg (0, -40).
+        scene.undo_stack.undo()
+        scene.clearSelection()
+        view.centerOn(0.0, 0.0)
+        qapp.processEvents()
+        assert scene.wire_graph == graph_pre_vert
+
+        scene.begin_component_move_tracking()
+        a_flip.setPos(QPointF(0.0, -100.0))
+        scene.on_component_position_changed(a_flip)
+        a_flip.setPos(QPointF(0.0, -40.0))
+        scene.on_component_position_changed(a_flip)
+        assert scene.commit_component_move_tracking() is True
+        assert (a_flip.pos().x(), a_flip.pos().y()) == (0.0, -40.0)
+        assert len(scene.wire_graph.wires) == len(graph_pre_vert.wires) + 1
+        assert len(scene.wire_graph.junctions) == 1
+        assert find_overlapping_wire_segments({w.wire_id: w.points for w in scene.placed_wires}) == []
+        conn_h = scene.extract_connectivity_result()
+        frame_h = SimulationSession(connectivity=conn_h).start()
+        assert math.isclose(abs(frame_h.components["A2"].current), 0.024, rel_tol=1e-4)
+
+        # 3. Single-terminal tap: drop a vertical resistor R_tap at (-100, 160) -> only bottom pin (-100, 200) hits W2!
+        r_tap = scene.place_new_component("resistor", QPointF(-100.0, 280.0), rotation_deg=90)
+        qapp.processEvents()
+        wires_tap0 = len(scene.wire_graph.wires)
+        junc_tap0 = len(scene.wire_graph.junctions)
+        scene.begin_component_move_tracking()
+        r_tap.setPos(QPointF(-100.0, 160.0))
+        scene.on_component_position_changed(r_tap)
+        assert scene.commit_component_move_tracking() is True
+        assert (r_tap.pos().x(), r_tap.pos().y()) == (-100.0, 160.0)
+        assert len(scene.wire_graph.junctions) == junc_tap0 + 1
+        assert len(scene.wire_graph.wires) == wires_tap0 + 2
+        r_tap_a = scene.wire_graph.attached_wires(TerminalRef(r_tap.component.name, "a"))
+        r_tap_b = scene.wire_graph.attached_wires(TerminalRef(r_tap.component.name, "b"))
+        assert (len(r_tap_a) + len(r_tap_b)) == 1
     finally:
         scene.undo_stack.setClean()
         win.close()

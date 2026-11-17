@@ -18,7 +18,7 @@ Rules:
 from __future__ import annotations
 
 import heapq
-from collections.abc import Iterable, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from typing import NamedTuple
 
 GRID_PX: int = 20
@@ -473,3 +473,45 @@ def slide_segment_hints(
     if len(simp) <= 2:
         return ()
     return tuple(simp[1:-1])
+
+
+def find_overlapping_wire_segments(
+    polylines: Sequence[Sequence[PointPx]] | Mapping[str, Sequence[PointPx]],
+) -> list[tuple[int | str, int | str, tuple[PointPx, PointPx]]]:
+    """Return all collinear overlapping orthogonal segment pairs across (and within) routed polylines.
+
+    Accepts either a sequence of polylines (keys are integer indices) or a mapping
+    of `{wire_id: polyline}` (keys are string IDs). Returns a list of
+    `(key_a, key_b, (overlap_start, overlap_end))` tuples where `overlap_start != overlap_end`.
+    """
+    items: list[tuple[int | str, Sequence[PointPx]]] = (
+        list(polylines.items()) if isinstance(polylines, Mapping) else list(enumerate(polylines))
+    )
+    segs: list[tuple[int | str, int, PointPx, PointPx]] = []
+    for key, pts in items:
+        for idx in range(len(pts) - 1):
+            p1 = (int(pts[idx][0]), int(pts[idx][1]))
+            p2 = (int(pts[idx + 1][0]), int(pts[idx + 1][1]))
+            if p1 != p2:
+                segs.append((key, idx, p1, p2))
+
+    overlaps: list[tuple[int | str, int | str, tuple[PointPx, PointPx]]] = []
+    n = len(segs)
+    for i in range(n):
+        ka, ia, a1, a2 = segs[i]
+        for j in range(i + 1, n):
+            kb, ib, b1, b2 = segs[j]
+            if ka == kb and ib <= ia:
+                continue
+            # Only compare parallel vertical or horizontal segments
+            if a1[0] == a2[0] and b1[0] == b2[0] and a1[0] == b1[0]:
+                low = max(min(a1[1], a2[1]), min(b1[1], b2[1]))
+                high = min(max(a1[1], a2[1]), max(b1[1], b2[1]))
+                if low < high:
+                    overlaps.append((ka, kb, ((a1[0], low), (a1[0], high))))
+            elif a1[1] == a2[1] and b1[1] == b2[1] and a1[1] == b1[1]:
+                low = max(min(a1[0], a2[0]), min(b1[0], b2[0]))
+                high = min(max(a1[0], a2[0]), max(b1[0], b2[0]))
+                if low < high:
+                    overlaps.append((ka, kb, ((low, a1[1]), (high, a1[1]))))
+    return overlaps
