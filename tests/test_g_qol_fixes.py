@@ -14,6 +14,7 @@ from circuitsim.canvas.symbol_renderer import SymbolLibrary
 from circuitsim.canvas.view import CircuitView
 from circuitsim.engine import MNASolver
 from circuitsim.wiring.model import FreeEnd, JunctionRef, TerminalRef
+from circuitsim.wiring.router import route as wire_route
 from tests.ui_flow_helpers import (
     click_viewport,
     draw_wire_click_to_click,
@@ -210,5 +211,29 @@ def test_g5_auto_connect_touching_endpoints_and_gnd_tap(qapp) -> None:
         assert math.isclose(abs(sol.branch_currents["R1"]), 0.010, abs_tol=1e-3)
     finally:
         view.close()
+        scene.shutdown_scene()
+        qapp.processEvents()
+
+
+def test_g6_straight_vertical_and_l_route_without_side_jogs(qapp) -> None:
+    """G6: Routing straight down from a horizontal terminal produces a 2-point vertical line without 1-unit side jogs."""
+    # Direct Qt-free router check from horizontal terminal (start_dir=(1, 0)) straight down 100 px
+    r_straight = wire_route((40, 0), (40, 100), start_dir=(1, 0))
+    assert r_straight == ((40, 0), (40, 100))
+
+    # Horizontal-then-vertical L-route reaches x2 cleanly without overshooting x2
+    r_l = wire_route((40, 0), (140, 100), start_dir=(1, 0))
+    assert r_l == ((40, 0), (140, 0), (140, 100))
+
+    # Through CircuitScene with horizontal resistor R1 and attached vertical wire straight down
+    scene = CircuitScene(SymbolLibrary())
+    try:
+        r1 = scene.place_new_component("resistor", QPointF(0.0, 0.0))
+        x_t, y_t = terminal_scene_point(r1, "b")
+        w = scene.add_wire(TerminalRef("R1", "b"), FreeEnd(x_t, y_t + 100))
+        assert w is not None
+        assert w.points == ((x_t, y_t), (x_t, y_t + 100))
+        assert all(px == x_t for px, _py in w.points)
+    finally:
         scene.shutdown_scene()
         qapp.processEvents()

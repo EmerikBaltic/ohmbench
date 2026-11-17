@@ -64,7 +64,7 @@ Run these manual checks in the live desktop window (`.\.venv\Scripts\python.exe 
 - [x] `G3` (`done`): Fixed `CircuitView.wheelEvent` / `_apply_zoom` to anchor strictly at true viewport center `(w//2, h//2)` with dynamic `sceneRect` coverage (`tests/test_g_qol_fixes.py: 1 passed`).
 - [x] `G4` (`done`): Ignored auto-repeat hotkey events in `CircuitView.keyPressEvent` and added `_find_nearest_free_grid_pos` non-overlapping body placement/drop guards in `CircuitScene` (`tests/test_g_qol_fixes.py: 2 passed`).
 - [x] `G5` (`done`): Added `AUTO_CONNECT_TOLERANCE_PX = 12.5` and `_auto_connect_graph_endpoints` / `_auto_connect_touching_endpoints` in `CircuitScene` across wire finish/add, component place/move, and endpoint drag; updated `is_snap_target_at` to finish clicks onto wire interiors/FreeEnds; removed `E2` `xfail` (`test_g_qol_fixes.py: 3 passed`, `test_e2: 1 passed`).
-- [ ] `G6` (`todo`): Fix orthogonal wire router so aligned vertical/horizontal wires route straight without 1-unit side jogs.
+- [x] `G6` (`done`): Updated `circuitsim.wiring.router.route()` 0-bend straight orthogonal path to route perpendicular aligned wires straight without 1-unit side jogs while preserving obstacle avoidance and opposed-terminal loops (`tests/test_g_qol_fixes.py: 4 passed`).
 - [ ] `G7` (`todo`): Voltmeter parallel overlay & drag-out auto-wiring (zero graph mutation during `mouseMoveEvent`; auto-wire on `mouseReleaseEvent` only).
 - [ ] `G8` (`todo`): Programmable Shortcuts tab in Settings (`AppSettings.shortcuts` + UI editor/dialog + duplicate resolution + reset to defaults).
 - [ ] `GATE G` (`todo`): Verify `tests/test_g_qol_fixes.py`, `tests/test_f2_interactive_controls.py`, and full `pytest -q`; tag `checkpoint/G-done`.

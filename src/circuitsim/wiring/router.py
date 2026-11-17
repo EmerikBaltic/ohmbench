@@ -373,10 +373,22 @@ def route(
     # --- 0-bend (straight line) ---
     if p0[0] == p3[0] or p0[1] == p3[1]:
         cand = (p0, p3)
-        if path_matches_directions(cand, s_dir, e_dir) and path_collision_free(
-            cand, norm_obstacles, p0, p3
-        ):
-            return cand
+        if path_collision_free(cand, norm_obstacles, p0, p3):
+            if path_matches_directions(cand, s_dir, e_dir):
+                return cand
+            # G6: Allow clean straight orthogonal wires (e.g., straight down from a
+            # horizontal terminal) without a 1-unit side jog, provided the wire does
+            # not backtrack into either component body.
+            dx = p3[0] - p0[0]
+            dy = p3[1] - p0[1]
+            step_dir = (
+                1 if dx > 0 else (-1 if dx < 0 else 0),
+                1 if dy > 0 else (-1 if dy < 0 else 0),
+            )
+            backtracks_start = s_dir is not None and step_dir == (-s_dir[0], -s_dir[1])
+            backtracks_end = e_dir is not None and step_dir == e_dir
+            if not backtracks_start and not backtracks_end:
+                return cand
 
     # --- 1-bend (L-shape) ---
     c_h = (p0, (p3[0], p0[1]), p3)  # H first
