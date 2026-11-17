@@ -67,7 +67,7 @@ Run these manual checks in the live desktop window (`.\.venv\Scripts\python.exe 
 - [x] `G6` (`done`): Updated `circuitsim.wiring.router.route()` 0-bend straight orthogonal path to route perpendicular aligned wires straight without 1-unit side jogs while preserving obstacle avoidance and opposed-terminal loops (`tests/test_g_qol_fixes.py: 4 passed`).
 - [x] `G7` (`done`): Kept `scene.wire_graph` immutable during `mouseMoveEvent` drag previews (`on_component_position_changed`), added `_find_overlaid_2terminal_target` and `_connect_voltmeter_parallel_with` for overlaid `voltmeter` auto-wiring on placement and release (`tests/test_g_qol_fixes.py: 5 passed`).
 - [x] `G8` (`done`): Added `AppSettings.shortcuts` (`DEFAULT_SHORTCUTS` for rotate/flip/wire_mode/junction/delete and all component placements), `PreferencesDialog` **"Shortcuts"** tab + standalone `ShortcutsDialog` with duplicate conflict resolution & Reset to Defaults, and live dispatch in `CircuitView` / `MainWindow` (`tests/test_g_qol_fixes.py: 6 passed`).
-- [ ] `GATE G` (`todo`): Verify `tests/test_g_qol_fixes.py`, `tests/test_f2_interactive_controls.py`, and full `pytest -q`; tag `checkpoint/G-done`.
+- [x] `GATE G` (`done`): Verified `tests/test_g_qol_fixes.py` + `tests/test_f2_interactive_controls.py` (`9 passed in 4.31s`) and full suite on `9b406fa` (`416 passed in 137.87s` via `.\.venv\Scripts\pytest.exe -q`, plus `.\.venv\Scripts\python.exe -m pytest -q`); tagged `checkpoint/G-done`.
 
 ## FLASH QUEUE
 - Phase 1 Task 1: Housekeeping (.gitignore, switch breakdown voltage hint, label collision avoidance) - [done]
