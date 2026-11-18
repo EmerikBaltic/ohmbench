@@ -173,6 +173,7 @@ class MainWindow(QMainWindow):
         self._close_cleaned_up: bool = False
         self._user_closed_problems_panel: bool = False
         self._prev_error_count: int = 0
+        self.instruments_dialog: object | None = None
 
         self._build_menus_and_toolbars()
         self._build_docks()
@@ -464,6 +465,15 @@ class MainWindow(QMainWindow):
         sim_menu.addAction(self.act_run)
         sim_menu.addAction(self.act_pause)
         sim_menu.addAction(self.act_stop)
+        sim_menu.addSeparator()
+        self.act_virtual_instruments = QAction(
+            "Virtual &Instruments (Waveform & Bode)...", self
+        )
+        self.act_virtual_instruments.setToolTip(
+            "Open multi-channel Waveform Capture & AC Bode / Z_in Analyzer"
+        )
+        self.act_virtual_instruments.triggered.connect(self.show_instruments_panel)
+        sim_menu.addAction(self.act_virtual_instruments)
 
         # Help menu
         help_menu = menu_bar.addMenu("&Help")
@@ -1204,6 +1214,24 @@ class MainWindow(QMainWindow):
                 if hasattr(self, "action_view_problems"):
                     self.action_view_problems.setChecked(True)
         self._prev_error_count = curr_error_count
+        if self.instruments_dialog is not None:
+            self.instruments_dialog.on_simulation_frame(frame)  # type: ignore[attr-defined]
+
+    def show_instruments_panel(self):
+        """Open (or focus) the Benchtop Virtual Instruments panel."""
+        from circuitsim.app.instruments_panel import BenchtopInstrumentsDialog
+
+        if self.instruments_dialog is None:
+            self.instruments_dialog = BenchtopInstrumentsDialog(
+                circuit_provider=lambda: self.circuit_scene.extract_connectivity_result().circuit,
+                parent=self,
+            )
+        dlg: BenchtopInstrumentsDialog = self.instruments_dialog  # type: ignore[assignment]
+        dlg.refresh_nodes()
+        dlg.show()
+        dlg.raise_()
+        dlg.activateWindow()
+        return dlg
 
     def _toggle_problems_panel(self, checked: bool | None = None) -> None:
         if checked is None:
@@ -1466,5 +1494,10 @@ class MainWindow(QMainWindow):
             except (RuntimeError, TypeError):
                 pass
 
+        if self.instruments_dialog is not None:
+            try:
+                self.instruments_dialog.close()  # type: ignore[attr-defined]
+            except RuntimeError:
+                pass
         self.circuit_scene.shutdown_scene()
         super().closeEvent(event)

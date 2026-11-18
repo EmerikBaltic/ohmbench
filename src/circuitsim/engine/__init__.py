@@ -38,8 +38,15 @@ from circuitsim.engine.overlay import (
     format_watts_si,
     map_voltage_to_rgb,
 )
+from circuitsim.engine.ac_analysis import (
+    ACAnalysisResult,
+    ACFrequencySample,
+    run_ac_sweep,
+)
 
 __all__ = [
+    "ACAnalysisResult",
+    "ACFrequencySample",
     "Circuit",
     "CircuitError",
     "CircuitWarning",
@@ -68,4 +75,5 @@ __all__ = [
     "format_power_probe_text",
     "format_watts_si",
     "map_voltage_to_rgb",
+    "run_ac_sweep",
 ]
