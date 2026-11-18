@@ -4,12 +4,15 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+from typing import TYPE_CHECKING
 import uuid
 
 from circuitsim.components.sources import ACVoltageSource, DCCurrentSource, DCVoltageSource
 from circuitsim.io.circ_serializer import CircuitDocument, PlacedComponentSpec
 from circuitsim.wiring.model import FreeEnd, JunctionRef, PointPx, TerminalRef
-from circuitsim.wiring.serializer import CircuitDocumentV2, migrate_v1_to_v2
+
+if TYPE_CHECKING:
+    from circuitsim.wiring.serializer import CircuitDocumentV2
 
 # 20 px in Ohmbench equals 2.54 mm (100 mil) standard KiCad schematic grid.
 _PX_TO_MM: float = 2.54 / 20.0
@@ -112,6 +115,8 @@ def export_to_kicad_sch(
     project_uuid: str | None = None,
 ) -> str:
     """Export an Ohmbench schematic document to a KiCad 7/8 `.kicad_sch` S-expression."""
+    from circuitsim.wiring.serializer import migrate_v1_to_v2
+
     v2_doc = migrate_v1_to_v2(doc) if isinstance(doc, CircuitDocument) else doc
     root_uuid = project_uuid or _deterministic_uuid(f"root:{title}:{len(v2_doc.placed)}")
 

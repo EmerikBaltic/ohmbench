@@ -3,15 +3,13 @@
 from __future__ import annotations
 
 import base64
+from typing import TYPE_CHECKING
 import zlib
 
 from circuitsim.io.circ_serializer import CircuitDocument
-from circuitsim.wiring.serializer import (
-    CircuitDocumentV2,
-    dumps_document_v2,
-    loads_document_v2,
-    migrate_v1_to_v2,
-)
+
+if TYPE_CHECKING:
+    from circuitsim.wiring.serializer import CircuitDocumentV2
 
 SHARE_URL_SCHEME: str = "ohmbench"
 SHARE_URL_PREFIX: str = "ohmbench://c/"
@@ -24,6 +22,8 @@ class ShareUrlError(ValueError):
 
 def encode_circuit_share_url(doc: CircuitDocumentV2 | CircuitDocument) -> str:
     """Encode a schematic document into a compact `ohmbench://c/...` URL string."""
+    from circuitsim.wiring.serializer import dumps_document_v2, migrate_v1_to_v2
+
     v2_doc = migrate_v1_to_v2(doc) if isinstance(doc, CircuitDocument) else doc
     json_bytes = dumps_document_v2(v2_doc).encode("utf-8")
     compressed = zlib.compress(json_bytes, level=9)
@@ -33,6 +33,7 @@ def encode_circuit_share_url(doc: CircuitDocumentV2 | CircuitDocument) -> str:
 
 def decode_circuit_share_url(url: str) -> CircuitDocumentV2:
     """Decode and validate an `ohmbench://c/...` share URL into a `CircuitDocumentV2`."""
+    from circuitsim.wiring.serializer import loads_document_v2
     cleaned = str(url).strip()
     if not cleaned.startswith(SHARE_URL_PREFIX):
         raise ShareUrlError(
