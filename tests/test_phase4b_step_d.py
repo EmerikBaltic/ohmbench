@@ -637,7 +637,7 @@ def test_d5_scene_and_commands_use_wire_graph_without_legacy_wire_helpers(qapp) 
     assert not hasattr(flip_cmd, "old_wire_points")
     assert not hasattr(flip_cmd, "new_wire_points")
 
-    assert scene.toggle_junction_at(QPointF(0.0, 60.0)) is True
+    assert scene.toggle_junction_at(QPointF(0.0, 40.0)) is True
     assert len(scene.junction_items) == 1
     scene.undo_stack.undo()
     assert len(scene.junction_items) == 0
