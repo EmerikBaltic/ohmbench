@@ -96,15 +96,16 @@ CircuitSim/
 ├── pyproject.toml
 ├── src/circuitsim/
 │   ├── main.py
-│   ├── app/            main window, docks, menus, settings
-│   ├── canvas/         scene, view, wire item, component item
-│   ├── components/     resistor, capacitor, inductor, bulb, switch, meters...
-│   ├── dialogs/        properties dialog, engineering-notation value parser
-│   ├── savedparts/     saved parts bar (10 slots, JSON persistence)
+│   ├── app/            main window, docks, themes, virtual instruments (instruments_panel.py)
+│   ├── canvas/         scene, view, wire item, component item, overlays, publication export
+│   ├── components/     resistor, capacitor, inductor, diode.py, led, potentiometer, mcu.py, switch, meters...
+│   ├── dialogs/        properties dialog, value_parser.py, preferences, spice_import_dialog.py
 │   ├── scope/          scope widget, trigger, measurements, FFT
-│   ├── engine/         netlist builder, MNA matrix, integrators, Newton solver
-│   ├── io/             JSON save/load, SPICE import/export, image export
-│   └── resources/      icons, themes (QSS), example circuits
+│   ├── templates/      built-in WireGraph test jigs (test_jigs.py)
+│   ├── wiring/         immutable WireGraph, orthogonal router, netlist extractor, v2 serializer
+│   ├── engine/         netlist, solver, stress.py, overlay.py, ac_analysis.py, sweep.py, session
+│   ├── io/             circ_serializer.py, wav_signal.py, spice_import.py, share_codec.py, kicad_export.py
+│   └── resources/      icons, themes (QSS), symbols, example circuits
 └── tests/              solver tests, parser tests, saved-parts tests
 ```
 

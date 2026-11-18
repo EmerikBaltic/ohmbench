@@ -25,6 +25,7 @@ Run these manual checks in the live desktop window (`.\.venv\Scripts\python.exe 
 4. **E4 (Wire Mode Visibility & Esc)**: Click toolbar `Wire` button -> button shows clear checked highlight, cursor turns to crosshair, status bar reads `"Wire mode - click a terminal to start, Esc to leave"`. Start drawing a wire, move across empty canvas, press `Esc` -> preview cancels AND Wire mode turns off (`Wire` button unchecked, arrow cursor restored, click selects normally). Test in both Dark and Light (`Ctrl+T`) themes.
 5. **E5 (Label Plates Over Wires)**: Place a voltmeter (`Rot`), wire across its readout/label region, run simulation -> wire remains cleanly visible through label/value text rather than being erased by an opaque box (check both Dark and Light themes).
 6. **E6 (Startup Console Cleanliness)**: Launch the app from PowerShell (`.\.venv\Scripts\python.exe -m circuitsim.main`) and switch Dark/Light themes -> verify zero `"QFont::setPointSize: Point size <= 0 (-1)"` warnings print to stderr.
+7. **F1–F12 Workbench Suite**: Toggle **View > Show Physical Pinout / Package Labels**, toggle **View > Voltage Colors / Current Dots / Stress Warnings**, open **Simulation > Virtual Instruments (Waveform & Bode)**, load a jig from **File > Test Jigs**, import a `.MODEL` / `.SUBCKT` via **File > Import SPICE Model / Subcircuit...**, and verify **File > Copy Share URL** / **Export as KiCad Schematic (.kicad_sch)** cleanly round-trip.
 
 ## PHASE F QUEUE (WORKBENCH UPGRADE)
 - **Baseline Gate E**: Tag `checkpoint/E-done` (`305563c` on `wire-redesign`), `400 passed, 1 xfailed` (sole xfail is owner-skipped `E2`) across all 4 Gate E runs (`pytest.exe -q` x3 + `python.exe -m pytest -q` x1).
@@ -32,15 +33,15 @@ Run these manual checks in the live desktop window (`.\.venv\Scripts\python.exe 
 ### Architecture Mapping Table
 | Layer / Package | Responsibility | Qt-Free? | Key Modules |
 |---|---|---|---|
-| `circuitsim.components` | Physical models, ratings, presets, pins (Resistors, Potentiometer, Switch, Diodes/LED, Sources, MCUBlock) | Yes | `base.py`, `resistor.py`, `capacitor.py`, `inductor.py`, `led.py`, `sources.py`, `switch.py`, `potentiometer.py` (F2), `mcu.py` (F11) |
-| `circuitsim.wiring` | Immutable `WireGraph`, orthogonal `router`, `netlist` extractor, v2 serializer, visual color/dot helpers | Yes | `model.py`, `router.py`, `netlist.py`, `serializer.py` |
-| `circuitsim.engine` | MNA solver, nonlinear convergence recovery, AC/Bode sweep, stress/derating, parameter/Monte-Carlo sweeps, session | Yes | `solver.py`, `netlist.py`, `simulation_session.py`, `errors.py`, `stress.py` (F4), `ac_analysis.py` (F6), `sweep.py` (F10) |
+| `circuitsim.components` | Physical models, ratings, presets, pins (Resistors, Potentiometer, Switch, Diode/LED, Sources, MCUBlock) | Yes | `base.py`, `resistor.py`, `capacitor.py`, `inductor.py`, `diode.py` (F5), `led.py`, `sources.py` (`WavVoltageSource` F7), `switch.py`, `potentiometer.py` (F2), `mcu.py` (F11) |
+| `circuitsim.wiring` | Immutable `WireGraph`, orthogonal `router`, `netlist` extractor, v2 serializer, visual color/dot helpers | Yes | `model.py`, `router.py`, `netlist.py`, `serializer.py`, `overlay.py` (F3) |
+| `circuitsim.engine` | MNA solver, nonlinear convergence recovery, AC/Bode sweep, stress/derating, parameter/Monte-Carlo sweeps, session | Yes | `solver.py`, `netlist.py`, `simulation_session.py`, `errors.py`, `overlay.py` (F3), `stress.py` (F4), `ac_analysis.py` (F6), `sweep.py` (F10) |
 | `circuitsim.io` | `.circ` save/load, `.wav` signal I/O, `.model`/`.subckt` SPICE importer, URL codec, KiCad `.kicad_sch` exporter | Yes | `circ_serializer.py`, `wav_signal.py` (F7), `spice_import.py` (F8), `share_codec.py` (F9), `kicad_export.py` (F9) |
-| `circuitsim.templates` | Pre-built verified reference Test Jigs (`WireGraph` circuits) | Yes | `__init__.py` / `test_jigs.py` (F7) |
+| `circuitsim.templates` | Pre-built verified reference Test Jigs (`WireGraph` circuits) | Yes | `__init__.py`, `test_jigs.py` (F7) |
 | `circuitsim.scope` | Multi-channel oscilloscope capture buffer, triggers, measurements, FFT, math | Yes | `core.py`, `capture.py`, `trigger.py`, `measurements.py`, `math_fft.py` |
 | `circuitsim.canvas` | Interactive schematic scene/view, undo commands, symbol rendering, overlays, pub SVG/PNG export | Qt 6 | `scene.py`, `view.py`, `commands.py`, `component_item.py`, `wire_item.py`, `symbol_geometry.py`, `symbol_renderer.py`, `export.py` |
 | `circuitsim.dialogs` | Engineering notation value parser (`p, n, u, m, k, Meg, G`), tabbed Parameter & SPICE import dialogs | Qt 6 (parser Qt-free) | `value_parser.py` (Qt-free), `quick_edit_dialog.py`, `preferences_dialog.py`, `spice_import_dialog.py` (F8) |
-| `circuitsim.app` | Main window, dock panels, themes, live controls, virtual instrument bench, worker thread | Qt 6 | `main_window.py`, `palette_dock.py`, `problems_panel.py`, `themes.py`, `sim_worker.py`, `bode_scope_panel.py` (F6) |
+| `circuitsim.app` | Main window, dock panels, themes, live controls, virtual instrument bench, worker thread | Qt 6 | `main_window.py`, `palette_dock.py`, `problems_panel.py`, `themes.py`, `sim_worker.py`, `instruments_panel.py` (F6) |
 
 ### Queue Items
 - [x] `F0` (`done`): Baseline audit (`checkpoint/E-done` `305563c`, `400 passed, 1 xfailed` at Gate E) + `PHASE F QUEUE` + architecture table + `tests/workbench_helpers.py` & `tests/test_f0_workbench_helpers.py` (`400 passed, 1 deselected, 1 xfailed`).
@@ -55,7 +56,7 @@ Run these manual checks in the live desktop window (`.\.venv\Scripts\python.exe 
 - [x] `F9` (`done`): Share URL codec (`ohmbench://c/...`), KiCad `.kicad_sch` S-expression exporter, publication high-contrast light-background SVG/PNG export without UI chrome (`tests/test_f9_share_kicad_export.py` + `tests/test_g_qol_fixes.py`: `10 passed in 3.05s`).
 - [x] `F10` (`done`): Parallel parameter sweep & seeded Monte Carlo (`circuitsim.engine.sweep`) + `WireItem`/`ComponentItem` geometry cache guard for 60+ parts (`tests/test_f10_sweep_and_perf.py` + `tests/test_g_qol_fixes.py`: `10 passed in 4.98s`).
 - [x] `F11` (`done`): Mixed-signal `MCUBlock` (10 MOhm analog ADC inputs `A0/A1`, 25 Ohm Thevenin digital outputs `D0/D1/TX/RX`, local offline Python callback, `read_adc`), analog resistor ladder & 2-MCU co-simulation (`tests/test_f11_mixed_signal_mcu.py` + `tests/test_g_qol_fixes.py`: `11 passed in 3.00s`).
-- [ ] `F12` (`todo`): Toggleable physical package/pinout label overlay + `AGENT_INSTRUCTIONS.md` & `PROGRESS.md` final docs update.
+- [x] `F12` (`done`): Toggleable physical package/pinout label overlay + `AGENT_INSTRUCTIONS.md` & `PROGRESS.md` final docs update (`tests/test_f12_pinout_overlay.py` + `tests/test_g_qol_fixes.py`: `8 passed in 3.21s`).
 - [ ] `GATE F` (`todo`): Full suite 3x + `python -m pytest -q` + end-to-end workbench smoke test + `git tag checkpoint/F-done`.
 
 ## PHASE G QUEUE (OWNER QOL & BUG FIXES)

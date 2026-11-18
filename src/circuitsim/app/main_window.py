@@ -427,6 +427,18 @@ class MainWindow(QMainWindow):
         )
         self.view_menu.addAction(self.act_stress_warnings)
 
+        self.act_pinout_labels = QAction(
+            "Show Physical &Pinout / Package Labels", self, checkable=True
+        )
+        self.act_pinout_labels.setChecked(False)
+        self.act_pinout_labels.setToolTip(
+            "Overlay physical package names and pinout identifiers (A/K, +/-, 1/2, A0..RX) without mutating wiring"
+        )
+        self.act_pinout_labels.toggled.connect(
+            self.circuit_scene.set_pinout_labels_enabled
+        )
+        self.view_menu.addAction(self.act_pinout_labels)
+
         # Place menu (cross-platform accessible entry alongside canvas hotkeys)
         self.place_menu = menu_bar.addMenu("&Place")
         self.place_actions: dict[str, QAction] = {}

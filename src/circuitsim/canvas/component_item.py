@@ -218,6 +218,7 @@ class ComponentItem(QGraphicsObject):
         self.stress_reason: str = ""
         self.stress_utilization_pct: float = 0.0
         self.stress_warnings_enabled: bool = True
+        self._pinout_overlay_enabled: bool = False
         self.is_unconnected: bool = False
         self.label_position: str = "default"
         self._cached_bounds_key: tuple[object, ...] | None = None
@@ -775,6 +776,46 @@ class ComponentItem(QGraphicsObject):
         self._cached_bounds_key = None
         self._cached_bounding_rect = None
 
+    def set_pinout_overlay_enabled(self, enabled: bool) -> None:
+        """Toggle physical package & pinout markings without mutating wiring topology."""
+        val = bool(enabled)
+        if val != self._pinout_overlay_enabled:
+            self._pinout_overlay_enabled = val
+            self.invalidate_geometry_cache()
+            self.update()
+
+    @staticmethod
+    def package_and_pinout_labels(comp: Component) -> tuple[str, dict[str, str]]:
+        """Return `(package_name, {terminal_name: physical_pin_label})` for `comp`."""
+        ctype = comp.component_type
+        if ctype == "diode":
+            return ("DO-35", {"anode": "A", "cathode": "K"})
+        if ctype == "led":
+            return ("LED-5mm", {"anode": "A(+)", "cathode": "K(-)"})
+        if ctype == "capacitor":
+            if getattr(comp, "polarized", False):
+                return ("ELEC-RAD", {"a": "+", "b": "-"})
+            return ("CER-0805", {"a": "1", "b": "2"})
+        if ctype == "resistor":
+            return ("AXIAL-1/4W", {"a": "1", "b": "2"})
+        if ctype == "inductor":
+            return ("RADIAL-L", {"a": "1", "b": "2"})
+        if ctype == "potentiometer":
+            return ("TRIM-3P", {"a": "1:CW", "w": "2:W", "b": "3:CCW"})
+        if ctype in ("dc_voltage", "ac_voltage", "wav_voltage", "dc_current", "voltmeter", "ammeter"):
+            return (ctype.upper(), {"pos": "+", "neg": "-"})
+        if ctype == "mcu":
+            return ("DIP-MCU", {"A0": "A0", "A1": "A1", "D0": "D0", "D1": "D1", "TX": "TX", "RX": "RX"})
+        if ctype == "switch":
+            return ("SPST", {"a": "1", "b": "2"})
+        if ctype == "lightbulb":
+            return ("LAMP", {"a": "1", "b": "2"})
+        if ctype == "ground":
+            return ("GND", {"gnd": "0V"})
+        if ctype.startswith("gate_"):
+            return ("SOIC-14", {"in": "in", "a": "a", "b": "b", "out": "out"})
+        return (ctype.upper(), {})
+
     def boundingRect(self) -> QRectF:
         """Return cached tight bounding rectangle enclosing body, terminals, and labels."""
         val_text = ""
@@ -1245,6 +1286,38 @@ class ComponentItem(QGraphicsObject):
                         QRectF(tx - 15.0, ty - 7.0, 30.0, 14.0),
                         Qt.AlignmentFlag.AlignCenter,
                         pin_name,
+                    )
+
+            if self._pinout_overlay_enabled:
+                pkg_name, pin_map = self.package_and_pinout_labels(self.component)
+                pin_font = QFont("Segoe UI", 7)
+                pin_font.setBold(True)
+                painter.setFont(pin_font)
+                painter.setPen(QColor("#58A6FF") if self.theme == ThemeMode.DARK else QColor("#0969DA"))
+                for term in self.metadata.terminals:
+                    tag = pin_map.get(term.name, term.name)
+                    tx, ty = transform_terminal_position(
+                        term.grid_pos,
+                        (0.0, 0.0),
+                        rotation_deg=self.rotation_deg,
+                        flipped_h=self.flipped_h,
+                        grid_px=GRID_PITCH_PX,
+                    )
+                    # Position neatly just inside body away from external terminal wire
+                    ix = tx * 0.68
+                    iy = ty - 9.0 if abs(ty) < 5.0 else ty * 0.72
+                    painter.drawText(
+                        QRectF(ix - 16.0, iy - 7.0, 32.0, 14.0),
+                        Qt.AlignmentFlag.AlignCenter,
+                        tag,
+                    )
+                if pkg_name and self.component.component_type != "ground":
+                    pkg_font = QFont("Segoe UI", 6)
+                    painter.setFont(pkg_font)
+                    painter.drawText(
+                        QRectF(-28.0, 16.0, 56.0, 12.0),
+                        Qt.AlignmentFlag.AlignCenter,
+                        pkg_name,
                     )
 
             painter.restore()

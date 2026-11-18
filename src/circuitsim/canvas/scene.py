@@ -199,6 +199,7 @@ class CircuitScene(QGraphicsScene):
         self.voltage_colors_enabled: bool = False
         self.current_dots_enabled: bool = False
         self.stress_warnings_enabled: bool = True
+        self.pinout_labels_enabled: bool = False
         self.latest_stress_reports: dict[str, StressReport] = {}
         self.last_power_probe_text: str = ""
         self._dot_anim_timer = QTimer(self)
@@ -532,6 +533,7 @@ class CircuitScene(QGraphicsScene):
     ) -> None:
         if item not in self._placed_items:
             self._placed_items.append(item)
+        item.set_pinout_overlay_enabled(self.pinout_labels_enabled)
         if item.scene() is not self:
             self.addItem(item)
         if select:
@@ -3349,6 +3351,13 @@ class CircuitScene(QGraphicsScene):
         """Enable or disable amber derating and red overload/smoke warning badges (F4)."""
         self.stress_warnings_enabled = bool(enabled)
         self._refresh_stress_badges()
+        self.update()
+
+    def set_pinout_labels_enabled(self, enabled: bool) -> None:
+        """Toggle physical package and pinout overlays without modifying WireGraph (F12)."""
+        self.pinout_labels_enabled = bool(enabled)
+        for item in self._placed_items:
+            item.set_pinout_overlay_enabled(self.pinout_labels_enabled)
         self.update()
 
     def _refresh_stress_badges(self) -> None:
