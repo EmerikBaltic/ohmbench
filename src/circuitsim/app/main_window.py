@@ -372,6 +372,26 @@ class MainWindow(QMainWindow):
         self.act_toggle_theme.triggered.connect(self.toggle_theme)
         self.view_menu.addAction(self.act_toggle_theme)
 
+        self.act_voltage_colors = QAction("Voltage &Colors", self, checkable=True)
+        self.act_voltage_colors.setChecked(False)
+        self.act_voltage_colors.setToolTip(
+            "Color-code wires by live node voltage (neutral gray = 0 V, green > 0 V, red < 0 V)"
+        )
+        self.act_voltage_colors.toggled.connect(
+            self.circuit_scene.set_voltage_colors_enabled
+        )
+        self.view_menu.addAction(self.act_voltage_colors)
+
+        self.act_current_dots = QAction("Current &Dots", self, checkable=True)
+        self.act_current_dots.setChecked(False)
+        self.act_current_dots.setToolTip(
+            "Animate dots along wires showing conventional positive current flow"
+        )
+        self.act_current_dots.toggled.connect(
+            self.circuit_scene.set_current_dots_enabled
+        )
+        self.view_menu.addAction(self.act_current_dots)
+
         # Place menu (cross-platform accessible entry alongside canvas hotkeys)
         self.place_menu = menu_bar.addMenu("&Place")
         self.place_actions: dict[str, QAction] = {}

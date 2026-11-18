@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from typing import TYPE_CHECKING, Any, Sequence
 
 from PySide6.QtCore import QPointF, QRectF, Qt
@@ -67,6 +68,11 @@ class WireItem(QGraphicsObject):
         self._hit_shape: QPainterPath = QPainterPath()
         self.diagnostic_severity: str | None = None
         self.diagnostic_message: str = ""
+        self.voltage_color_enabled: bool = False
+        self.current_dots_enabled: bool = False
+        self.overlay_rgb: tuple[int, int, int] | None = None
+        self.dot_velocity: float = 0.0
+        self.dot_phase: float = 0.0
         self._rebuild_paths()
 
         if not is_preview:
@@ -116,6 +122,73 @@ class WireItem(QGraphicsObject):
         if self.diagnostic_severity == "warning":
             return "#FFA726"
         return None
+
+    def set_overlay_state(
+        self,
+        *,
+        voltage_color_enabled: bool | None = None,
+        current_dots_enabled: bool | None = None,
+        overlay_rgb: tuple[int, int, int] | None = None,
+        dot_velocity: float | None = None,
+        dot_phase: float | None = None,
+        clear_overlay: bool = False,
+    ) -> None:
+        """Update live voltage color and current dot animation parameters on this wire."""
+        if voltage_color_enabled is not None:
+            self.voltage_color_enabled = bool(voltage_color_enabled)
+        if current_dots_enabled is not None:
+            self.current_dots_enabled = bool(current_dots_enabled)
+        if clear_overlay:
+            self.overlay_rgb = None
+            self.dot_velocity = 0.0
+            self.dot_phase = 0.0
+        else:
+            if overlay_rgb is not None:
+                self.overlay_rgb = (int(overlay_rgb[0]), int(overlay_rgb[1]), int(overlay_rgb[2]))
+            if dot_velocity is not None:
+                self.dot_velocity = float(dot_velocity)
+            if dot_phase is not None:
+                self.dot_phase = float(dot_phase) % 1.0
+        self.update()
+
+    def advance_dot_phase(self, step_scale: float = 0.12) -> None:
+        """Advance current dot phase along the polyline according to signed `dot_velocity`."""
+        if not self.current_dots_enabled or abs(self.dot_velocity) <= 0.0:
+            return
+        self.dot_phase = (self.dot_phase + self.dot_velocity * float(step_scale)) % 1.0
+        self.update()
+
+    def _sample_dot_positions(self, spacing_px: float = 28.0) -> list[QPointF]:
+        """Return animated dot positions along `self._points` shifted by normalized `dot_phase`."""
+        if len(self._points) < 2:
+            return []
+        segments: list[tuple[float, float, float, float, float]] = []
+        total_len = 0.0
+        for idx in range(len(self._points) - 1):
+            x0, y0 = float(self._points[idx][0]), float(self._points[idx][1])
+            x1, y1 = float(self._points[idx + 1][0]), float(self._points[idx + 1][1])
+            seg_len = math.hypot(x1 - x0, y1 - y0)
+            if seg_len > 1e-6:
+                segments.append((x0, y0, x1, y1, seg_len))
+                total_len += seg_len
+        if total_len < 6.0:
+            return []
+        step = max(12.0, float(spacing_px))
+        offset = (self.dot_phase % 1.0) * step
+        positions: list[QPointF] = []
+        s = offset
+        seg_idx = 0
+        seg_start = 0.0
+        while s <= total_len and seg_idx < len(segments):
+            x0, y0, x1, y1, sl = segments[seg_idx]
+            if s > seg_start + sl:
+                seg_start += sl
+                seg_idx += 1
+                continue
+            t = (s - seg_start) / sl
+            positions.append(QPointF(x0 + (x1 - x0) * t, y0 + (y1 - y0) * t))
+            s += step
+        return positions
 
     def to_wire_spec(self) -> WireSpec:
         """Convert to a pure-Python `WireSpec` for connectivity extraction."""
@@ -272,16 +345,29 @@ class WireItem(QGraphicsObject):
             )
             painter.drawPath(self._path)
         else:
-            active_color = QColor(palette.symbol_stroke)
+            if self.voltage_color_enabled and self.overlay_rgb is not None:
+                active_color = QColor(*self.overlay_rgb)
+                pen_w = 2.6
+            else:
+                active_color = QColor(palette.symbol_stroke)
+                pen_w = 2.2
             pen = QPen(
                 active_color,
-                2.2,
+                pen_w,
                 Qt.PenStyle.SolidLine,
                 Qt.PenCapStyle.RoundCap,
                 Qt.PenJoinStyle.MiterJoin,
             )
             painter.setPen(pen)
             painter.drawPath(self._path)
+
+        if not self.is_preview and self.current_dots_enabled and abs(self.dot_velocity) > 0.0:
+            dot_pts = self._sample_dot_positions()
+            if dot_pts:
+                painter.setPen(Qt.PenStyle.NoPen)
+                painter.setBrush(QBrush(QColor("#FFD166")))
+                for dp in dot_pts:
+                    painter.drawEllipse(dp, 2.5, 2.5)
 
         if not self.is_preview and active_color is not None:
             marker_pen = QPen(active_color, 1.6)

@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING, Sequence
 if TYPE_CHECKING:
     from circuitsim.app.settings import AppSettings
 
-from PySide6.QtCore import QLineF, QObject, QPointF, QRectF, Qt, Signal
+from PySide6.QtCore import QLineF, QObject, QPointF, QRectF, Qt, QTimer, Signal
 from PySide6.QtGui import QBrush, QColor, QPainter, QPen, QUndoStack
 from PySide6.QtWidgets import QGraphicsScene
 
@@ -75,6 +75,12 @@ from circuitsim.wiring.model import (
     snap_px as wire_snap_px,
 )
 from circuitsim.wiring.netlist import build_circuit as wiring_build_circuit
+from circuitsim.wiring.overlay import (
+    compute_current_dot_velocity,
+    estimate_wire_currents,
+    format_power_probe_text,
+    map_voltage_to_rgb,
+)
 from circuitsim.wiring.router import (
     normalize_dir as wire_normalize_dir,
     route as wire_route,
@@ -182,9 +188,16 @@ class CircuitScene(QGraphicsScene):
         self._clipboard: _ClipboardData | None = None
         self._paste_serial: int = 0
 
-        # Live simulation telemetry cache
+        # Live simulation telemetry cache & visual intuition overlays (F3)
         self.latest_node_voltages: dict[str, float] = {}
         self.is_simulation_running: bool = False
+        self._last_sim_frame: SimulationFrame | None = None
+        self.voltage_colors_enabled: bool = False
+        self.current_dots_enabled: bool = False
+        self.last_power_probe_text: str = ""
+        self._dot_anim_timer = QTimer(self)
+        self._dot_anim_timer.setInterval(50)
+        self._dot_anim_timer.timeout.connect(self.step_current_dot_animation)
 
         self.setSceneRect(-2000.0, -2000.0, 4000.0, 4000.0)
         self.selectionChanged.connect(self._on_selection_changed)
@@ -3237,15 +3250,20 @@ class CircuitScene(QGraphicsScene):
         if frame.state in (SimulationState.STOPPED, SimulationState.ERROR):
             self.latest_node_voltages = {}
             self.is_simulation_running = False
+            self._last_sim_frame = None
             for item in self._placed_items:
                 item.reset_live_telemetry()
         else:
             self.latest_node_voltages = dict(frame.node_voltages)
             self.is_simulation_running = True
+            self._last_sim_frame = frame
             for item in self._placed_items:
                 telem = frame.components.get(item.component.name)
                 if telem is not None:
                     item.apply_telemetry(telem)
+
+        self._refresh_wire_overlays()
+        self._sync_dot_anim_timer()
 
         # Map diagnostics to components and wires (error takes precedence over warning)
         comp_diag: dict[str, tuple[str, str, str]] = {}
@@ -3284,6 +3302,122 @@ class CircuitScene(QGraphicsScene):
         ]
         if selected:
             self.selection_info_changed.emit(selected[0])
+
+    def set_voltage_colors_enabled(self, enabled: bool) -> None:
+        """Enable or disable live voltage color-coding on wires."""
+        val = bool(enabled)
+        if val != self.voltage_colors_enabled:
+            self.voltage_colors_enabled = val
+            self._refresh_wire_overlays()
+            self.update()
+
+    def set_current_dots_enabled(self, enabled: bool) -> None:
+        """Enable or disable animated current flow dots on wires."""
+        val = bool(enabled)
+        if val != self.current_dots_enabled:
+            self.current_dots_enabled = val
+            self._refresh_wire_overlays()
+            self._sync_dot_anim_timer()
+            self.update()
+
+    def _sync_dot_anim_timer(self) -> None:
+        should_run = (
+            self.current_dots_enabled
+            and self.is_simulation_running
+            and not self._is_shutting_down
+        )
+        if should_run and not self._dot_anim_timer.isActive():
+            self._dot_anim_timer.start()
+        elif not should_run and self._dot_anim_timer.isActive():
+            self._dot_anim_timer.stop()
+
+    def step_current_dot_animation(self, step_scale: float = 0.12) -> None:
+        """Advance animated current dot phase on all placed wires."""
+        if not self.current_dots_enabled or not self.is_simulation_running:
+            return
+        for wire in self._wire_items:
+            wire.advance_dot_phase(step_scale)
+
+    def _refresh_wire_overlays(self) -> None:
+        if not self.is_simulation_running or self._last_sim_frame is None:
+            for wire in self._wire_items:
+                wire.set_overlay_state(
+                    voltage_color_enabled=self.voltage_colors_enabled,
+                    current_dots_enabled=self.current_dots_enabled,
+                    clear_overlay=True,
+                )
+            return
+
+        if not self.voltage_colors_enabled and not self.current_dots_enabled:
+            for wire in self._wire_items:
+                wire.set_overlay_state(
+                    voltage_color_enabled=False,
+                    current_dots_enabled=False,
+                    clear_overlay=True,
+                )
+            return
+
+        conn = self.extract_connectivity_result()
+        term_names = {
+            it.component.name: tuple(t.name for t in it.metadata.terminals)
+            for it in self._placed_items
+        }
+        branch_currents = {
+            cname: telem.current
+            for cname, telem in self._last_sim_frame.components.items()
+        }
+        wire_currents = (
+            estimate_wire_currents(self._wire_graph, term_names, branch_currents)
+            if self.current_dots_enabled
+            else {}
+        )
+        for wire in self._wire_items:
+            net_name = conn.wire_to_node.get(wire.wire_id)
+            rgb = None
+            if self.voltage_colors_enabled and net_name is not None and net_name in self.latest_node_voltages:
+                rgb = map_voltage_to_rgb(self.latest_node_voltages[net_name])
+            vel = (
+                compute_current_dot_velocity(wire_currents.get(wire.wire_id, 0.0))
+                if self.current_dots_enabled
+                else 0.0
+            )
+            wire.set_overlay_state(
+                voltage_color_enabled=self.voltage_colors_enabled,
+                current_dots_enabled=self.current_dots_enabled,
+                overlay_rgb=rgb,
+                dot_velocity=vel,
+            )
+
+    def get_alt_power_probe_text(self, item: ComponentItem) -> str:
+        """Compute and format instantaneous `P = V_drop * I_branch` power reading for Alt-hover."""
+        comp = item.component
+        is_src = comp.component_type in ("dc_voltage", "ac_voltage", "dc_current", "wav_voltage")
+        p_w = float(getattr(comp, "power", comp.voltage * comp.current))
+        text = format_power_probe_text(
+            comp.name,
+            p_w,
+            voltage_v=float(comp.voltage),
+            current_a=float(comp.current),
+            is_running=self.is_simulation_running,
+            is_source=is_src,
+        )
+        self.last_power_probe_text = text
+        return text
+
+    def query_alt_power_probe_at(
+        self, scene_pos: QPointF | tuple[float, float]
+    ) -> str | None:
+        """Return formatted Alt-hover power probe text for the component at `scene_pos`, if any."""
+        pt = (
+            scene_pos
+            if isinstance(scene_pos, QPointF)
+            else QPointF(float(scene_pos[0]), float(scene_pos[1]))
+        )
+        for item in reversed(self._placed_items):
+            local_pt = item.mapFromScene(pt)
+            if item.shape().contains(local_pt) or item.boundingRect().contains(local_pt):
+                return self.get_alt_power_probe_text(item)
+        return None
 
     def get_component_tooltip(self, item: ComponentItem) -> str:
         """Return the live tooltip for a component item based on current simulation state."""
@@ -3462,6 +3596,10 @@ class CircuitScene(QGraphicsScene):
         if self._is_shutting_down:
             return
         self._is_shutting_down = True
+        try:
+            self._dot_anim_timer.stop()
+        except RuntimeError:
+            pass
         try:
             self.selectionChanged.disconnect(self._on_selection_changed)
         except (RuntimeError, TypeError):

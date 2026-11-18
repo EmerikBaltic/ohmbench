@@ -17,7 +17,7 @@ from PySide6.QtGui import (
     QPainter,
     QWheelEvent,
 )
-from PySide6.QtWidgets import QGraphicsView, QMenu, QToolTip
+from PySide6.QtWidgets import QApplication, QGraphicsView, QMenu, QToolTip
 
 from circuitsim.app.settings import DEFAULT_SHORTCUTS, AppSettings
 from circuitsim.canvas.component_item import ComponentItem
@@ -340,7 +340,10 @@ class CircuitView(QGraphicsView):
                 while curr is not None and not isinstance(curr, ComponentItem) and curr.parentItem() is not None:
                     curr = curr.parentItem()
                 if isinstance(curr, ComponentItem):
-                    tip = self.circuit_scene.get_component_tooltip(curr)
+                    if QApplication.keyboardModifiers() & Qt.KeyboardModifier.AltModifier:
+                        tip = self.circuit_scene.get_alt_power_probe_text(curr)
+                    else:
+                        tip = self.circuit_scene.get_component_tooltip(curr)
                     QToolTip.showText(event.globalPos(), tip, self.viewport())
                     return True
         return super().viewportEvent(event)
@@ -563,6 +566,17 @@ class CircuitView(QGraphicsView):
                 event.accept()
                 return
             self._drag_threshold_reached = True
+
+        if (
+            event.modifiers() & Qt.KeyboardModifier.AltModifier
+            and not (event.buttons() & Qt.MouseButton.LeftButton)
+            and self._placing_component_type is None
+        ):
+            probe = self.circuit_scene.query_alt_power_probe_at(scene_pt)
+            if probe is not None:
+                QToolTip.showText(
+                    self.viewport().mapToGlobal(event_pos), probe, self.viewport()
+                )
 
         self._update_cursor_for_scene_pos(scene_pt)
         super().mouseMoveEvent(event)
