@@ -33,13 +33,14 @@ from circuitsim.components import (
 )
 from circuitsim.dialogs.mcu_firmware_dialog import MCUFirmwareDialog
 from circuitsim.engine import Circuit, MNASolver, evaluate_component_stress
+from circuitsim.io.kicad_export import export_to_kicad_sch
 from circuitsim.io.share_codec import decode_circuit_share_url, encode_circuit_share_url
 from circuitsim.io.spice_import import (
     instantiate_bjt_model,
     instantiate_diode_model,
     parse_spice_library,
 )
-from circuitsim.wiring.model import TerminalRef
+from circuitsim.wiring.model import FreeEnd, TerminalRef
 from circuitsim.wiring.serializer import dumps_document_v2, loads_document_v2
 
 
@@ -431,4 +432,80 @@ def test_h6_parameter_sweep_and_monte_carlo_dialog_and_csv(qapp, tmp_path: Path)
         assert len(csv_mc.read_text(encoding="utf-8").strip().splitlines()) == 41
     finally:
         dlg.close()
+        qapp.processEvents()
+
+
+def test_h7_named_net_labels_electrical_unification_and_serialization(qapp) -> None:
+    """H7: Named net labels ('VCC'/'vcc') unite disconnected subcircuits, MNA nodes, v2/URL & KiCad."""
+    scene = CircuitScene(SymbolLibrary())
+    try:
+        # Left power supply block
+        v1 = scene.place_new_component("dc_voltage", QPointF(-240.0, 0.0))
+        v1.component.dc_voltage = 10.0
+        gnd_left = scene.place_new_component("ground", QPointF(-240.0, 140.0))
+        scene.add_wire(
+            TerminalRef(v1.component.name, "neg"),
+            TerminalRef(gnd_left.component.name, "gnd"),
+        )
+        v1_pos_pt = v1.terminal_scene_positions_px()["pos"]
+        w_vcc_left = scene.add_wire(
+            TerminalRef(v1.component.name, "pos"),
+            FreeEnd(v1_pos_pt[0] + 40, v1_pos_pt[1]),
+        )
+        assert w_vcc_left is not None
+        assert scene.set_net_label(w_vcc_left.wire_id, "VCC")
+        assert w_vcc_left.net_label == "VCC"
+
+        # Right divider at x = +400 (physically disconnected from V1, sharing net label "vcc")
+        r1 = scene.place_new_component("resistor", QPointF(400.0, -40.0))
+        r1.component.resistance = 1_000.0
+        r2 = scene.place_new_component("resistor", QPointF(400.0, 80.0))
+        r2.component.resistance = 1_000.0
+        gnd_right = scene.place_new_component("ground", QPointF(400.0, 180.0))
+
+        r1_a_pt = r1.terminal_scene_positions_px()["a"]
+        w_vcc_right = scene.add_wire(
+            TerminalRef(r1.component.name, "a"),
+            FreeEnd(r1_a_pt[0] - 40, r1_a_pt[1]),
+        )
+        assert w_vcc_right is not None
+        assert scene.set_net_label(w_vcc_right.wire_id, "vcc")
+
+        w_mid = scene.add_wire(
+            TerminalRef(r1.component.name, "b"),
+            TerminalRef(r2.component.name, "a"),
+        )
+        assert w_mid is not None
+        assert scene.set_net_label(w_mid.wire_id, "V_MID")
+        scene.undo_stack.undo()
+        assert scene.wire_graph.wire(w_mid.wire_id).net_label == ""
+        scene.undo_stack.redo()
+        assert scene.wire_graph.wire(w_mid.wire_id).net_label == "V_MID"
+
+        scene.add_wire(
+            TerminalRef(r2.component.name, "b"),
+            TerminalRef(gnd_right.component.name, "gnd"),
+        )
+
+        # Solve circuit -> "VCC" and "vcc" share MNA node "VCC" = 10.0 V, "V_MID" = 5.000 V
+        circ = scene.build_circuit()
+        assert "VCC" in circ.non_ground_nodes()
+        assert "V_MID" in circ.non_ground_nodes()
+        res = MNASolver(circ).solve_dc()
+        assert math.isclose(res.node_voltages["VCC"], 10.0, abs_tol=1e-6)
+        assert math.isclose(res.node_voltages["V_MID"], 5.0, abs_tol=1e-6)
+
+        # Round-trip through .circ v2, share URL, and KiCad .kicad_sch export
+        doc_v2 = scene.to_document_v2()
+        loaded = loads_document_v2(dumps_document_v2(doc_v2))
+        assert {w.net_label for w in loaded.graph.wires if w.net_label} == {"VCC", "vcc", "V_MID"}
+
+        decoded = decode_circuit_share_url(encode_circuit_share_url(doc_v2))
+        assert {w.net_label for w in decoded.graph.wires if w.net_label} == {"VCC", "vcc", "V_MID"}
+
+        kicad_txt = export_to_kicad_sch(doc_v2)
+        assert '(label "VCC"' in kicad_txt
+        assert '(label "V_MID"' in kicad_txt
+    finally:
+        scene.shutdown_scene()
         qapp.processEvents()

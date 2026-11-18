@@ -163,6 +163,13 @@ def export_to_kicad_sch(
         lines.append(
             f'  (junction (at {jx} {jy}) (diameter 0) (color 0 0 0 0) (uuid "{ju}"))'
         )
+        j_lbl = str(getattr(j, "net_label", "") or "").strip().upper()
+        if j_lbl:
+            lu = _deterministic_uuid(f"label:junc:{j.id}:{j_lbl}")
+            lines.append(
+                f'  (label "{_esc(j_lbl)}" (at {jx} {jy} 0) '
+                f'(effects (font (size 1.27 1.27)) (justify left bottom)) (uuid "{lu}"))'
+            )
 
     # Orthogonal Manhattan wires
     for w in v2_doc.graph.wires:
@@ -187,6 +194,15 @@ def export_to_kicad_sch(
             lines.append(
                 f"  (wire (pts (xy {x1} {y1}) (xy {x2} {y2})) "
                 f'(stroke (width 0) (type default)) (uuid "{wu}"))'
+            )
+        w_lbl = str(getattr(w, "net_label", "") or "").strip().upper()
+        if w_lbl:
+            mx = round(0.5 * (_mm(pa[0]) + _mm(pb[0])), 3)
+            my = round(0.5 * (_mm(pa[1]) + _mm(pb[1])), 3)
+            lu = _deterministic_uuid(f"label:wire:{w.id}:{w_lbl}")
+            lines.append(
+                f'  (label "{_esc(w_lbl)}" (at {mx} {my} 0) '
+                f'(effects (font (size 1.27 1.27)) (justify left bottom)) (uuid "{lu}"))'
             )
 
     # Placed component symbols

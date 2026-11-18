@@ -53,6 +53,7 @@ class WireItem(QGraphicsObject):
         end_a: Attachment | None = None,
         end_b: Attachment | None = None,
         hints: Sequence[tuple[int, int]] = (),
+        net_label: str = "",
     ) -> None:
         super().__init__()
         self.wire_id: str = wire_id
@@ -61,6 +62,7 @@ class WireItem(QGraphicsObject):
         self.end_a: Attachment | None = end_a
         self.end_b: Attachment | None = end_b
         self.hints: tuple[PointPx, ...] = tuple((int(p[0]), int(p[1])) for p in hints)
+        self.net_label: str = str(net_label or "").strip()
         self._points: tuple[PointPx, ...] = simplify_orthogonal_points(
             points, snap=True
         )
@@ -99,6 +101,38 @@ class WireItem(QGraphicsObject):
         self._points = norm
         self._rebuild_paths()
         self.update()
+
+    def set_net_label(self, label: str) -> None:
+        cleaned = str(label or "").strip()
+        if cleaned == self.net_label:
+            return
+        self.prepareGeometryChange()
+        self.net_label = cleaned
+        self._rebuild_paths()
+        self.update()
+
+    def _polyline_midpoint(self) -> QPointF:
+        if len(self._points) < 2:
+            return QPointF(0.0, 0.0)
+        segs: list[tuple[tuple[int, int], tuple[int, int], float]] = []
+        total = 0.0
+        for p0, p1 in zip(self._points, self._points[1:]):
+            sl = math.hypot(float(p1[0] - p0[0]), float(p1[1] - p0[1]))
+            if sl > 0.0:
+                segs.append((p0, p1, sl))
+                total += sl
+        if total <= 0.0:
+            p0 = self._points[0]
+            return QPointF(float(p0[0]), float(p0[1]))
+        half = 0.5 * total
+        acc = 0.0
+        for p0, p1, sl in segs:
+            if acc + sl >= half:
+                t = (half - acc) / sl
+                return QPointF(p0[0] + (p1[0] - p0[0]) * t, p0[1] + (p1[1] - p0[1]) * t)
+            acc += sl
+        pn = self._points[-1]
+        return QPointF(float(pn[0]), float(pn[1]))
 
     def set_theme(self, theme: ThemeMode) -> None:
         """Update theme color and repaint."""
@@ -209,11 +243,16 @@ class WireItem(QGraphicsObject):
         stroker.setCapStyle(Qt.PenCapStyle.RoundCap)
         stroker.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
         self._hit_shape = stroker.createStroke(path)
-        self._cached_bounding_rect = (
+        base_rect = (
             QRectF(0.0, 0.0, 1.0, 1.0)
             if self._path.isEmpty()
             else self._hit_shape.boundingRect().adjusted(-4.0, -4.0, 4.0, 4.0)
         )
+        if self.net_label and len(self._points) >= 2:
+            mp = self._polyline_midpoint()
+            flag_w = max(36.0, float(len(self.net_label)) * 7.5 + 16.0)
+            base_rect = base_rect.united(QRectF(mp.x() - 4.0, mp.y() - 26.0, flag_w + 10.0, 28.0))
+        self._cached_bounding_rect = base_rect
 
     def boundingRect(self) -> QRectF:
         return self._cached_bounding_rect
@@ -386,6 +425,36 @@ class WireItem(QGraphicsObject):
                 pn = self._points[-1]
                 painter.drawEllipse(QPointF(float(pn[0]), float(pn[1])), 3.5, 3.5)
 
+        if not self.is_preview and self.net_label:
+            mp = self._polyline_midpoint()
+            lbl_txt = self.net_label.strip().upper()
+            flag_w = max(28.0, float(len(lbl_txt)) * 7.2 + 14.0)
+            flag_h = 17.0
+            x0, y0 = mp.x(), mp.y() - 3.0
+            flag = QPainterPath()
+            flag.moveTo(x0, y0)
+            flag.lineTo(x0 + 6.0, y0 - flag_h * 0.5)
+            flag.lineTo(x0 + 6.0 + flag_w, y0 - flag_h * 0.5)
+            flag.lineTo(x0 + 6.0 + flag_w, y0 + flag_h * 0.5)
+            flag.lineTo(x0 + 6.0, y0 + flag_h * 0.5)
+            flag.closeSubpath()
+            is_dark = self.theme == ThemeMode.DARK
+            fill_c = QColor("#1f2937") if is_dark else QColor("#eef2ff")
+            border_c = QColor("#38bdf8") if is_dark else QColor("#2563eb")
+            txt_c = QColor("#f8fafc") if is_dark else QColor("#1e293b")
+            painter.setPen(QPen(border_c, 1.3))
+            painter.setBrush(QBrush(fill_c))
+            painter.drawPath(flag)
+            f = QFont("Segoe UI", 8)
+            f.setBold(True)
+            painter.setFont(f)
+            painter.setPen(txt_c)
+            painter.drawText(
+                QRectF(x0 + 7.0, y0 - flag_h * 0.5, flag_w - 2.0, flag_h),
+                Qt.AlignmentFlag.AlignCenter,
+                lbl_txt,
+            )
+
         painter.restore()
 
 
@@ -399,11 +468,13 @@ class JunctionItem(QGraphicsObject):
         parent: Any = None,
         *,
         junction_id: str | None = None,
+        net_label: str = "",
     ) -> None:
         super().__init__(parent)
         self.setPos(position)
         self.theme: ThemeMode | str = theme
         self.junction_id: str | None = junction_id
+        self.net_label: str = str(net_label or "").strip()
         self._paint_error_logged: bool = False
         self.setZValue(6.0)
         self.setFlags(QGraphicsItem.GraphicsItemFlag.ItemIsSelectable)
@@ -413,8 +484,20 @@ class JunctionItem(QGraphicsObject):
         self.theme = theme
         self.update()
 
+    def set_net_label(self, label: str) -> None:
+        cleaned = str(label or "").strip()
+        if cleaned == self.net_label:
+            return
+        self.prepareGeometryChange()
+        self.net_label = cleaned
+        self.update()
+
     def boundingRect(self) -> QRectF:
-        return QRectF(-7.0, -7.0, 14.0, 14.0)
+        base = QRectF(-7.0, -7.0, 14.0, 14.0)
+        if self.net_label:
+            w = max(36.0, float(len(self.net_label)) * 7.5 + 16.0)
+            base = base.united(QRectF(0.0, -24.0, w + 10.0, 26.0))
+        return base
 
     def paint(
         self,
@@ -470,5 +553,33 @@ class JunctionItem(QGraphicsObject):
         painter.setPen(QPen(junc_color, 1.2))
         painter.setBrush(QBrush(junc_color))
         painter.drawEllipse(QPointF(0.0, 0.0), 4.2, 4.2)
+        if self.net_label:
+            lbl_txt = self.net_label.strip().upper()
+            flag_w = max(28.0, float(len(lbl_txt)) * 7.2 + 14.0)
+            flag_h = 17.0
+            x0, y0 = 4.0, -8.0
+            flag = QPainterPath()
+            flag.moveTo(x0, y0)
+            flag.lineTo(x0 + 6.0, y0 - flag_h * 0.5)
+            flag.lineTo(x0 + 6.0 + flag_w, y0 - flag_h * 0.5)
+            flag.lineTo(x0 + 6.0 + flag_w, y0 + flag_h * 0.5)
+            flag.lineTo(x0 + 6.0, y0 + flag_h * 0.5)
+            flag.closeSubpath()
+            is_dark = self.theme == ThemeMode.DARK
+            fill_c = QColor("#1f2937") if is_dark else QColor("#eef2ff")
+            border_c = QColor("#38bdf8") if is_dark else QColor("#2563eb")
+            txt_c = QColor("#f8fafc") if is_dark else QColor("#1e293b")
+            painter.setPen(QPen(border_c, 1.3))
+            painter.setBrush(QBrush(fill_c))
+            painter.drawPath(flag)
+            f = QFont("Segoe UI", 8)
+            f.setBold(True)
+            painter.setFont(f)
+            painter.setPen(txt_c)
+            painter.drawText(
+                QRectF(x0 + 7.0, y0 - flag_h * 0.5, flag_w - 2.0, flag_h),
+                Qt.AlignmentFlag.AlignCenter,
+                lbl_txt,
+            )
         painter.restore()
 

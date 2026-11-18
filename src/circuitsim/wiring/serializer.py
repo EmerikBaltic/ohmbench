@@ -140,14 +140,31 @@ def document_to_dict_v2(doc: CircuitDocumentV2) -> dict[str, Any]:
         "format": FORMAT_NAME,
         "schema_version": SCHEMA_VERSION_V2,
         "components": [_component_to_dict(s) for s in doc.placed],
-        "junctions": [{"id": j.id, "x": j.pos[0], "y": j.pos[1]} for j in doc.graph.junctions],
+        "junctions": [
+            (
+                {"id": j.id, "x": j.pos[0], "y": j.pos[1], "net_label": j.net_label}
+                if j.net_label
+                else {"id": j.id, "x": j.pos[0], "y": j.pos[1]}
+            )
+            for j in doc.graph.junctions
+        ],
         "wires": [
-            {
-                "id": w.id,
-                "end_a": attachment_to_dict(w.end_a),
-                "end_b": attachment_to_dict(w.end_b),
-                "hints": [[x, y] for x, y in w.hints],
-            }
+            (
+                {
+                    "id": w.id,
+                    "end_a": attachment_to_dict(w.end_a),
+                    "end_b": attachment_to_dict(w.end_b),
+                    "hints": [[x, y] for x, y in w.hints],
+                    "net_label": w.net_label,
+                }
+                if w.net_label
+                else {
+                    "id": w.id,
+                    "end_a": attachment_to_dict(w.end_a),
+                    "end_b": attachment_to_dict(w.end_b),
+                    "hints": [[x, y] for x, y in w.hints],
+                }
+            )
             for w in doc.graph.wires
         ],
         "view": {
@@ -218,7 +235,10 @@ def dict_to_document_v2(data: object) -> CircuitDocumentV2:
         y = jd.get("y")
         if not (isinstance(x, (int, float)) and isinstance(y, (int, float))):
             raise CircuitFileError(f"Junction {jid} must have numeric 'x' and 'y'.")
-        junctions.append(Junction(jid, snap_px((float(x), float(y)))))
+        j_lbl = jd.get("net_label", "")
+        if not isinstance(j_lbl, str):
+            raise CircuitFileError(f"Junction {jid} 'net_label' must be text.")
+        junctions.append(Junction(jid, snap_px((float(x), float(y))), net_label=j_lbl.strip()))
 
     wires: list[Wire] = []
     seen_wids: set[str] = set()
@@ -237,7 +257,10 @@ def dict_to_document_v2(data: object) -> CircuitDocumentV2:
         hints = tuple(
             snap_px(_require_point(h, f"Wire {wid} waypoint hint")) for h in raw_hints
         )
-        wires.append(Wire(wid, end_a, end_b, hints))
+        w_lbl = wd.get("net_label", "")
+        if not isinstance(w_lbl, str):
+            raise CircuitFileError(f"Wire {wid} 'net_label' must be text.")
+        wires.append(Wire(wid, end_a, end_b, hints, net_label=w_lbl.strip()))
 
     graph = WireGraph(wires=tuple(wires), junctions=tuple(junctions))
     # Validate attachment integrity

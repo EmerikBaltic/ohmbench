@@ -12,7 +12,7 @@ if TYPE_CHECKING:
 
 from PySide6.QtCore import QLineF, QObject, QPointF, QRectF, Qt, QTimer, Signal
 from PySide6.QtGui import QBrush, QColor, QPainter, QPen, QUndoStack
-from PySide6.QtWidgets import QGraphicsScene
+from PySide6.QtWidgets import QGraphicsScene, QInputDialog
 
 from circuitsim.app.themes import ThemeMode, get_theme_palette
 from circuitsim.components.logic_gate import LogicGate
@@ -410,7 +410,11 @@ class CircuitScene(QGraphicsScene):
         visible_junctions = {
             j.id: j
             for j in graph.junctions
-            if graph.junction_dot_visible(j.id) or j.pos in self._explicit_junctions
+            if (
+                graph.junction_dot_visible(j.id)
+                or j.pos in self._explicit_junctions
+                or bool(j.net_label)
+            )
         }
         for old_jid in list(self._junction_items_by_id):
             if old_jid not in visible_junctions:
@@ -423,6 +427,7 @@ class CircuitScene(QGraphicsScene):
             if existing is not None:
                 if existing.pos() != target_pos:
                     existing.setPos(target_pos)
+                existing.set_net_label(junc.net_label)
                 if existing.scene() is not self:
                     self.addItem(existing)
             else:
@@ -430,6 +435,7 @@ class CircuitScene(QGraphicsScene):
                     target_pos,
                     theme=self.theme,
                     junction_id=jid,
+                    net_label=junc.net_label,
                 )
                 self._junction_items_by_id[jid] = jitem
                 self.addItem(jitem)
@@ -479,6 +485,7 @@ class CircuitScene(QGraphicsScene):
                 existing.end_a = wire.end_a
                 existing.end_b = wire.end_b
                 existing.hints = wire.hints
+                existing.set_net_label(wire.net_label)
                 existing.set_points(pts)
                 if existing.scene() is not self:
                     self.addItem(existing)
@@ -491,6 +498,7 @@ class CircuitScene(QGraphicsScene):
                     end_a=wire.end_a,
                     end_b=wire.end_b,
                     hints=wire.hints,
+                    net_label=wire.net_label,
                 )
                 self.addItem(item)
             if select_wire_ids and wire.id in select_wire_ids:
@@ -2206,6 +2214,7 @@ class CircuitScene(QGraphicsScene):
         *,
         hints: Sequence[tuple[float, float] | PointPx] = (),
         wire_id: str | None = None,
+        net_label: str = "",
     ) -> WireItem | None:
         """Add an orthogonal wire via `QUndoStack`.
 
@@ -2227,7 +2236,7 @@ class CircuitScene(QGraphicsScene):
             wid = wire_id if wire_id is not None else self.next_wire_id()
             try:
                 new_graph = self._wire_graph.add_wire(
-                    att_a, att_b, hints=norm_hints, wire_id=wid
+                    att_a, att_b, hints=norm_hints, wire_id=wid, net_label=net_label
                 )
             except WireGraphError:
                 return None
@@ -2240,6 +2249,7 @@ class CircuitScene(QGraphicsScene):
                 end_a=att_a,
                 end_b=att_b,
                 hints=norm_hints,
+                net_label=wire_obj.net_label,
             )
             self.undo_stack.push(
                 AddWireCommand(
@@ -3127,7 +3137,8 @@ class CircuitScene(QGraphicsScene):
         open_wire_ids = [
             w.id
             for w in self._wire_graph.wires
-            if isinstance(w.end_a, FreeEnd) or isinstance(w.end_b, FreeEnd)
+            if (isinstance(w.end_a, FreeEnd) or isinstance(w.end_b, FreeEnd))
+            and not str(getattr(w, "net_label", "") or "").strip()
         ]
 
         point_to_node: dict[PointPx, str] = {}
@@ -3167,6 +3178,59 @@ class CircuitScene(QGraphicsScene):
             unconnected_components=wnet.unconnected_components,
             open_wire_ids=open_wire_ids,
         )
+
+    def set_net_label(self, target_id: str, label: str) -> bool:
+        """Assign (or clear) a named net port label on wire `target_id` or junction `target_id`."""
+        cleaned = str(label or "").strip()
+        old_graph = self._wire_graph
+        if old_graph.has_wire(target_id):
+            new_graph = old_graph.set_wire_net_label(target_id, cleaned)
+        elif old_graph.has_junction(target_id):
+            new_graph = old_graph.set_junction_net_label(target_id, cleaned)
+        else:
+            return False
+        if new_graph is old_graph:
+            return False
+        self.undo_stack.push(
+            SetWireGraphCommand(
+                self,
+                old_graph,
+                new_graph,
+                description=f"Set Net Label ({cleaned or 'none'})",
+            )
+        )
+        return True
+
+    def prompt_set_net_label(self, target_id: str | None = None, parent=None) -> bool:
+        """Prompt user for a named net label for selected wire/junction (or `target_id`)."""
+        tid = target_id
+        current = ""
+        if tid is None:
+            for it in self.selectedItems():
+                if isinstance(it, WireItem):
+                    tid = it.wire_id
+                    current = it.net_label
+                    break
+                if isinstance(it, JunctionItem) and it.junction_id:
+                    tid = it.junction_id
+                    current = it.net_label
+                    break
+        else:
+            if self._wire_graph.has_wire(tid):
+                current = self._wire_graph.wire(tid).net_label
+            elif self._wire_graph.has_junction(tid):
+                current = self._wire_graph.junction(tid).net_label
+        if tid is None:
+            return False
+        text, ok = QInputDialog.getText(
+            parent,
+            "Set Net Label",
+            "Net label (e.g. VCC, GND_REF, IN, OUT; leave blank to clear):",
+            text=current,
+        )
+        if not ok:
+            return False
+        return self.set_net_label(tid, text)
 
     def build_circuit(self) -> Circuit:
         """Build and return a solver-ready `Circuit` from the schematic's components and wires."""

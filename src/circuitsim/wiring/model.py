@@ -110,10 +110,17 @@ class Wire:
     end_a: Attachment
     end_b: Attachment
     hints: tuple[PointPx, ...] = ()
+    net_label: str = ""
 
     def reversed(self) -> Wire:
         """Same wire with its ends (and hints) swapped."""
-        return Wire(self.id, self.end_b, self.end_a, tuple(reversed(self.hints)))
+        return Wire(
+            self.id,
+            self.end_b,
+            self.end_a,
+            tuple(reversed(self.hints)),
+            net_label=self.net_label,
+        )
 
     def touches(self, att: Attachment) -> bool:
         return self.end_a == att or self.end_b == att
@@ -125,6 +132,7 @@ class Junction:
 
     id: str
     pos: PointPx
+    net_label: str = ""
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "pos", snap_px(self.pos))
@@ -211,7 +219,10 @@ def _normalize(wires: list[Wire], junctions: list[Junction], affected: Iterable[
                 # The wire became pointless: its other end lost a wire.
                 _queue_ends(queue, old.end_a, old.end_b)
                 continue
-            wires.insert(i, Wire(old.id, new_a, new_b, old.hints))
+            wires.insert(
+                i,
+                Wire(old.id, new_a, new_b, old.hints, net_label=old.net_label),
+            )
             continue
         # Exactly two wires meet here: they become one wire.
         i1, i2 = attached
@@ -225,7 +236,8 @@ def _normalize(wires: list[Wire], junctions: list[Junction], affected: Iterable[
         if x == y or _find_duplicate(wires, x, y) is not None:
             _queue_ends(queue, x, y)
             continue
-        wires.insert(i1, Wire(w1.id, x, y, hints))
+        merged_lbl = w1o.net_label or w2o.net_label or junc.net_label
+        wires.insert(i1, Wire(w1.id, x, y, hints, net_label=merged_lbl))
 
 
 # ---------------------------------------------------------------------------
@@ -286,6 +298,7 @@ class WireGraph:
         end_b: Attachment,
         hints: Iterable[tuple[float, float]] = (),
         wire_id: str | None = None,
+        net_label: str = "",
     ) -> WireGraph:
         """Add a wire. If a wire between the same two attachments exists, nothing changes."""
         if end_a == end_b:
@@ -300,7 +313,15 @@ class WireGraph:
             wire_id = self.new_wire_id()
         elif self.has_wire(wire_id):
             raise WireGraphError(f"Wire {wire_id} already exists.")
-        wires.append(Wire(wire_id, end_a, end_b, _snap_hints(hints)))
+        wires.append(
+            Wire(
+                wire_id,
+                end_a,
+                end_b,
+                _snap_hints(hints),
+                net_label=str(net_label or "").strip(),
+            )
+        )
         return WireGraph(tuple(wires), self.junctions)
 
     def remove_wire(self, wire_id: str) -> WireGraph:
@@ -318,9 +339,33 @@ class WireGraph:
     ) -> WireGraph:
         """Return a new graph with `wire_id`'s waypoint hints replaced (snapped to grid)."""
         old = self.wire(wire_id)
-        updated = Wire(old.id, old.end_a, old.end_b, _snap_hints(hints))
+        updated = Wire(
+            old.id, old.end_a, old.end_b, _snap_hints(hints), net_label=old.net_label
+        )
         wires = tuple(updated if w.id == wire_id else w for w in self.wires)
         return WireGraph(wires, self.junctions)
+
+    def set_wire_net_label(self, wire_id: str, net_label: str) -> WireGraph:
+        """Return a new graph with `wire_id`'s `net_label` updated."""
+        old = self.wire(wire_id)
+        cleaned = str(net_label or "").strip()
+        if old.net_label == cleaned:
+            return self
+        updated = Wire(old.id, old.end_a, old.end_b, old.hints, net_label=cleaned)
+        wires = tuple(updated if w.id == wire_id else w for w in self.wires)
+        return WireGraph(wires, self.junctions)
+
+    def set_junction_net_label(self, junction_id: str, net_label: str) -> WireGraph:
+        """Return a new graph with `junction_id`'s `net_label` updated."""
+        old_j = self.junction(junction_id)
+        cleaned = str(net_label or "").strip()
+        if old_j.net_label == cleaned:
+            return self
+        juncs = tuple(
+            Junction(old_j.id, old_j.pos, net_label=cleaned) if j.id == junction_id else j
+            for j in self.junctions
+        )
+        return WireGraph(self.wires, juncs)
 
     def reconnect_wire_end(
         self,
@@ -356,7 +401,9 @@ class WireGraph:
                 f"Wire already exists between {new_a} and {new_b}."
             )
 
-        updated = Wire(old.id, new_a, new_b, _snap_hints(hints))
+        updated = Wire(
+            old.id, new_a, new_b, _snap_hints(hints), net_label=old.net_label
+        )
         wires = [updated if w.id == wire_id else w for w in self.wires]
         junctions = list(self.junctions)
         affected: list[str] = []
@@ -365,13 +412,22 @@ class WireGraph:
         _normalize(wires, junctions, affected)
         return WireGraph(tuple(wires), tuple(junctions))
 
-    def add_junction(self, pos: tuple[float, float], junction_id: str | None = None) -> WireGraph:
+    def add_junction(
+        self,
+        pos: tuple[float, float],
+        junction_id: str | None = None,
+        net_label: str = "",
+    ) -> WireGraph:
         """Add a junction object (position snapped to the grid). It starts with no wires."""
         if junction_id is None:
             junction_id = self.new_junction_id()
         elif self.has_junction(junction_id):
             raise WireGraphError(f"Junction {junction_id} already exists.")
-        return WireGraph(self.wires, self.junctions + (Junction(junction_id, snap_px(pos)),))
+        return WireGraph(
+            self.wires,
+            self.junctions
+            + (Junction(junction_id, snap_px(pos), net_label=str(net_label or "").strip()),),
+        )
 
     def split_wire_at(
         self,
@@ -401,7 +457,13 @@ class WireGraph:
             raise WireGraphError("hints_before is outside the wire's waypoint list.")
         wires = list(self.wires)
         idx = wires.index(old)
-        first = Wire(old.id, old.end_a, ref, old.hints[:hints_before])
+        first = Wire(
+            old.id,
+            old.end_a,
+            ref,
+            old.hints[:hints_before],
+            net_label=old.net_label,
+        )
         second_id = _lowest_free_id("W", (w.id for w in wires))
         second = Wire(second_id, ref, old.end_b, old.hints[hints_before:])
         wires[idx] = first
@@ -422,7 +484,7 @@ class WireGraph:
             if w.touches(ref):
                 new_a = free if w.end_a == ref else w.end_a
                 new_b = free if w.end_b == ref else w.end_b
-                converted.append(Wire(w.id, new_a, new_b, w.hints))
+                converted.append(Wire(w.id, new_a, new_b, w.hints, net_label=w.net_label))
             else:
                 converted.append(w)
         # Moving the ends to a FreeEnd can make a wire pointless or identical to
@@ -494,11 +556,13 @@ class WireGraph:
             return self
         ref = JunctionRef(junction_id)
         junctions = tuple(
-            Junction(junction_id, pt) if j.id == junction_id else j
+            Junction(junction_id, pt, net_label=old_j.net_label)
+            if j.id == junction_id
+            else j
             for j in self.junctions
         )
         wires = tuple(
-            Wire(w.id, w.end_a, w.end_b, ())
+            Wire(w.id, w.end_a, w.end_b, (), net_label=w.net_label)
             if (w.hints and w.touches(ref))
             else w
             for w in self.wires
@@ -544,7 +608,7 @@ class WireGraph:
                 _queue_ends(affected, w.end_a, w.end_b)
                 continue
             if new_a != w.end_a or new_b != w.end_b:
-                wires.append(Wire(w.id, new_a, new_b, w.hints))
+                wires.append(Wire(w.id, new_a, new_b, w.hints, net_label=w.net_label))
             else:
                 wires.append(w)
         junctions = list(self.junctions)
@@ -666,7 +730,13 @@ def extract_subgraph(
         return att
 
     copied_wires = tuple(
-        Wire(w.id, _project_end(w.end_a), _project_end(w.end_b), w.hints)
+        Wire(
+            w.id,
+            _project_end(w.end_a),
+            _project_end(w.end_b),
+            w.hints,
+            net_label=w.net_label,
+        )
         for w in graph.wires
         if w.id in included_wids
     )
@@ -690,7 +760,9 @@ def paste_subgraph(
         junc_id_map[j.id] = new_jid
         new_junction_ids.append(new_jid)
         working = working.add_junction(
-            (j.pos[0] + dx, j.pos[1] + dy), junction_id=new_jid
+            (j.pos[0] + dx, j.pos[1] + dy),
+            junction_id=new_jid,
+            net_label=j.net_label,
         )
 
     def _remap_end(att: Attachment) -> Attachment:
@@ -715,6 +787,12 @@ def paste_subgraph(
         new_hints = tuple((hx + dx, hy + dy) for hx, hy in w.hints)
         new_wid = working.new_wire_id()
         new_wire_ids.append(new_wid)
-        working = working.add_wire(att_a, att_b, hints=new_hints, wire_id=new_wid)
+        working = working.add_wire(
+            att_a,
+            att_b,
+            hints=new_hints,
+            wire_id=new_wid,
+            net_label=w.net_label,
+        )
 
     return working, new_wire_ids, new_junction_ids

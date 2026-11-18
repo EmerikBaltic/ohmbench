@@ -685,7 +685,7 @@ class CircuitView(QGraphicsView):
         self._last_scene_pos = scene_pt
 
         clicked_item = self.circuit_scene.itemAt(scene_pt, self.transform())
-        if isinstance(clicked_item, (ComponentItem, WireItem)) and not clicked_item.isSelected():
+        if isinstance(clicked_item, (ComponentItem, WireItem, JunctionItem)) and not clicked_item.isSelected():
             self.circuit_scene.clearSelection()
             clicked_item.setSelected(True)
 
@@ -718,6 +718,29 @@ class CircuitView(QGraphicsView):
                     lambda: self.circuit_scene.toggle_switch_item(target_comp)
                 )
                 menu.addAction(act_toggle_sw)
+            menu.addSeparator()
+
+        selected_wires = [
+            it for it in self.circuit_scene.selectedItems() if isinstance(it, WireItem)
+        ]
+        selected_juncs = [
+            it
+            for it in self.circuit_scene.selectedItems()
+            if isinstance(it, JunctionItem) and it.junction_id
+        ]
+        if len(selected_wires) == 1 or len(selected_juncs) == 1:
+            target_id = (
+                selected_wires[0].wire_id
+                if len(selected_wires) == 1
+                else str(selected_juncs[0].junction_id)
+            )
+            act_net_lbl = QAction("Set Net Label...\tN", menu)
+            act_net_lbl.triggered.connect(
+                lambda tid=target_id: self.circuit_scene.prompt_set_net_label(
+                    tid, parent=self.window()
+                )
+            )
+            menu.addAction(act_net_lbl)
             menu.addSeparator()
 
         act_rotate = QAction("Rotate 90° CW\tR", menu)
@@ -865,6 +888,13 @@ class CircuitView(QGraphicsView):
             return
         if self._event_matches_shortcut(event, shortcuts.get("junction", DEFAULT_SHORTCUTS["junction"])):
             self.circuit_scene.toggle_junction_at(self._last_scene_pos)
+            event.accept()
+            return
+        if (
+            event.key() == Qt.Key.Key_N
+            and not event.modifiers()
+            and self.circuit_scene.prompt_set_net_label(parent=self.window())
+        ):
             event.accept()
             return
         if self._event_matches_shortcut(event, shortcuts.get("wire_mode", DEFAULT_SHORTCUTS["wire_mode"])):
