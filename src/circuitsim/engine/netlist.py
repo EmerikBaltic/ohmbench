@@ -283,7 +283,9 @@ class Circuit:
 
         return battery_dsu.find(c_a) == battery_dsu.find(c_b)
 
-    def validate_topology(self) -> list[CircuitWarning]:
+    def validate_topology(
+        self, *, regularize_ideal_loops: bool = False
+    ) -> list[CircuitWarning]:
         """Validate the circuit graph for fatal errors and non-fatal warnings.
 
         Checks performed:
@@ -291,7 +293,8 @@ class Circuit:
             2. Every node has at least 2 terminal connections and a path to
                ground (`FloatingNodeError`).
             3. Ideal voltage sources do not form a cycle or short to ground
-               (`VoltageSourceLoopError`).
+               (`VoltageSourceLoopError`), unless `regularize_ideal_loops=True`,
+               which records `ideal_loop_regularized` warnings instead.
             4. Ammeters are not connected directly in parallel across fixed
                voltage sources or shorted nodes (`CircuitWarning`).
 
@@ -391,10 +394,22 @@ class Circuit:
                         for name, na, nb in seen_ideal_vs
                         if vs_dsu.find(na) == loop_root
                     ] + [comp.name]
-                    raise VoltageSourceLoopError(
-                        sources=tuple(loop_sources),
-                        message="Voltage sources in a loop",
-                    )
+                    if regularize_ideal_loops:
+                        warnings.append(
+                            CircuitWarning(
+                                code="ideal_loop_regularized",
+                                message=(
+                                    f"Ideal voltage source loop ({', '.join(loop_sources)}) "
+                                    "regularized with small series impedance (1 uOhm)."
+                                ),
+                                component_names=tuple(loop_sources),
+                            )
+                        )
+                    else:
+                        raise VoltageSourceLoopError(
+                            sources=tuple(loop_sources),
+                            message="Voltage sources in a loop",
+                        )
                 seen_ideal_vs.append((comp.name, c_a, c_b))
 
         # 4. Check for ammeters connected directly across a rigid voltage difference.

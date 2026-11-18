@@ -2,6 +2,7 @@
 
 from circuitsim.components.base import Component, ComponentParameter
 from circuitsim.components.capacitor import Capacitor
+from circuitsim.components.diode import Diode
 from circuitsim.components.factory import (
     KNOWN_COMPONENT_TYPES,
     create_default_component_model,
@@ -37,6 +38,7 @@ __all__ = [
     "ComponentParameter",
     "DCCurrentSource",
     "DCVoltageSource",
+    "Diode",
     "GATE_COMPONENT_TYPES",
     "GATE_OPERATIONS",
     "Ground",

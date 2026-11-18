@@ -425,6 +425,13 @@ class SymbolLibrary:
                 painter.drawLine(QPointF(11.0, -14.0), QPointF(16.0, -14.0))
                 painter.drawLine(QPointF(16.0, -9.0), QPointF(16.0, -14.0))
 
+        elif component_id == "diode":
+            painter.drawLine(QPointF(-40.0, 0.0), QPointF(-10.0, 0.0))
+            poly = QPolygonF([QPointF(-10.0, -10.0), QPointF(-10.0, 10.0), QPointF(8.0, 0.0)])
+            painter.drawPolygon(poly)
+            painter.drawLine(QPointF(8.0, -11.0), QPointF(8.0, 11.0))
+            painter.drawLine(QPointF(8.0, 0.0), QPointF(40.0, 0.0))
+
         elif component_id in ("voltmeter", "ammeter"):
             # Circle (r = 15) and leads
             painter.drawLine(QPointF(-40.0, 0.0), QPointF(-15.0, 0.0))

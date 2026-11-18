@@ -9,6 +9,7 @@ import numpy as np
 from scipy.linalg import lu_factor, lu_solve
 
 from circuitsim.components.capacitor import Capacitor
+from circuitsim.components.diode import Diode
 from circuitsim.components.ground import Ground
 from circuitsim.components.inductor import Inductor
 from circuitsim.components.led import LED
@@ -43,6 +44,7 @@ _TAG_DC_IS = 11
 _TAG_GROUND = 12
 _TAG_OTHER = 13
 _TAG_POTENTIOMETER = 14
+_TAG_DIODE = 15
 
 
 class IntegrationMethod(str, Enum):
@@ -131,11 +133,21 @@ class MNASolver:
     DEFAULT_GMIN: float = 1e-12
     KICKBACK_VOLTAGE_WARNING_MIN: float = 100.0
 
-    def __init__(self, circuit: Circuit, *, gmin: float = DEFAULT_GMIN) -> None:
+    def __init__(
+        self,
+        circuit: Circuit,
+        *,
+        gmin: float = DEFAULT_GMIN,
+        regularize_ideal_loops: bool = False,
+        startup_perturbation_uv: float = 1.0,
+    ) -> None:
         if gmin < 0.0:
             raise ValueError("gmin cannot be negative.")
         self.circuit: Circuit = circuit
         self.gmin: float = float(gmin)
+        self.regularize_ideal_loops: bool = bool(regularize_ideal_loops)
+        self.startup_perturbation_uv: float = float(startup_perturbation_uv)
+        self.last_convergence_method: str = "direct"
 
         # Transient clock and damping counter
         self.sim_time: float = 0.0
@@ -144,6 +156,8 @@ class MNASolver:
         # (initialized to 1 for the very first transient step, and set to 2
         # whenever a switch toggles to settle the impulse derivative).
         self._be_steps_remaining: int = 1
+        self._startup_perturbation_applied: bool = False
+        self._auto_regularized_warnings: list[CircuitWarning] = []
 
         # Cached MNA system state
         self._cached_mode: str = ""
@@ -166,6 +180,7 @@ class MNASolver:
         self._bucket_lightbulbs: tuple[Lightbulb, ...] = ()
         self._bucket_voltmeters: tuple[Voltmeter, ...] = ()
         self._bucket_leds: tuple[LED, ...] = ()
+        self._bucket_diodes: tuple[Diode, ...] = ()
         self._bucket_switches: tuple[Switch, ...] = ()
         self._bucket_inductors: tuple[Inductor, ...] = ()
         self._bucket_logic_gates: tuple[LogicGate, ...] = ()
@@ -190,6 +205,7 @@ class MNASolver:
         lightbulbs: list[Lightbulb] = []
         voltmeters: list[Voltmeter] = []
         leds: list[LED] = []
+        diodes: list[Diode] = []
         switches: list[Switch] = []
         inductors: list[Inductor] = []
         logic_gates: list[LogicGate] = []
@@ -213,6 +229,10 @@ class MNASolver:
                 tagged.append((comp, _TAG_LED))
                 rhs_tagged.append((comp, _TAG_LED))
                 leds.append(comp)
+            elif isinstance(comp, Diode):
+                tagged.append((comp, _TAG_DIODE))
+                rhs_tagged.append((comp, _TAG_DIODE))
+                diodes.append(comp)
             elif isinstance(comp, Switch):
                 tagged.append((comp, _TAG_SWITCH))
                 rhs_tagged.append((comp, _TAG_SWITCH))
@@ -248,6 +268,7 @@ class MNASolver:
         self._bucket_lightbulbs = tuple(lightbulbs)
         self._bucket_voltmeters = tuple(voltmeters)
         self._bucket_leds = tuple(leds)
+        self._bucket_diodes = tuple(diodes)
         self._bucket_switches = tuple(switches)
         self._bucket_inductors = tuple(inductors)
         self._bucket_logic_gates = tuple(logic_gates)
@@ -261,6 +282,9 @@ class MNASolver:
         self._be_steps_remaining = 1
         self._logic_t0_initialized = False
         self._t0_node_voltages = {}
+        self._startup_perturbation_applied = False
+        self._auto_regularized_warnings = []
+        self.last_convergence_method = "direct"
         self.circuit.reset_state()
         self.invalidate_cache()
 
@@ -358,14 +382,18 @@ class MNASolver:
             or (isinstance(comp, Ammeter) and comp.is_ideal)
         ]
 
-    def _dc_conductance_signature(self) -> tuple[float, ...]:
-        sig: list[float] = [self.gmin]
+    def _dc_conductance_signature(
+        self, *, extra_gmin: float = 0.0, loop_reg_r: float = 0.0
+    ) -> tuple[float, ...]:
+        sig: list[float] = [max(self.gmin, extra_gmin), loop_reg_r]
         for comp in self.circuit.components:
             if isinstance(comp, (Resistor, Switch, Lightbulb, Voltmeter, Ammeter, LED)):
                 if isinstance(comp, (Voltmeter, Ammeter)) and comp.is_ideal:
                     sig.append(0.0)
                 else:
                     sig.append(comp.conductance)
+            elif isinstance(comp, Diode):
+                sig.append(comp.companion_model(0.0, "dc")[0])
             elif isinstance(comp, Inductor):
                 sig.append(comp.dc_conductance)
             elif isinstance(comp, LogicGate):
@@ -377,17 +405,25 @@ class MNASolver:
         return tuple(sig)
 
     def _transient_conductance_signature(
-        self, dt: float, method_str: str
+        self,
+        dt: float,
+        method_str: str,
+        *,
+        extra_gmin: float = 0.0,
+        loop_reg_r: float = 0.0,
     ) -> tuple[float, ...]:
         self._ensure_component_buckets()
         method_code = 1.0 if method_str == "backward_euler" else 2.0
-        sig: list[float] = [self.gmin, dt, method_code]
+        sig: list[float] = [max(self.gmin, extra_gmin), loop_reg_r, dt, method_code]
         for comp, tag in self._bucket_tagged_comps:
             if tag <= _TAG_LIGHTBULB:
                 sig.append(comp.conductance)
             elif tag <= _TAG_AMMETER:
                 sig.append(0.0 if comp.is_ideal else comp.conductance)
             elif tag <= _TAG_INDUCTOR:
+                g_eq, _ = comp.companion_model(dt, method_str)
+                sig.append(g_eq)
+            elif tag == _TAG_DIODE:
                 g_eq, _ = comp.companion_model(dt, method_str)
                 sig.append(g_eq)
             elif tag == _TAG_LOGIC_GATE:
@@ -398,14 +434,15 @@ class MNASolver:
                 sig.append(comp.r_internal)
         return tuple(sig)
 
-    def _assemble_and_factorize(
+    def _build_mna_matrix(
         self,
         *,
         mode: str,
-        dt: float = 0.0,
-        method_str: str = "trapezoidal",
-    ) -> None:
-        """Assemble the MNA matrix A (for DC or transient) and compute its LU factors."""
+        dt: float,
+        method_str: str,
+        eff_gmin: float,
+        effective_loop_reg_r: float,
+    ) -> np.ndarray:
         non_gnd_nodes = self.circuit.non_ground_nodes()
         self._node_to_idx = {node: idx for idx, node in enumerate(non_gnd_nodes)}
 
@@ -421,7 +458,7 @@ class MNASolver:
 
         # 1. Stamp GMIN from every non-ground node to ground.
         for idx in range(n_nodes):
-            matrix_a[idx, idx] += self.gmin
+            matrix_a[idx, idx] += eff_gmin
 
         # 2. Stamp conductive and companion two-terminal components.
         for comp in self.circuit.components:
@@ -434,8 +471,17 @@ class MNASolver:
                     matrix_a, comp.nodes[0], comp.nodes[1], comp.conductance
                 )
             elif isinstance(comp, LED):
-                g_led, _ = comp.companion_model(dt if mode != "dc" else 0.0, method_str if mode != "dc" else "dc")
+                g_led, _ = comp.companion_model(
+                    dt if mode != "dc" else 0.0,
+                    method_str if mode != "dc" else "dc",
+                )
                 self._stamp_conductance(matrix_a, comp.nodes[0], comp.nodes[1], g_led)
+            elif isinstance(comp, Diode):
+                g_d, _ = comp.companion_model(
+                    dt if mode != "dc" else 0.0,
+                    method_str if mode != "dc" else "dc",
+                )
+                self._stamp_conductance(matrix_a, comp.nodes[0], comp.nodes[1], g_d)
             elif isinstance(comp, Switch):
                 if mode == "dc":
                     g_sw = comp.conductance
@@ -469,14 +515,6 @@ class MNASolver:
                     self._stamp_conductance(
                         matrix_a, comp.nodes[0], comp.nodes[1], g_eq
                     )
-            elif isinstance(comp, LogicGate):
-                for in_node in comp.input_nodes:
-                    idx_in = self._node_to_idx.get(in_node)
-                    if idx_in is not None:
-                        matrix_a[idx_in, idx_in] += comp.g_in
-                idx_out = self._node_to_idx.get(comp.output_node)
-                if idx_out is not None:
-                    matrix_a[idx_out, idx_out] += comp.g_out
 
         # 3. Stamp voltage sources (KCL incidence + branch KVL equation).
         for comp in voltage_sources:
@@ -497,16 +535,91 @@ class MNASolver:
                 r_int = getattr(comp, "r_internal", 0.0)
             if r_int > 0.0:
                 matrix_a[row_k, row_k] += r_int
+            elif effective_loop_reg_r > 0.0:
+                matrix_a[row_k, row_k] += effective_loop_reg_r
 
-        self._matrix_a = matrix_a
+        return matrix_a
+
+    def _assemble_and_factorize(
+        self,
+        *,
+        mode: str,
+        dt: float = 0.0,
+        method_str: str = "trapezoidal",
+        extra_gmin: float = 0.0,
+        loop_reg_r: float = 0.0,
+    ) -> None:
+        """Assemble the MNA matrix A (for DC or transient) and compute its LU factors."""
+        eff_gmin = max(self.gmin, extra_gmin)
+        eff_loop_reg = loop_reg_r if loop_reg_r > 0.0 else (1e-6 if self.regularize_ideal_loops else 0.0)
+
+        matrix_a = self._build_mna_matrix(
+            mode=mode,
+            dt=dt,
+            method_str=method_str,
+            eff_gmin=eff_gmin,
+            effective_loop_reg_r=eff_loop_reg,
+        )
+        dim = matrix_a.shape[0]
         if dim > 0:
+            needs_auto_reg = False
             try:
-                self._lu_piv = lu_factor(matrix_a, check_finite=True)
+                lu_piv = lu_factor(matrix_a, check_finite=True)
+                u_diag = np.diag(lu_piv[0])
+                if not np.all(np.isfinite(u_diag)) or float(np.min(np.abs(u_diag))) <= 1e-14:
+                    needs_auto_reg = True
             except (ValueError, np.linalg.LinAlgError) as exc:
-                raise SingularMatrixError(
-                    f"MNA matrix is singular and could not be factorized: {exc}"
-                ) from exc
+                lu_piv = None
+                needs_auto_reg = True
+                orig_exc = exc
+            else:
+                orig_exc = None
+
+            if needs_auto_reg and eff_loop_reg <= 0.0:
+                reg_gmin = max(eff_gmin, 1e-9)
+                reg_r = 1e-6
+                matrix_reg = self._build_mna_matrix(
+                    mode=mode,
+                    dt=dt,
+                    method_str=method_str,
+                    eff_gmin=reg_gmin,
+                    effective_loop_reg_r=reg_r,
+                )
+                try:
+                    lu_piv = lu_factor(matrix_reg, check_finite=True)
+                    u_diag2 = np.diag(lu_piv[0])
+                    if not np.all(np.isfinite(u_diag2)) or float(np.min(np.abs(u_diag2))) <= 1e-14:
+                        raise SingularMatrixError(
+                            "MNA matrix remains singular after ideal loop regularization."
+                        )
+                    matrix_a = matrix_reg
+                    eff_gmin = reg_gmin
+                    eff_loop_reg = reg_r
+                    self.last_convergence_method = "regularized"
+                    if not any(w.code == "ideal_loop_regularized" for w in self._auto_regularized_warnings):
+                        self._auto_regularized_warnings.append(
+                            CircuitWarning(
+                                code="ideal_loop_regularized",
+                                message="Singular or ideal loop branch was regularized with 1 uOhm / 1 nS stabilizing elements.",
+                                component_names=(),
+                            )
+                        )
+                except (ValueError, np.linalg.LinAlgError) as exc2:
+                    raise SingularMatrixError(
+                        f"MNA matrix is singular and could not be factorized: {exc2}"
+                    ) from exc2
+            elif needs_auto_reg:
+                if orig_exc is not None:
+                    raise SingularMatrixError(
+                        f"MNA matrix is singular and could not be factorized: {orig_exc}"
+                    ) from orig_exc
+                raise SingularMatrixError("MNA matrix has a zero pivot after regularization.")
+
+            assert lu_piv is not None
+            self._matrix_a = matrix_a
+            self._lu_piv = lu_piv
         else:
+            self._matrix_a = matrix_a
             self._lu_piv = (
                 np.zeros((0, 0), dtype=np.float64),
                 np.zeros(0, dtype=np.int32),
@@ -515,13 +628,15 @@ class MNASolver:
         self._cached_mode = mode
         self._cached_circuit_version = self.circuit.version
         if mode == "dc":
-            self._cached_conductance_signature = self._dc_conductance_signature()
+            self._cached_conductance_signature = self._dc_conductance_signature(
+                extra_gmin=eff_gmin, loop_reg_r=eff_loop_reg
+            )
         else:
             self._cached_conductance_signature = self._transient_conductance_signature(
-                dt, method_str
+                dt, method_str, extra_gmin=eff_gmin, loop_reg_r=eff_loop_reg
             )
 
-    def _build_rhs_dc(self) -> np.ndarray:
+    def _build_rhs_dc(self, *, source_scale: float = 1.0) -> np.ndarray:
         """Assemble the right-hand side excitation vector b for DC operating point."""
         dim = len(self._node_to_idx) + len(self._vs_to_idx)
         rhs_b = np.zeros(dim, dtype=np.float64)
@@ -530,16 +645,17 @@ class MNASolver:
             if isinstance(comp, DCCurrentSource):
                 idx_pos = self._node_to_idx.get(comp.nodes[0])
                 idx_neg = self._node_to_idx.get(comp.nodes[1])
+                i_dc = comp.dc_current * source_scale
                 if idx_pos is not None:
-                    rhs_b[idx_pos] += comp.dc_current
+                    rhs_b[idx_pos] += i_dc
                 if idx_neg is not None:
-                    rhs_b[idx_neg] -= comp.dc_current
+                    rhs_b[idx_neg] -= i_dc
             elif isinstance(comp, DCVoltageSource):
                 row_k = self._vs_to_idx[comp.name]
-                rhs_b[row_k] = comp.dc_voltage
+                rhs_b[row_k] = comp.dc_voltage * source_scale
             elif isinstance(comp, ACVoltageSource):
                 row_k = self._vs_to_idx[comp.name]
-                rhs_b[row_k] = comp.voltage_at(0.0)
+                rhs_b[row_k] = comp.voltage_at(0.0) * source_scale
             elif isinstance(comp, Ammeter) and comp.is_ideal:
                 row_k = self._vs_to_idx[comp.name]
                 rhs_b[row_k] = 0.0
@@ -551,15 +667,23 @@ class MNASolver:
                     rhs_b[idx_a] += i_eq
                 if idx_k is not None:
                     rhs_b[idx_k] -= i_eq
+            elif isinstance(comp, Diode):
+                _, i_eq = comp.companion_model(0.0, "dc")
+                idx_a = self._node_to_idx.get(comp.nodes[0])
+                idx_k = self._node_to_idx.get(comp.nodes[1])
+                if idx_a is not None:
+                    rhs_b[idx_a] += i_eq
+                if idx_k is not None:
+                    rhs_b[idx_k] -= i_eq
             elif isinstance(comp, LogicGate):
                 idx_out = self._node_to_idx.get(comp.output_node)
                 if idx_out is not None:
-                    rhs_b[idx_out] += comp.g_out * comp.drive_voltage
+                    rhs_b[idx_out] += comp.g_out * comp.drive_voltage * source_scale
 
         return rhs_b
 
     def _build_rhs_transient(
-        self, sim_time: float, dt: float, method_str: str
+        self, sim_time: float, dt: float, method_str: str, *, source_scale: float = 1.0
     ) -> np.ndarray:
         """Assemble the right-hand side vector b for a transient step at `sim_time`."""
         self._ensure_component_buckets()
@@ -571,18 +695,27 @@ class MNASolver:
             if tag == _TAG_DC_IS:
                 idx_pos = node_to_idx.get(comp.nodes[0])
                 idx_neg = node_to_idx.get(comp.nodes[1])
+                i_dc = comp.dc_current * source_scale
                 if idx_pos is not None:
-                    rhs_b[idx_pos] += comp.dc_current
+                    rhs_b[idx_pos] += i_dc
                 if idx_neg is not None:
-                    rhs_b[idx_neg] -= comp.dc_current
+                    rhs_b[idx_neg] -= i_dc
             elif tag == _TAG_DC_VS or tag == _TAG_AC_VS:
                 row_k = self._vs_to_idx[comp.name]
-                rhs_b[row_k] = comp.voltage_at(sim_time)
+                rhs_b[row_k] = comp.voltage_at(sim_time) * source_scale
             elif tag == _TAG_AMMETER:
                 if comp.is_ideal:
                     row_k = self._vs_to_idx[comp.name]
                     rhs_b[row_k] = 0.0
             elif tag == _TAG_LED:
+                _, i_eq = comp.companion_model(dt, method_str)
+                idx_a = node_to_idx.get(comp.nodes[0])
+                idx_k = node_to_idx.get(comp.nodes[1])
+                if idx_a is not None:
+                    rhs_b[idx_a] += i_eq
+                if idx_k is not None:
+                    rhs_b[idx_k] -= i_eq
+            elif tag == _TAG_DIODE:
                 _, i_eq = comp.companion_model(dt, method_str)
                 idx_a = node_to_idx.get(comp.nodes[0])
                 idx_k = node_to_idx.get(comp.nodes[1])
@@ -622,7 +755,7 @@ class MNASolver:
             elif tag == _TAG_LOGIC_GATE:
                 idx_out = node_to_idx.get(comp.output_node)
                 if idx_out is not None:
-                    rhs_b[idx_out] += comp.g_out * comp.drive_voltage
+                    rhs_b[idx_out] += comp.g_out * comp.drive_voltage * source_scale
 
         return rhs_b
 
@@ -711,7 +844,9 @@ class MNASolver:
 
         return refined
 
-    def _relax_logic_gates_dc(self) -> tuple[np.ndarray, dict[str, float]]:
+    def _relax_logic_gates_dc(
+        self, *, source_scale: float = 1.0
+    ) -> tuple[np.ndarray, dict[str, float]]:
         """Run Gauss-Seidel relaxation over `LogicGate`s using the cached DC LU matrix.
 
         Combinational DAGs and bistable latches converge monotonically to an exact fixed
@@ -726,7 +861,7 @@ class MNASolver:
 
         def solve_once() -> tuple[np.ndarray, dict[str, float]]:
             if dim > 0:
-                rhs_b = self._build_rhs_dc()
+                rhs_b = self._build_rhs_dc(source_scale=source_scale)
                 sol_x = lu_solve(self._lu_piv, rhs_b, check_finite=True)
                 if not np.all(np.isfinite(sol_x)):
                     raise SingularMatrixError("MNA solve produced non-finite values.")
@@ -820,6 +955,19 @@ class MNASolver:
                 if ia is not None and ib is not None:
                     mat[ia, ib] -= g_led
                     mat[ib, ia] -= g_led
+            elif isinstance(comp, Diode):
+                g_d, i_eq = comp.companion_model(0.0, "dc")
+                ia = node_to_idx.get(comp.nodes[0])
+                ib = node_to_idx.get(comp.nodes[1])
+                if ia is not None:
+                    mat[ia, ia] += g_d
+                    base_rhs[ia] += i_eq
+                if ib is not None:
+                    mat[ib, ib] += g_d
+                    base_rhs[ib] -= i_eq
+                if ia is not None and ib is not None:
+                    mat[ia, ib] -= g_d
+                    mat[ib, ia] -= g_d
             elif isinstance(comp, Potentiometer):
                 for na, nb, g in (
                     (comp.node_a, comp.node_w, comp.g_aw),
@@ -935,40 +1083,410 @@ class MNASolver:
             gate.power = p_out + p_in
             gate.sample_inputs_and_schedule(node_v0, 0.0, step_dt)
 
-    def solve_dc(self, *, compute_cond: bool = False) -> SolveResult:
+    def _maybe_apply_startup_perturbation(self) -> None:
+        """Inject a deterministic +1 uV perturbation once at t = 0+ for symmetric oscillators."""
+        if self._startup_perturbation_applied or self.startup_perturbation_uv == 0.0:
+            return
+        caps = sorted(
+            (c for c in self.circuit.components if isinstance(c, Capacitor)),
+            key=lambda c: c.name,
+        )
+        if not caps:
+            return
+        inds = [c for c in self.circuit.components if isinstance(c, Inductor)]
+        gates = [c for c in self.circuit.components if isinstance(c, LogicGate)]
+        has_ac = any(isinstance(c, ACVoltageSource) for c in self.circuit.components)
+        has_diode = any(isinstance(c, Diode) for c in self.circuit.components)
+        all_zero_ic = all(abs(c.initial_voltage) == 0.0 for c in caps) and all(
+            abs(i.initial_current) == 0.0 for i in inds
+        )
+        if all_zero_ic and (
+            len(gates) >= 1
+            or (not has_ac and (len(caps) >= 2 or len(inds) >= 1 or has_diode))
+        ):
+            caps[0].cap_voltage += self.startup_perturbation_uv * 1e-6
+            self._startup_perturbation_applied = True
+
+    def _update_led_discrete_states(
+        self, node_voltages: dict[str, float]
+    ) -> bool:
+        """Advance piecewise LED conduction states; return True if any changed."""
+        state_changed = False
+        for comp in self._bucket_leds:
+            if not comp.burned_out:
+                v_ak = node_voltages.get(comp.nodes[0], 0.0) - node_voltages.get(comp.nodes[1], 0.0)
+                if comp.is_conducting:
+                    i_ak = (v_ak - comp.forward_voltage) / comp.r_on
+                    if i_ak < -1e-9 or v_ak < comp.forward_voltage - 1e-4:
+                        comp.is_conducting = False
+                        state_changed = True
+                else:
+                    if v_ak > comp.forward_voltage + 1e-4:
+                        comp.is_conducting = True
+                        state_changed = True
+        return state_changed
+
+    def _solve_nonlinear_core(
+        self,
+        *,
+        mode: str,
+        sim_time: float,
+        dt: float,
+        method_str: str,
+        source_scale: float = 1.0,
+        extra_gmin: float = 0.0,
+        max_iters: int = 80,
+        relax_gates: bool = False,
+    ) -> tuple[np.ndarray, dict[str, float], bool, bool, bool]:
+        """Solve one DC or transient step using damped Newton-Raphson."""
+        self._ensure_component_buckets()
+        diodes = self._bucket_diodes
+        leds = self._bucket_leds
+        gates = self._bucket_logic_gates
+
+        if not diodes:
+            n_outer = 10 if leds else 1
+        else:
+            n_outer = max(1, max_iters)
+
+        rebuilt_any = False
+        damping_used = False
+        prev_node_voltages: dict[str, float] | None = None
+        grounded = self._bucket_grounded_nodes
+        eff_gmin = max(self.gmin, extra_gmin)
+        eff_loop_reg = 1e-6 if self.regularize_ideal_loops else 0.0
+
+        for _it in range(n_outer):
+            if mode == "dc":
+                current_sig = self._dc_conductance_signature(
+                    extra_gmin=eff_gmin, loop_reg_r=eff_loop_reg
+                )
+            else:
+                current_sig = self._transient_conductance_signature(
+                    dt, method_str, extra_gmin=eff_gmin, loop_reg_r=eff_loop_reg
+                )
+
+            needs_rebuild = (
+                self._lu_piv is None
+                or self._cached_mode != mode
+                or self._cached_circuit_version != self.circuit.version
+                or self._cached_conductance_signature != current_sig
+            )
+            if needs_rebuild:
+                try:
+                    self._assemble_and_factorize(
+                        mode=mode,
+                        dt=dt,
+                        method_str=method_str,
+                        extra_gmin=extra_gmin,
+                    )
+                    rebuilt_any = True
+                except SingularMatrixError:
+                    return (np.zeros(0, dtype=np.float64), {}, False, rebuilt_any, damping_used)
+
+            assert self._lu_piv is not None
+            assert self._matrix_a is not None
+            dim = self._matrix_a.shape[0]
+
+            try:
+                if relax_gates and gates:
+                    solution_x, node_voltages = self._relax_logic_gates_dc(
+                        source_scale=source_scale
+                    )
+                else:
+                    if dim > 0:
+                        if mode == "dc":
+                            rhs_b = self._build_rhs_dc(source_scale=source_scale)
+                        else:
+                            rhs_b = self._build_rhs_transient(
+                                sim_time, dt, method_str, source_scale=source_scale
+                            )
+                        solution_x = lu_solve(self._lu_piv, rhs_b, check_finite=True)
+                        if not np.all(np.isfinite(solution_x)):
+                            return (np.zeros(0, dtype=np.float64), {}, False, rebuilt_any, damping_used)
+                    else:
+                        solution_x = np.zeros(0, dtype=np.float64)
+                    node_voltages = {g: 0.0 for g in grounded}
+                    for node, idx in self._node_to_idx.items():
+                        node_voltages[node] = float(solution_x[idx])
+            except (ValueError, np.linalg.LinAlgError, SingularMatrixError):
+                return (np.zeros(0, dtype=np.float64), {}, False, rebuilt_any, damping_used)
+
+            led_changed = self._update_led_discrete_states(node_voltages) if leds else False
+
+            if not diodes:
+                if not led_changed:
+                    return (solution_x, node_voltages, True, rebuilt_any, damping_used)
+                continue
+
+            max_vd_err = 0.0
+            any_limited = False
+            for comp in diodes:
+                v_ak = node_voltages.get(comp.nodes[0], 0.0) - node_voltages.get(
+                    comp.nodes[1], 0.0
+                )
+                vd_sol, _, _ = comp.terminal_model(v_ak, vd_guess=comp.operating_vd)
+                vd_old = comp.operating_vd
+                max_vd_err = max(max_vd_err, abs(vd_sol - vd_old))
+                vd_next, was_lim = comp.limit_junction_voltage(vd_sol, vd_old)
+                if was_lim:
+                    any_limited = True
+                    damping_used = True
+                comp.operating_vd = vd_next
+                i_j = comp.junction_current(vd_next)
+                comp.operating_vak = vd_next + comp.rs * i_j
+
+            if prev_node_voltages is not None:
+                max_dv = max(
+                    (abs(node_voltages[n] - prev_node_voltages[n]) for n in node_voltages),
+                    default=0.0,
+                )
+                v_scale = max((abs(v) for v in node_voltages.values()), default=0.0)
+                v_tol = 1e-8 + 1e-6 * v_scale
+                if (
+                    max_dv <= v_tol
+                    and max_vd_err <= 1e-7
+                    and not any_limited
+                    and not led_changed
+                ):
+                    return (solution_x, node_voltages, True, rebuilt_any, damping_used)
+
+            prev_node_voltages = node_voltages
+
+        return (np.zeros(0, dtype=np.float64), {}, False, rebuilt_any, damping_used)
+
+    def _snapshot_nonlinear_states(self) -> tuple[list[float], list[float], list[bool]]:
+        diodes = self._bucket_diodes
+        leds = self._bucket_leds
+        return (
+            [d.operating_vd for d in diodes],
+            [d.operating_vak for d in diodes],
+            [bool(l.is_conducting) for l in leds],
+        )
+
+    def _restore_nonlinear_states(
+        self, snap: tuple[list[float], list[float], list[bool]]
+    ) -> None:
+        vds, vaks, led_states = snap
+        for d, vd, vak in zip(self._bucket_diodes, vds, vaks):
+            d.operating_vd = vd
+            d.operating_vak = vak
+        for led, st in zip(self._bucket_leds, led_states):
+            led.is_conducting = st
+
+    def _reset_nonlinear_guess(self) -> None:
+        for d in self._bucket_diodes:
+            d.operating_vd = 0.0
+            d.operating_vak = 0.0
+        for led in self._bucket_leds:
+            if not led.burned_out:
+                led.is_conducting = False
+
+    def _recover_via_gmin_stepping(
+        self,
+        *,
+        mode: str,
+        sim_time: float,
+        dt: float,
+        method_str: str,
+        relax_gates: bool,
+    ) -> tuple[np.ndarray, dict[str, float], bool, bool]:
+        """Attempt Gmin-stepping homotopy from large shunt conductance down to self.gmin."""
+        self._reset_nonlinear_guess()
+        gmin_schedule = (1e-1, 1e-2, 1e-3, 1e-4, 1e-5, 1e-6, 1e-8, 1e-10, 1e-12, 0.0)
+        rebuilt_any = False
+        sol_x = np.zeros(0, dtype=np.float64)
+        nv: dict[str, float] = {}
+        ok = False
+        for g_extra in gmin_schedule:
+            sol_x, nv, ok, reb, _ = self._solve_nonlinear_core(
+                mode=mode,
+                sim_time=sim_time,
+                dt=dt,
+                method_str=method_str,
+                source_scale=1.0,
+                extra_gmin=g_extra,
+                max_iters=60,
+                relax_gates=relax_gates,
+            )
+            rebuilt_any = rebuilt_any or reb
+            if not ok:
+                return (np.zeros(0, dtype=np.float64), {}, False, rebuilt_any)
+        return (sol_x, nv, ok, rebuilt_any)
+
+    def _recover_via_source_stepping(
+        self,
+        *,
+        mode: str,
+        sim_time: float,
+        dt: float,
+        method_str: str,
+        relax_gates: bool,
+    ) -> tuple[np.ndarray, dict[str, float], bool, bool]:
+        """Attempt adaptive source-stepping continuation from alpha = 0 to 1."""
+        self._reset_nonlinear_guess()
+        rebuilt_any = False
+        # Anchor at alpha = 0.0 first.
+        sol_x, nv, ok0, reb0, _ = self._solve_nonlinear_core(
+            mode=mode,
+            sim_time=sim_time,
+            dt=dt,
+            method_str=method_str,
+            source_scale=0.0,
+            extra_gmin=0.0,
+            max_iters=40,
+            relax_gates=relax_gates,
+        )
+        rebuilt_any = rebuilt_any or reb0
+        if not ok0:
+            return (np.zeros(0, dtype=np.float64), {}, False, rebuilt_any)
+
+        alpha = 0.0
+        d_alpha = 0.1
+        while alpha < 1.0 - 1e-12:
+            snap = self._snapshot_nonlinear_states()
+            alpha_next = min(1.0, alpha + d_alpha)
+            sol_x, nv, ok, reb, _ = self._solve_nonlinear_core(
+                mode=mode,
+                sim_time=sim_time,
+                dt=dt,
+                method_str=method_str,
+                source_scale=alpha_next,
+                extra_gmin=0.0,
+                max_iters=60,
+                relax_gates=relax_gates,
+            )
+            rebuilt_any = rebuilt_any or reb
+            if ok:
+                alpha = alpha_next
+                d_alpha = min(0.25, d_alpha * 1.5)
+            else:
+                self._restore_nonlinear_states(snap)
+                d_alpha *= 0.5
+                if d_alpha < 1e-4:
+                    return (np.zeros(0, dtype=np.float64), {}, False, rebuilt_any)
+
+        return (sol_x, nv, True, rebuilt_any)
+
+    def _solve_step_with_recovery(
+        self,
+        *,
+        mode: str,
+        sim_time: float = 0.0,
+        dt: float = 0.0,
+        method_str: str = "dc",
+        direct_max_iters: int = 80,
+        recovery_mode: str = "auto",
+        relax_gates: bool = False,
+    ) -> tuple[np.ndarray, dict[str, float], bool]:
+        """Solve nonlinear MNA step with Gmin and Source stepping recovery fallbacks."""
+        self._auto_regularized_warnings = []
+        if recovery_mode == "gmin":
+            sol_x, nv, ok, reb = self._recover_via_gmin_stepping(
+                mode=mode, sim_time=sim_time, dt=dt, method_str=method_str, relax_gates=relax_gates
+            )
+            if ok:
+                self.last_convergence_method = "gmin_stepping"
+                return (sol_x, nv, reb)
+            raise SingularMatrixError("Gmin stepping failed to converge.")
+
+        if recovery_mode == "source":
+            sol_x, nv, ok, reb = self._recover_via_source_stepping(
+                mode=mode, sim_time=sim_time, dt=dt, method_str=method_str, relax_gates=relax_gates
+            )
+            if ok:
+                self.last_convergence_method = "source_stepping"
+                return (sol_x, nv, reb)
+            raise SingularMatrixError("Source stepping failed to converge.")
+
+        initial_snap = self._snapshot_nonlinear_states()
+        sol_x, nv, ok, reb1, damped = self._solve_nonlinear_core(
+            mode=mode,
+            sim_time=sim_time,
+            dt=dt,
+            method_str=method_str,
+            source_scale=1.0,
+            extra_gmin=0.0,
+            max_iters=direct_max_iters,
+            relax_gates=relax_gates,
+        )
+        if ok:
+            if self._auto_regularized_warnings:
+                self.last_convergence_method = "regularized"
+            elif damped:
+                self.last_convergence_method = "newton_damped"
+            else:
+                self.last_convergence_method = "direct"
+            return (sol_x, nv, reb1)
+
+        if recovery_mode == "direct":
+            self._restore_nonlinear_states(initial_snap)
+            raise SingularMatrixError("Direct Newton-Raphson did not converge.")
+
+        sol_x, nv, ok_g, reb2 = self._recover_via_gmin_stepping(
+            mode=mode, sim_time=sim_time, dt=dt, method_str=method_str, relax_gates=relax_gates
+        )
+        if ok_g:
+            self.last_convergence_method = "gmin_stepping"
+            return (sol_x, nv, reb1 or reb2)
+
+        sol_x, nv, ok_s, reb3 = self._recover_via_source_stepping(
+            mode=mode, sim_time=sim_time, dt=dt, method_str=method_str, relax_gates=relax_gates
+        )
+        if ok_s:
+            self.last_convergence_method = "source_stepping"
+            return (sol_x, nv, reb1 or reb2 or reb3)
+
+        self._restore_nonlinear_states(initial_snap)
+        raise SingularMatrixError(
+            f"Solver failed to converge after Newton-Raphson, Gmin stepping, and Source stepping (mode={mode})."
+        )
+
+    def solve_dc(
+        self,
+        *,
+        compute_cond: bool = False,
+        direct_max_iters: int = 80,
+        recovery_mode: str = "auto",
+    ) -> SolveResult:
         """Solve the DC operating point of the circuit.
 
         Capacitors are treated as open circuits (keeping any configured initial
         voltage if isolated) and inductors are modeled using their winding
         resistance (`max(dcr, 1 mΩ)`).
         """
-        warnings = self.circuit.validate_topology()
+        warnings = self.circuit.validate_topology(
+            regularize_ideal_loops=self.regularize_ideal_loops
+        )
         self._topology_warnings = list(warnings)
+        self._ensure_component_buckets()
 
         gates = self._logic_gates()
         for gate in gates:
             gate.reset_state()
 
-        has_leds = any(isinstance(c, LED) for c in self.circuit.components)
-        max_diode_iters = 10 if has_leds else 1
-        rebuilt_any = False
-
-        for _d_iter in range(max_diode_iters):
-            current_sig = self._dc_conductance_signature()
+        if (
+            not self._bucket_diodes
+            and not self._bucket_leds
+            and recovery_mode == "auto"
+        ):
+            self._auto_regularized_warnings = []
+            current_sig = self._dc_conductance_signature(
+                extra_gmin=0.0,
+                loop_reg_r=(1e-6 if self.regularize_ideal_loops else 0.0),
+            )
             needs_rebuild = (
                 self._lu_piv is None
                 or self._cached_mode != "dc"
                 or self._cached_circuit_version != self.circuit.version
                 or self._cached_conductance_signature != current_sig
             )
-
+            rebuilt_any = False
             if needs_rebuild:
                 self._assemble_and_factorize(mode="dc")
                 rebuilt_any = True
-
             assert self._lu_piv is not None
             assert self._matrix_a is not None
-
             dim = self._matrix_a.shape[0]
             if gates:
                 solution_x, node_voltages = self._relax_logic_gates_dc()
@@ -980,29 +1498,30 @@ class MNASolver:
                         raise SingularMatrixError("MNA solve produced non-finite values.")
                 else:
                     solution_x = np.zeros(0, dtype=np.float64)
-
-                node_voltages = {}
-                for gnd_node in self.circuit.grounded_nodes():
-                    node_voltages[gnd_node] = 0.0
+                node_voltages = {g: 0.0 for g in self.circuit.grounded_nodes()}
                 for node, idx in self._node_to_idx.items():
                     node_voltages[node] = float(solution_x[idx])
+            self.last_convergence_method = (
+                "regularized"
+                if (self._auto_regularized_warnings or self.regularize_ideal_loops)
+                else "direct"
+            )
+        else:
+            solution_x, node_voltages, rebuilt_any = self._solve_step_with_recovery(
+                mode="dc",
+                sim_time=0.0,
+                dt=0.0,
+                method_str="dc",
+                direct_max_iters=direct_max_iters,
+                recovery_mode=recovery_mode,
+                relax_gates=True,
+            )
+            assert self._matrix_a is not None
+            dim = self._matrix_a.shape[0]
 
-            state_changed = False
-            for comp in self.circuit.components:
-                if isinstance(comp, LED) and not comp.burned_out:
-                    v_ak = node_voltages.get(comp.nodes[0], 0.0) - node_voltages.get(comp.nodes[1], 0.0)
-                    if comp.is_conducting:
-                        i_ak = (v_ak - comp.forward_voltage) / comp.r_on
-                        if i_ak < -1e-9 or v_ak < comp.forward_voltage - 1e-4:
-                            comp.is_conducting = False
-                            state_changed = True
-                    else:
-                        if v_ak > comp.forward_voltage + 1e-4:
-                            comp.is_conducting = True
-                            state_changed = True
-
-            if not state_changed:
-                break
+        for w in self._auto_regularized_warnings:
+            if w.code not in {ew.code for ew in warnings}:
+                warnings.append(w)
 
         branch_currents: dict[str, float] = {}
         for comp in self.circuit.components:
@@ -1091,6 +1610,14 @@ class MNASolver:
                     comp.is_conducting = False
                     comp.brightness = 0.0
                     comp.is_over_current = False
+            elif isinstance(comp, Diode):
+                vd_fin, i_ab, _ = comp.terminal_model(
+                    v_ab, vd_guess=comp.operating_vd
+                )
+                comp.operating_vd = vd_fin
+                comp.operating_vak = v_ab
+                comp.current = i_ab
+                comp.power = v_ab * i_ab
             elif isinstance(comp, Capacitor):
                 comp.current = 0.0
                 comp.power = 0.0
@@ -1219,6 +1746,19 @@ class MNASolver:
                 if io is not None:
                     mat[io, io] += comp.g_out
                     rhs[io] += comp.g_out * comp.drive_voltage
+            elif isinstance(comp, Diode):
+                g_d, i_eq = comp.companion_model(0.0, "dc")
+                ia = node_to_idx.get(comp.nodes[0])
+                ib = node_to_idx.get(comp.nodes[1])
+                if ia is not None:
+                    mat[ia, ia] += g_d
+                    rhs[ia] += i_eq
+                if ib is not None:
+                    mat[ib, ib] += g_d
+                    rhs[ib] -= i_eq
+                if ia is not None and ib is not None:
+                    mat[ia, ib] -= g_d
+                    mat[ib, ia] -= g_d
 
         for k, vs in enumerate(voltage_sources):
             row_k = n_nodes + k
@@ -1232,6 +1772,8 @@ class MNASolver:
                 mat[row_k, ib] -= 1.0
             if vs.r_internal > 0.0:
                 mat[row_k, row_k] += vs.r_internal
+            elif self.regularize_ideal_loops:
+                mat[row_k, row_k] += 1e-6
             rhs[row_k] = vs.voltage_at(0.0)
 
         for k, cap in enumerate(capacitors):
@@ -1253,7 +1795,20 @@ class MNASolver:
         try:
             sol_x = np.linalg.solve(mat, rhs)
         except np.linalg.LinAlgError:
-            return
+            # Regularize ideal capacitor / voltage-source loops with tiny 1 uOhm impedance.
+            mat_reg = mat.copy()
+            for r_idx in range(n_nodes):
+                mat_reg[r_idx, r_idx] += 1e-9
+            for r_idx in range(n_nodes, n_nodes + n_vs):
+                if abs(mat_reg[r_idx, r_idx]) < 1e-12:
+                    mat_reg[r_idx, r_idx] += 1e-6
+            for r_idx in range(n_nodes + n_vs, dim):
+                if abs(mat_reg[r_idx, r_idx]) < 1e-12:
+                    mat_reg[r_idx, r_idx] -= 1e-6
+            try:
+                sol_x = np.linalg.solve(mat_reg, rhs)
+            except np.linalg.LinAlgError:
+                return
 
         node_v: dict[str, float] = {g: 0.0 for g in self.circuit.grounded_nodes()}
         for node, idx in node_to_idx.items():
@@ -1285,6 +1840,7 @@ class MNASolver:
         use_be_on_first_step: bool = True,
         use_be_on_switch: bool = True,
         compute_cond: bool = False,
+        _substep_depth: int = 0,
     ) -> SolveResult:
         """Advance the transient simulation by one time step `dt` (in seconds).
 
@@ -1304,12 +1860,32 @@ class MNASolver:
 
         self._ensure_component_buckets()
         if self._transient_step_index == 0:
-            self._topology_warnings = self.circuit.validate_topology()
+            self._topology_warnings = self.circuit.validate_topology(
+                regularize_ideal_loops=self.regularize_ideal_loops
+            )
+            self._maybe_apply_startup_perturbation()
             if not self._logic_t0_initialized:
                 self._initialize_logic_gates_t0(dt)
             if not use_be_on_first_step:
                 self._initialize_t0_derivatives()
                 self._be_steps_remaining = 0
+
+        # Snapshot lightweight pre-step state only if nonlinear diodes/switches exist and bisection is still allowed.
+        can_bisect = bool(
+            _substep_depth < 6 and (self._bucket_diodes or self._bucket_leds or self._bucket_switches)
+        )
+        if can_bisect:
+            snap_sim_time = self.sim_time
+            snap_step_idx = self._transient_step_index
+            snap_be_rem = self._be_steps_remaining
+            snap_nl = self._snapshot_nonlinear_states()
+            snap_sw = [(s.closed, s.arcing) for s in self._bucket_switches]
+        else:
+            snap_sim_time = self.sim_time
+            snap_step_idx = self._transient_step_index
+            snap_be_rem = self._be_steps_remaining
+            snap_nl = ([], [], [])
+            snap_sw = []
 
         t_next = self.sim_time + dt
 
@@ -1347,102 +1923,146 @@ class MNASolver:
             active_method = IntegrationMethod.TRAPEZOIDAL
 
         method_str = active_method.value
+        needs_rebuild = False
 
-        # 2. Check if we can reuse the cached LU factorization or must rebuild A.
-        current_sig = self._transient_conductance_signature(dt, method_str)
-        needs_rebuild = (
-            self._lu_piv is None
-            or self._cached_mode != "transient"
-            or self._cached_circuit_version != self.circuit.version
-            or self._cached_conductance_signature != current_sig
-        )
-
-        if needs_rebuild:
-            self._assemble_and_factorize(
-                mode="transient", dt=dt, method_str=method_str
-            )
-
-        assert self._lu_piv is not None
-        assert self._matrix_a is not None
-
-        # 3. Assemble RHS vector b(t_next) and solve using cached LU factors.
-        dim = self._matrix_a.shape[0]
-        if dim > 0:
-            rhs_b = self._build_rhs_transient(t_next, dt, method_str)
-            solution_x = lu_solve(self._lu_piv, rhs_b, check_finite=True)
-            if not np.all(np.isfinite(solution_x)):
-                raise SingularMatrixError(
-                    f"Transient solve did not converge at t = {t_next:.6g} s."
+        try:
+            if self._bucket_diodes:
+                solution_x, node_voltages, needs_rebuild = self._solve_step_with_recovery(
+                    mode="transient",
+                    sim_time=t_next,
+                    dt=dt,
+                    method_str=method_str,
+                    direct_max_iters=80,
+                    relax_gates=False,
                 )
-        else:
-            solution_x = np.zeros(0, dtype=np.float64)
-
-        node_voltages: dict[str, float] = {}
-        for gnd_node in self._bucket_grounded_nodes:
-            node_voltages[gnd_node] = 0.0
-        for node, idx in self._node_to_idx.items():
-            node_voltages[node] = float(solution_x[idx])
-
-        # 3b. Check for switch contact breakdown arc ignition or extinction.
-        #     Treat arc start/stop like a switch event: refactorize and settle with
-        #     Backward Euler on this step and the following two steps.
-        arc_state_changed = False
-        arc_ignited_switches: list[str] = []
-        for comp in self._bucket_switches:
-            if not comp.closed:
-                v_sw = node_voltages.get(comp.nodes[0], 0.0) - node_voltages.get(
-                    comp.nodes[1], 0.0
+                assert self._matrix_a is not None
+                dim = self._matrix_a.shape[0]
+            else:
+                # 2. Check if we can reuse the cached LU factorization or must rebuild A.
+                eff_loop_reg = 1e-6 if self.regularize_ideal_loops else 0.0
+                current_sig = self._transient_conductance_signature(
+                    dt, method_str, extra_gmin=0.0, loop_reg_r=eff_loop_reg
                 )
-                if not comp.arcing and comp.check_arc_ignition(v_sw):
-                    arc_state_changed = True
-                    arc_ignited_switches.append(comp.name)
-                elif comp.arcing and comp.check_arc_extinction(v_sw):
-                    arc_state_changed = True
-
-        if arc_state_changed:
-            if use_be_on_switch:
-                active_method = IntegrationMethod.BACKWARD_EULER
-                method_str = active_method.value
-                self._be_steps_remaining = max(self._be_steps_remaining, 2)
-            self._assemble_and_factorize(
-                mode="transient", dt=dt, method_str=method_str
-            )
-            needs_rebuild = True
-            assert self._lu_piv is not None
-            if dim > 0:
-                rhs_b = self._build_rhs_transient(t_next, dt, method_str)
-                solution_x = lu_solve(self._lu_piv, rhs_b, check_finite=True)
-                for node, idx in self._node_to_idx.items():
-                    node_voltages[node] = float(solution_x[idx])
-
-        # 3c. Check for LED conduction state transitions
-        if self._bucket_leds:
-            for _diode_iter in range(5):
-                led_state_changed = False
-                for comp in self._bucket_leds:
-                    if not comp.burned_out:
-                        v_ak = node_voltages.get(comp.nodes[0], 0.0) - node_voltages.get(comp.nodes[1], 0.0)
-                        if comp.is_conducting:
-                            i_ak = (v_ak - comp.forward_voltage) / comp.r_on
-                            if i_ak < -1e-9 or v_ak < comp.forward_voltage - 1e-4:
-                                comp.is_conducting = False
-                                led_state_changed = True
-                        else:
-                            if v_ak > comp.forward_voltage + 1e-4:
-                                comp.is_conducting = True
-                                led_state_changed = True
-                if not led_state_changed:
-                    break
-                self._assemble_and_factorize(
-                    mode="transient", dt=dt, method_str=method_str
+                needs_rebuild = (
+                    self._lu_piv is None
+                    or self._cached_mode != "transient"
+                    or self._cached_circuit_version != self.circuit.version
+                    or self._cached_conductance_signature != current_sig
                 )
-                needs_rebuild = True
+
+                if needs_rebuild:
+                    self._assemble_and_factorize(
+                        mode="transient", dt=dt, method_str=method_str
+                    )
+
                 assert self._lu_piv is not None
+                assert self._matrix_a is not None
+
+                # 3. Assemble RHS vector b(t_next) and solve using cached LU factors.
+                dim = self._matrix_a.shape[0]
                 if dim > 0:
                     rhs_b = self._build_rhs_transient(t_next, dt, method_str)
                     solution_x = lu_solve(self._lu_piv, rhs_b, check_finite=True)
-                    for node, idx in self._node_to_idx.items():
-                        node_voltages[node] = float(solution_x[idx])
+                    if not np.all(np.isfinite(solution_x)):
+                        raise SingularMatrixError(
+                            f"Transient solve did not converge at t = {t_next:.6g} s."
+                        )
+                else:
+                    solution_x = np.zeros(0, dtype=np.float64)
+
+                node_voltages = {}
+                for gnd_node in self._bucket_grounded_nodes:
+                    node_voltages[gnd_node] = 0.0
+                for node, idx in self._node_to_idx.items():
+                    node_voltages[node] = float(solution_x[idx])
+
+            # 3b. Check for switch contact breakdown arc ignition or extinction.
+            arc_state_changed = False
+            arc_ignited_switches: list[str] = []
+            for comp in self._bucket_switches:
+                if not comp.closed:
+                    v_sw = node_voltages.get(comp.nodes[0], 0.0) - node_voltages.get(
+                        comp.nodes[1], 0.0
+                    )
+                    if not comp.arcing and comp.check_arc_ignition(v_sw):
+                        arc_state_changed = True
+                        arc_ignited_switches.append(comp.name)
+                    elif comp.arcing and comp.check_arc_extinction(v_sw):
+                        arc_state_changed = True
+
+            if arc_state_changed:
+                if use_be_on_switch:
+                    active_method = IntegrationMethod.BACKWARD_EULER
+                    method_str = active_method.value
+                    self._be_steps_remaining = max(self._be_steps_remaining, 2)
+                if self._bucket_diodes:
+                    solution_x, node_voltages, reb_arc = self._solve_step_with_recovery(
+                        mode="transient",
+                        sim_time=t_next,
+                        dt=dt,
+                        method_str=method_str,
+                        direct_max_iters=80,
+                        relax_gates=False,
+                    )
+                    needs_rebuild = needs_rebuild or reb_arc
+                else:
+                    self._assemble_and_factorize(
+                        mode="transient", dt=dt, method_str=method_str
+                    )
+                    needs_rebuild = True
+                    assert self._lu_piv is not None
+                    if dim > 0:
+                        rhs_b = self._build_rhs_transient(t_next, dt, method_str)
+                        solution_x = lu_solve(self._lu_piv, rhs_b, check_finite=True)
+                        for node, idx in self._node_to_idx.items():
+                            node_voltages[node] = float(solution_x[idx])
+
+            # 3c. Check for LED conduction state transitions (when no diodes handled outer loop).
+            if self._bucket_leds and not self._bucket_diodes:
+                for _diode_iter in range(5):
+                    led_state_changed = self._update_led_discrete_states(node_voltages)
+                    if not led_state_changed:
+                        break
+                    self._assemble_and_factorize(
+                        mode="transient", dt=dt, method_str=method_str
+                    )
+                    needs_rebuild = True
+                    assert self._lu_piv is not None
+                    if dim > 0:
+                        rhs_b = self._build_rhs_transient(t_next, dt, method_str)
+                        solution_x = lu_solve(self._lu_piv, rhs_b, check_finite=True)
+                        for node, idx in self._node_to_idx.items():
+                            node_voltages[node] = float(solution_x[idx])
+        except (SingularMatrixError, ValueError, np.linalg.LinAlgError):
+            if not can_bisect:
+                raise
+            # Restore pre-step discrete state and adaptively bisect the timestep cleanly.
+            self.sim_time = snap_sim_time
+            self._transient_step_index = snap_step_idx
+            self._be_steps_remaining = snap_be_rem
+            self._restore_nonlinear_states(snap_nl)
+            for sw, (was_cl, was_arc) in zip(self._bucket_switches, snap_sw):
+                sw.closed = was_cl
+                sw.arcing = was_arc
+            half_dt = 0.5 * dt
+            self.step_transient(
+                half_dt,
+                method=method,
+                use_be_on_first_step=use_be_on_first_step,
+                use_be_on_switch=use_be_on_switch,
+                compute_cond=False,
+                _substep_depth=_substep_depth + 1,
+            )
+            res_second = self.step_transient(
+                half_dt,
+                method=method,
+                use_be_on_first_step=use_be_on_first_step,
+                use_be_on_switch=use_be_on_switch,
+                compute_cond=compute_cond,
+                _substep_depth=_substep_depth + 1,
+            )
+            self.last_convergence_method = "substep_recovery"
+            return res_second
 
         # 3d. Sample logic-gate inputs after convergence and schedule future delayed transitions.
         for comp in self._bucket_logic_gates:
@@ -1565,6 +2185,15 @@ class MNASolver:
                     comp.is_conducting = False
                     comp.brightness = 0.0
                     comp.is_over_current = False
+            elif tag == _TAG_DIODE:
+                vd_fin, i_ab, _ = comp.terminal_model(
+                    v_ab, vd_guess=comp.operating_vd
+                )
+                comp.operating_vd = vd_fin
+                comp.operating_vak = v_ab
+                comp.voltage = v_ab
+                comp.current = i_ab
+                comp.power = v_ab * i_ab
             elif tag == _TAG_SWITCH:
                 comp.update_companion_state(v_ab, dt, method_str)
                 i_ab = comp.current
@@ -1647,8 +2276,13 @@ class MNASolver:
         n_steps = max(1, int(round(duration / step_dt)))
 
         # Validate topology and initialize t = 0+ states for index 0 recording.
-        all_warnings: list[CircuitWarning] = list(self.circuit.validate_topology())
+        all_warnings: list[CircuitWarning] = list(
+            self.circuit.validate_topology(
+                regularize_ideal_loops=self.regularize_ideal_loops
+            )
+        )
         self._topology_warnings = list(all_warnings)
+        self._maybe_apply_startup_perturbation()
         self._initialize_logic_gates_t0(step_dt)
         self._initialize_t0_derivatives()
         if use_be_on_first_step:

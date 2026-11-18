@@ -86,6 +86,14 @@ _DEFAULT_PARAMETERS_BY_TYPE: dict[str, tuple[ComponentParameter, ...]] = {
         ComponentParameter("rated_current", "Rated Current", "A"),
         ComponentParameter("max_current", "Max Current", "A"),
     ),
+    "diode": (
+        ComponentParameter("is_sat", "Saturation Current (Is)", "A"),
+        ComponentParameter("n", "Ideality Factor (N)", ""),
+        ComponentParameter("rs", "Series Resistance (Rs)", "Ω", allow_zero=True),
+        ComponentParameter("bv", "Breakdown Voltage (Vbr)", "V"),
+        ComponentParameter("max_current", "Max Forward Current", "A"),
+        ComponentParameter("max_power", "Max Power Rating", "W"),
+    ),
     "switch": (
         ComponentParameter("r_on", "ON Resistance", "Ω"),
         ComponentParameter("v_breakdown", "Breakdown Voltage", "V"),

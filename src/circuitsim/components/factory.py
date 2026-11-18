@@ -10,6 +10,7 @@ from circuitsim.components.base import Component
 from circuitsim.components.capacitor import Capacitor
 from circuitsim.components.ground import Ground
 from circuitsim.components.inductor import Inductor
+from circuitsim.components.diode import Diode
 from circuitsim.components.led import LED
 from circuitsim.components.lightbulb import Lightbulb
 from circuitsim.components.logic_gate import GATE_COMPONENT_TYPES, GATE_OPERATIONS, LogicGate
@@ -35,6 +36,7 @@ KNOWN_COMPONENT_TYPES: tuple[str, ...] = (
     "switch",
     "lightbulb",
     "led",
+    "diode",
     "voltmeter",
     "ammeter",
     *GATE_COMPONENT_TYPES,
@@ -66,6 +68,8 @@ def create_default_component_model(component_id: str, name: str) -> Component:
         return Lightbulb(name, n0, n1, rated_power=60.0, rated_voltage=120.0)
     if component_id == "led":
         return LED(name, n0, n1, forward_voltage=2.0, color_name="Red")
+    if component_id == "diode":
+        return Diode(name, n0, n1)
     if component_id == "voltmeter":
         return Voltmeter(name, n0, n1)
     if component_id == "ammeter":

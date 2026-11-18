@@ -69,6 +69,10 @@ _EXTRA_SETTINGS: dict[str, dict[str, str]] = {
         "burnout_enabled": "bool",
         "burnout_current": "float_or_none",
     },
+    "diode": {
+        "model_name": "str",
+        "ibv": "float",
+    },
     "gate_not": {
         "family": "str",
         "initial_state": "bool",
