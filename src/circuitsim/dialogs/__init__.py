@@ -11,9 +11,11 @@ from circuitsim.dialogs.value_parser import (
 )
 
 if TYPE_CHECKING:
+    from circuitsim.dialogs.mcu_firmware_dialog import MCUFirmwareDialog
     from circuitsim.dialogs.quick_edit_dialog import QuickValueDialog
 
 __all__ = [
+    "MCUFirmwareDialog",
     "QuickValueDialog",
     "format_engineering_value",
     "parse_engineering_value",
@@ -26,4 +28,8 @@ def __getattr__(name: str) -> object:
         from circuitsim.dialogs.quick_edit_dialog import QuickValueDialog
 
         return QuickValueDialog
+    if name == "MCUFirmwareDialog":
+        from circuitsim.dialogs.mcu_firmware_dialog import MCUFirmwareDialog
+
+        return MCUFirmwareDialog
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

@@ -24,7 +24,9 @@ from circuitsim.canvas.component_item import ComponentItem
 from circuitsim.canvas.scene import CircuitScene
 from circuitsim.canvas.symbol_geometry import GRID_PITCH_PX, snap_to_grid
 from circuitsim.canvas.wire_item import JunctionItem, WireItem
+from circuitsim.components.mcu import MCUBlock
 from circuitsim.components.switch import Switch
+from circuitsim.dialogs.mcu_firmware_dialog import MCUFirmwareDialog
 from circuitsim.dialogs.quick_edit_dialog import QuickValueDialog
 
 MIME_COMPONENT_ID = "application/x-circuitsim-component-id"
@@ -305,9 +307,19 @@ class CircuitView(QGraphicsView):
                 return
         self.setCursor(Qt.CursorShape.ArrowCursor)
 
+    def open_mcu_firmware_dialog(self, item: ComponentItem) -> bool:
+        """Open the interactive `MCUFirmwareDialog` for an `MCUBlock` item."""
+        if not isinstance(item.component, MCUBlock):
+            return False
+        dlg = MCUFirmwareDialog(item, scene=self.circuit_scene, parent=self.window())
+        dlg.exec()
+        return True
+
     def open_quick_edit_for_item(self, item: ComponentItem) -> bool:
-        """Open the double-click `QuickValueDialog` for `item` and apply changes live."""
+        """Open the double-click `QuickValueDialog` (or `MCUFirmwareDialog` for MCU) and apply changes live."""
         comp = item.component
+        if isinstance(comp, MCUBlock):
+            return self.open_mcu_firmware_dialog(item)
         if not comp.get_editable_parameters() and not isinstance(comp, Switch):
             return False
 
@@ -694,6 +706,12 @@ class CircuitView(QGraphicsView):
                 lambda: self.open_quick_edit_for_item(target_comp)
             )
             menu.addAction(act_edit)
+            if isinstance(target_comp.component, MCUBlock):
+                act_mcu_fw = QAction("Edit MCU Firmware / Serial Monitor...", menu)
+                act_mcu_fw.triggered.connect(
+                    lambda: self.open_mcu_firmware_dialog(target_comp)
+                )
+                menu.addAction(act_mcu_fw)
             if isinstance(target_comp.component, Switch):
                 act_toggle_sw = QAction("Toggle Switch (ON/OFF)\tClick", menu)
                 act_toggle_sw.triggered.connect(

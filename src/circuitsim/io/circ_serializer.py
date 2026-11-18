@@ -130,7 +130,7 @@ _EXTRA_SETTINGS: dict[str, dict[str, str]] = {
     },
     "voltmeter": {"mode": "str", "is_ideal": "bool"},
     "ammeter": {"mode": "str", "is_ideal": "bool"},
-    "mcu": {"v_low": "float", "r_dig_in": "float", "update_period": "float"},
+    "mcu": {"v_low": "float", "r_dig_in": "float", "update_period": "float", "code": "str"},
 }
 
 # Editable parameters that may legitimately be "none" (feature switched off).

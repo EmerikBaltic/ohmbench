@@ -179,6 +179,8 @@ def build_circuit(
         if is_unconnected(comp) and (has_connected_non_ground or comp.name in ground_names):
             continue
         clone = copy.deepcopy(comp)
+        if hasattr(clone, "_source_mcu"):
+            clone._source_mcu = comp
         if _is_ground(comp):
             clone.nodes = (GROUND_NODE,)
         else:

@@ -20,6 +20,7 @@ from circuitsim.components import (
     DCVoltageSource,
     Ground,
     KNOWN_COMPONENT_TYPES,
+    MCUBlock,
     NMOS,
     NPNBJT,
     OpAmp,
@@ -29,7 +30,9 @@ from circuitsim.components import (
     ZenerDiode,
     create_default_component_model,
 )
+from circuitsim.dialogs.mcu_firmware_dialog import MCUFirmwareDialog
 from circuitsim.engine import Circuit, MNASolver, evaluate_component_stress
+from circuitsim.io.share_codec import decode_circuit_share_url, encode_circuit_share_url
 from circuitsim.io.spice_import import (
     instantiate_bjt_model,
     instantiate_diode_model,
@@ -304,6 +307,77 @@ def test_h4_nmos_pmos_saturation_and_opamp_amplifiers(qapp) -> None:
         payload = dumps_document_v2(scene.to_document_v2())
         loaded = loads_document_v2(payload)
         assert [p.component.component_type for p in loaded.placed] == ["nmos", "pmos", "opamp"]
+    finally:
+        scene.shutdown_scene()
+        qapp.processEvents()
+
+
+def test_h5_mcu_firmware_dialog_editor_serial_monitor_and_share_url(qapp) -> None:
+    """H5: MCUFirmwareDialog editor, syntax error guard, live ADC/GPIO/Serial monitor & share URL."""
+    scene = CircuitScene(SymbolLibrary())
+    try:
+        v1 = scene.place_new_component("dc_voltage", QPointF(-240.0, 0.0))
+        v1.component.dc_voltage = 5.0
+        gnd = scene.place_new_component("ground", QPointF(-240.0, 140.0))
+        r_top = scene.place_new_component("resistor", QPointF(-100.0, -40.0))
+        r_top.component.resistance = 10_000.0
+        r_bot = scene.place_new_component("resistor", QPointF(-100.0, 80.0))
+        r_bot.component.resistance = 10_000.0
+        mcu_item = scene.place_new_component("mcu", QPointF(80.0, 0.0))
+        r_d0 = scene.place_new_component("resistor", QPointF(260.0, 0.0))
+        r_d0.component.resistance = 1_000.0
+
+        scene.add_wire(TerminalRef(v1.component.name, "neg"), TerminalRef(gnd.component.name, "gnd"))
+        scene.add_wire(TerminalRef(v1.component.name, "pos"), TerminalRef(r_top.component.name, "a"))
+        scene.add_wire(TerminalRef(r_top.component.name, "b"), TerminalRef(r_bot.component.name, "a"))
+        scene.add_wire(TerminalRef(r_bot.component.name, "b"), TerminalRef(gnd.component.name, "gnd"))
+        scene.add_wire(TerminalRef(r_bot.component.name, "a"), TerminalRef(mcu_item.component.name, "A0"))
+        scene.add_wire(TerminalRef(mcu_item.component.name, "D0"), TerminalRef(r_d0.component.name, "a"))
+        scene.add_wire(TerminalRef(r_d0.component.name, "b"), TerminalRef(gnd.component.name, "gnd"))
+
+        dlg = MCUFirmwareDialog(mcu_item, scene=scene)
+        try:
+            # 1. Invalid syntax is caught cleanly by Verify without crashing or closing
+            dlg.code_edit.setPlainText("if True print('oops')")
+            assert dlg.verify_code() is False
+            assert "SyntaxError" in dlg.status_label.text()
+            assert dlg.apply_code(close_after=True) is False
+
+            # 2. Valid firmware script compiles & applies
+            script = (
+                "val = mcu.adc_read('A0')\n"
+                "mcu.digital_write('D0', val > 400)\n"
+                "mcu.log(f'A0={val}')\n"
+            )
+            dlg.code_edit.setPlainText(script)
+            assert dlg.verify_code() is True
+            assert "Compiled OK" in dlg.status_label.text()
+            assert dlg.apply_code(close_after=False) is True
+
+            # 3. Solve circuit built from scene -> ADC reads ~512, D0 drives HIGH (>4.5V), Serial logs A0=512
+            circ = scene.build_circuit()
+            res = MNASolver(circ).solve_dc()
+            cloned_mcu = circ.get_component(mcu_item.component.name)
+            assert isinstance(cloned_mcu, MCUBlock)
+            assert 511 <= cloned_mcu.adc_read("A0") <= 513
+            assert res.node_voltages[cloned_mcu.nodes[2]] > 4.5
+            assert any("A0=51" in line for line in cloned_mcu.serial_log)
+
+            # Dialog refreshes 6-row live Pin Table & read-only Serial Monitor from canvas MCU mirror
+            dlg.refresh_telemetry()
+            assert dlg.pin_table.rowCount() == 6
+            assert dlg.pin_table.item(0, 0).text() == "A0"
+            assert "2.49" in dlg.pin_table.item(0, 2).text() or "2.50" in dlg.pin_table.item(0, 2).text()
+            assert "A0=51" in dlg.serial_monitor_edit.toPlainText()
+        finally:
+            dlg.close()
+
+        # 4. Persistence through .circ v2 and ohmbench://c/ share URL
+        share_url = encode_circuit_share_url(scene.to_document_v2())
+        decoded_doc = decode_circuit_share_url(share_url)
+        decoded_mcus = [p.component for p in decoded_doc.placed if isinstance(p.component, MCUBlock)]
+        assert len(decoded_mcus) == 1
+        assert "mcu.adc_read('A0')" in decoded_mcus[0].code
     finally:
         scene.shutdown_scene()
         qapp.processEvents()
