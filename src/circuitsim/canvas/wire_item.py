@@ -66,6 +66,7 @@ class WireItem(QGraphicsObject):
         )
         self._path: QPainterPath = QPainterPath()
         self._hit_shape: QPainterPath = QPainterPath()
+        self._cached_bounding_rect: QRectF = QRectF(0.0, 0.0, 1.0, 1.0)
         self.diagnostic_severity: str | None = None
         self.diagnostic_message: str = ""
         self.voltage_color_enabled: bool = False
@@ -208,11 +209,14 @@ class WireItem(QGraphicsObject):
         stroker.setCapStyle(Qt.PenCapStyle.RoundCap)
         stroker.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
         self._hit_shape = stroker.createStroke(path)
+        self._cached_bounding_rect = (
+            QRectF(0.0, 0.0, 1.0, 1.0)
+            if self._path.isEmpty()
+            else self._hit_shape.boundingRect().adjusted(-4.0, -4.0, 4.0, 4.0)
+        )
 
     def boundingRect(self) -> QRectF:
-        if self._path.isEmpty():
-            return QRectF(0.0, 0.0, 1.0, 1.0)
-        return self._hit_shape.boundingRect().adjusted(-4.0, -4.0, 4.0, 4.0)
+        return self._cached_bounding_rect
 
     def shape(self) -> QPainterPath:
         return self._hit_shape

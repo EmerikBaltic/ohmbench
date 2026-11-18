@@ -220,6 +220,9 @@ class ComponentItem(QGraphicsObject):
         self.stress_warnings_enabled: bool = True
         self.is_unconnected: bool = False
         self.label_position: str = "default"
+        self._cached_bounds_key: tuple[object, ...] | None = None
+        self._cached_bounding_rect: QRectF | None = None
+        self._bounding_rect_recompute_count: int = 0
 
         # Switch lever animation state
         self._lever_angle_deg: float = (
@@ -766,8 +769,55 @@ class ComponentItem(QGraphicsObject):
         path.setFillRule(Qt.FillRule.WindingFill)
         return path
 
+    def invalidate_geometry_cache(self) -> None:
+        """Invalidate cached `boundingRect()` so Qt updates spatial bounds cleanly."""
+        self.prepareGeometryChange()
+        self._cached_bounds_key = None
+        self._cached_bounding_rect = None
+
     def boundingRect(self) -> QRectF:
-        """Return tight bounding rectangle enclosing the rotated symbol body, terminals, and upright labels."""
+        """Return cached tight bounding rectangle enclosing body, terminals, and labels."""
+        val_text = ""
+        if self.component.show_value and self.component.component_type != "ground":
+            val_text = (
+                self.live_display_value
+                if self.live_display_value is not None
+                else format_component_value_summary(self.component)
+            ) or ""
+        is_over_bulb = (
+            isinstance(self.component, Lightbulb)
+            and self.component.is_over_bright
+        )
+        is_over_led = (
+            self.component.component_type == "led"
+            and getattr(self.component, "is_over_current", False)
+        )
+        bulb_lit = (
+            isinstance(self.component, Lightbulb)
+            and not self.is_ghost
+            and getattr(self.component, "brightness", 0.0) > 0.0
+        )
+        pinout_vis = bool(getattr(self, "_pinout_overlay_enabled", False))
+        cache_key: tuple[object, ...] = (
+            self.rotation_deg,
+            self.flipped_h,
+            self.is_ghost,
+            self.component.label or "",
+            bool(self.component.show_value),
+            val_text,
+            bool(self.isSelected()),
+            bool(self._is_hovered),
+            self.diagnostic_severity,
+            self.stress_level if self.stress_warnings_enabled else "normal",
+            is_over_bulb,
+            is_over_led,
+            bulb_lit,
+            pinout_vis,
+        )
+        if self._cached_bounds_key == cache_key and self._cached_bounding_rect is not None:
+            return self._cached_bounding_rect
+
+        self._bounding_rect_recompute_count += 1
         w_px, h_px = self.metadata.pixel_size
         t = QTransform()
         if self.flipped_h:
@@ -798,21 +848,12 @@ class ComponentItem(QGraphicsObject):
                 l_box = fm.boundingRect(lbl_rect.toRect(), int(text_align), lbl_text)
                 rect = rect.united(QRectF(l_box).adjusted(-2.0, -1.0, 2.0, 1.0))
 
-            if (
-                self.component.show_value
-                and self.component.component_type != "ground"
-            ):
-                val_text = (
-                    self.live_display_value
-                    if self.live_display_value is not None
-                    else format_component_value_summary(self.component)
-                )
-                if val_text and val_text.strip():
-                    font_v = QFont("Segoe UI", 8)
-                    font_v.setBold(isinstance(self.component, (Voltmeter, Ammeter)))
-                    fm_v = QFontMetrics(font_v)
-                    v_box = fm_v.boundingRect(val_rect.toRect(), int(text_align), val_text)
-                    rect = rect.united(QRectF(v_box).adjusted(-3.0, -1.0, 3.0, 1.0))
+            if val_text.strip():
+                font_v = QFont("Segoe UI", 8)
+                font_v.setBold(isinstance(self.component, (Voltmeter, Ammeter)))
+                fm_v = QFontMetrics(font_v)
+                v_box = fm_v.boundingRect(val_rect.toRect(), int(text_align), val_text)
+                rect = rect.united(QRectF(v_box).adjusted(-3.0, -1.0, 3.0, 1.0))
 
             if self.component.component_type == "led" and (self.isSelected() or self._is_hovered):
                 marks = led_marks(self.rotation_deg, self.flipped_h, (0.0, 0.0))
@@ -833,20 +874,17 @@ class ComponentItem(QGraphicsObject):
                 for _pin_name, (tx, ty) in gate_info["pin_tags"]:  # type: ignore[misc]
                     rect = rect.united(QRectF(tx - 15.0, ty - 7.0, 30.0, 14.0))
 
-            is_over_bulb = (
-                isinstance(self.component, Lightbulb)
-                and self.component.is_over_bright
-            )
-            is_over_led = (
-                self.component.component_type == "led"
-                and getattr(self.component, "is_over_current", False)
-            )
             if self.diagnostic_severity in ("error", "warning") or is_over_bulb or is_over_led:
                 rect = rect.united(QRectF(11.0, -25.0, 14.0, 14.0))
 
-        if isinstance(self.component, Lightbulb) and not self.is_ghost and getattr(self.component, "brightness", 0.0) > 0.0:
+        if bulb_lit:
             rect = rect.united(QRectF(-36.0, -36.0, 72.0, 72.0))
 
+        if pinout_vis:
+            rect = rect.adjusted(-16.0, -16.0, 16.0, 16.0)
+
+        self._cached_bounds_key = cache_key
+        self._cached_bounding_rect = rect
         return rect
 
     def itemChange(

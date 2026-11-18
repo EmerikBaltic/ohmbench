@@ -43,6 +43,13 @@ from circuitsim.engine.ac_analysis import (
     ACFrequencySample,
     run_ac_sweep,
 )
+from circuitsim.engine.sweep import (
+    MonteCarloResult,
+    MonteCarloTolerance,
+    ParameterSweepResult,
+    run_monte_carlo,
+    run_parameter_sweep,
+)
 
 __all__ = [
     "ACAnalysisResult",
@@ -54,7 +61,10 @@ __all__ = [
     "FloatingNodeError",
     "IntegrationMethod",
     "MNASolver",
+    "MonteCarloResult",
+    "MonteCarloTolerance",
     "NoGroundError",
+    "ParameterSweepResult",
     "ProblemDiagnostic",
     "SimulationBackendProtocol",
     "SimulationFrame",
@@ -76,4 +86,6 @@ __all__ = [
     "format_watts_si",
     "map_voltage_to_rgb",
     "run_ac_sweep",
+    "run_monte_carlo",
+    "run_parameter_sweep",
 ]
