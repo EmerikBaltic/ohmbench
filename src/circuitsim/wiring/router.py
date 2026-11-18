@@ -373,12 +373,18 @@ def route(
     # --- 0-bend (straight line) ---
     if p0[0] == p3[0] or p0[1] == p3[1]:
         cand = (p0, p3)
-        if path_collision_free(cand, norm_obstacles, p0, p3):
+        hits_same_body = any(
+            (r[0] <= p0[0] <= r[2] and r[1] <= p0[1] <= r[3])
+            and (r[0] <= p3[0] <= r[2] and r[1] <= p3[1] <= r[3])
+            and segment_intersects_rect(p0, p3, r)
+            for r in norm_obstacles
+        )
+        if not hits_same_body and path_collision_free(cand, norm_obstacles, p0, p3):
             if path_matches_directions(cand, s_dir, e_dir):
                 return cand
-            # G6: Allow clean straight orthogonal wires (e.g., straight down from a
-            # horizontal terminal) without a 1-unit side jog, provided the wire does
-            # not backtrack into either component body.
+            # G6 / H1: Allow clean straight orthogonal wires (including parallel
+            # stacked components whose same-facing pins align vertically or horizontally)
+            # without a 1-unit outward U-loop jog, unless backtracking into a body.
             dx = p3[0] - p0[0]
             dy = p3[1] - p0[1]
             step_dir = (
@@ -387,8 +393,7 @@ def route(
             )
             backtracks_start = s_dir is not None and step_dir == (-s_dir[0], -s_dir[1])
             backtracks_end = e_dir is not None and step_dir == e_dir
-            same_facing_pins = s_dir is not None and e_dir is not None and s_dir == e_dir
-            if not backtracks_start and not backtracks_end and not same_facing_pins:
+            if not backtracks_start and not backtracks_end:
                 return cand
 
     # --- 1-bend (L-shape) ---

@@ -2,7 +2,7 @@
 
 ## PHASE H QUEUE (PALETTE, ROUTER, ACTIVE SEMICONDUCTORS & WORKBENCH UI)
 - [x] `H0` (`done`): Initialized Phase H queue in `PROGRESS.md`, verified clean `wire-redesign` tree at `checkpoint/F-done` (`a451b18`), and created `tests/test_h_workbench_expansion.py` with offscreen Qt scaffolding.
-- [ ] `H1` (`todo`): Fix parallel component wire routing — remove 1-unit outward U-loop jogs on unobstructed aligned terminals.
+- [x] `H1` (`done`): Fixed parallel component wire routing in `circuitsim.wiring.router.route()` by removing `same_facing_pins` blocking from the 0-bend straight line bypass (still blocking backtracking or intersecting any body interior), so vertically/horizontally aligned unobstructed terminals route as straight 2-point lines without 1-unit U-loop jogs. Created `tests/test_wire_router.py` re-exporting `tests/test_wiring_router.py` + H1 parallel/obstacle tests, and added `test_h1_parallel_voltmeter_inductor_straight_2point_wires`. Note: existing `tests/test_wiring_router.py` required no assertion changes.
 - [ ] `H2` (`todo`): Component palette vertical scrollbar, live search filter & Expand/Collapse All buttons.
 - [ ] `H3` (`todo`): Active semiconductors Part 1 — NPN BJT, PNP BJT & Zener Diode (models, symbols, solver stamps, pinouts, SPICE import).
 - [ ] `H4` (`todo`): Active semiconductors Part 2 — N-Channel MOSFET, P-Channel MOSFET & Op-Amp (models, symbols, solver stamps).
