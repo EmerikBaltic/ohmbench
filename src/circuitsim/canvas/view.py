@@ -782,6 +782,12 @@ class CircuitView(QGraphicsView):
         act_paste.triggered.connect(self.circuit_scene.paste_clipboard)
         menu.addAction(act_paste)
 
+        act_dup = QAction("Duplicate\tCtrl+D", menu)
+        act_dup.setShortcut(QKeySequence("Ctrl+D"))
+        act_dup.setEnabled(has_sel)
+        act_dup.triggered.connect(self.circuit_scene.duplicate_selected)
+        menu.addAction(act_dup)
+
         act_delete = QAction("Delete\tDel", menu)
         act_delete.setShortcut(QKeySequence.StandardKey.Delete)
         act_delete.setEnabled(has_sel)
@@ -880,6 +886,15 @@ class CircuitView(QGraphicsView):
             and not (event.modifiers() & (Qt.KeyboardModifier.AltModifier | Qt.KeyboardModifier.ShiftModifier))
         ):
             self.circuit_scene.select_all()
+            event.accept()
+            return
+
+        if (
+            event.key() == Qt.Key.Key_D
+            and (event.modifiers() & Qt.KeyboardModifier.ControlModifier)
+            and not (event.modifiers() & (Qt.KeyboardModifier.AltModifier | Qt.KeyboardModifier.ShiftModifier))
+        ):
+            self.circuit_scene.duplicate_selected()
             event.accept()
             return
 

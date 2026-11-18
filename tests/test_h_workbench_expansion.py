@@ -48,7 +48,7 @@ from circuitsim.io.spice_import import (
     instantiate_diode_model,
     parse_spice_library,
 )
-from circuitsim.wiring.model import FreeEnd, TerminalRef
+from circuitsim.wiring.model import FreeEnd, JunctionRef, TerminalRef
 from circuitsim.wiring.serializer import dumps_document_v2, loads_document_v2
 
 
@@ -585,6 +585,86 @@ def test_h8_fft_spectrum_thd_and_on_canvas_probe_badge(qapp) -> None:
         assert w_mid.show_probe_badge is True
         assert "5.00 V" in w_mid.probe_badge_text
         assert "5 mA" in w_mid.probe_badge_text or "5.00 mA" in w_mid.probe_badge_text
+    finally:
+        scene.shutdown_scene()
+        qapp.processEvents()
+
+
+def test_h9_subcircuit_duplicate_copy_paste_and_rigid_group_move(qapp) -> None:
+    """H9: Duplicate (Ctrl+D), Copy/Paste (+60,+60) & rigid multi-component move in 1 undo step."""
+    scene = CircuitScene(SymbolLibrary())
+    try:
+        v1 = scene.place_new_component("dc_voltage", QPointF(-160.0, 0.0))
+        r1 = scene.place_new_component("resistor", QPointF(0.0, -60.0))
+        r2 = scene.place_new_component("resistor", QPointF(0.0, 60.0))
+        gnd = scene.place_new_component("ground", QPointF(-80.0, 160.0))
+
+        # Bent top wire V1.pos -> R1.a with explicit hint
+        bend_orig = (-80, -100)
+        w_top = scene.add_wire(
+            TerminalRef(v1.component.name, "pos"),
+            TerminalRef(r1.component.name, "a"),
+            hints=(bend_orig,),
+        )
+        scene.add_wire(TerminalRef(r1.component.name, "b"), TerminalRef(r2.component.name, "a"))
+
+        # Degree-3 ground junction J1 joining V1.neg, R2.b, and GND.gnd
+        j_pos_orig = (-80, 120)
+        w_gnd_bus = scene.add_wire(
+            TerminalRef(v1.component.name, "neg"),
+            TerminalRef(gnd.component.name, "gnd"),
+        )
+        assert w_gnd_bus is not None
+        g_split = scene.wire_graph.split_wire_at(w_gnd_bus.wire_id, j_pos_orig)
+        g_with_r2 = g_split.graph.add_wire(
+            JunctionRef(g_split.junction_id),
+            TerminalRef(r2.component.name, "b"),
+        )
+        scene.set_wire_graph(g_with_r2)
+        j1_id = g_split.junction_id
+        assert len(scene.placed_items) == 4
+        assert len(scene.wire_graph.junctions) == 1
+        assert len(scene.wire_graph.wires) == 5
+
+        orig_positions = {it.component.name: (it.pos().x(), it.pos().y()) for it in scene.placed_items}
+
+        # 1. Duplicate (Ctrl+D) -> 4 -> 8 components, +60,+60 offset, 1 undo removes duplicate
+        scene.select_all()
+        assert scene.duplicate_selected() is True
+        assert len(scene.placed_items) == 8
+        assert len(scene.wire_graph.junctions) == 2
+        assert len(scene.wire_graph.wires) == 10
+
+        pasted_j = [j for j in scene.wire_graph.junctions if j.id != j1_id][0]
+        assert pasted_j.pos == (j_pos_orig[0] + 60, j_pos_orig[1] + 60)
+        pasted_top = [w for w in scene.wire_graph.wires if w.hints and w.id != w_top.wire_id][0]
+        assert pasted_top.hints == ((bend_orig[0] + 60, bend_orig[1] + 60),)
+
+        scene.undo_stack.undo()
+        assert len(scene.placed_items) == 4
+        assert len(scene.wire_graph.junctions) == 1
+        assert len(scene.wire_graph.wires) == 5
+
+        # 2. Rigid group move (+100, +80) -> components, junction J1, and wire bend all shift equally
+        scene.select_all()
+        scene.begin_component_move_tracking()
+        for it in scene.placed_items:
+            it.setPos(it.pos() + QPointF(100.0, 80.0))
+        assert scene.commit_component_move_tracking() is True
+
+        for it in scene.placed_items:
+            ox, oy = orig_positions[it.component.name]
+            assert (it.pos().x(), it.pos().y()) == (ox + 100.0, oy + 80.0)
+        assert scene.wire_graph.junction(j1_id).pos == (j_pos_orig[0] + 100, j_pos_orig[1] + 80)
+        assert scene.wire_graph.wire(w_top.wire_id).hints == ((bend_orig[0] + 100, bend_orig[1] + 80),)
+
+        # 1 undo restores exact pre-move positions of all components, junctions, and wire bends
+        scene.undo_stack.undo()
+        for it in scene.placed_items:
+            ox, oy = orig_positions[it.component.name]
+            assert (it.pos().x(), it.pos().y()) == (ox, oy)
+        assert scene.wire_graph.junction(j1_id).pos == j_pos_orig
+        assert scene.wire_graph.wire(w_top.wire_id).hints == (bend_orig,)
     finally:
         scene.shutdown_scene()
         qapp.processEvents()

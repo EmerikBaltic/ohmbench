@@ -69,6 +69,7 @@ from circuitsim.wiring.model import (
     Attachment,
     CopiedSubgraph,
     FreeEnd,
+    Junction,
     JunctionRef,
     TerminalRef,
     Wire,
@@ -2504,28 +2505,98 @@ class CircuitScene(QGraphicsScene):
         """Clear stale hints on wires incident to transformed components (or translate rigid moves)."""
         if not comp_names:
             return graph
-        new_wires: list[Wire] = []
+
+        moving_juncs: set[str] = set()
+        if uniform_delta is not None:
+            for jitem in self._junction_items_by_id.values():
+                if jitem.isSelected() and jitem.junction_id:
+                    moving_juncs.add(jitem.junction_id)
+            selected_wids = {
+                wid for wid, wi in self._wire_items_by_id.items() if wi.isSelected()
+            }
+
+            def _att_moves(att: Attachment, wid: str) -> bool:
+                if isinstance(att, TerminalRef):
+                    return att.component in comp_names
+                if isinstance(att, JunctionRef):
+                    return att.id in moving_juncs
+                return wid in selected_wids
+
+            grown = True
+            while grown:
+                grown = False
+                for j in graph.junctions:
+                    if j.id in moving_juncs:
+                        continue
+                    inc = graph.attached_wires(JunctionRef(j.id))
+                    if not inc:
+                        continue
+                    jref = JunctionRef(j.id)
+                    if all(
+                        _att_moves(w.end_b if w.end_a == jref else w.end_a, w.id)
+                        for w in inc
+                    ):
+                        moving_juncs.add(j.id)
+                        grown = True
+        else:
+            selected_wids = set()
+
+        new_junctions = list(graph.junctions)
         changed = False
-        for w in graph.wires:
-            if not w.hints:
-                new_wires.append(w)
-                continue
-            a_hit = isinstance(w.end_a, TerminalRef) and w.end_a.component in comp_names
-            b_hit = isinstance(w.end_b, TerminalRef) and w.end_b.component in comp_names
-            if uniform_delta is not None and a_hit and b_hit:
-                dx_i, dy_i = uniform_delta
-                shifted_hints = tuple((hx + dx_i, hy + dy_i) for hx, hy in w.hints)
-                if shifted_hints != w.hints:
+        dx_i, dy_i = uniform_delta if uniform_delta is not None else (0, 0)
+        if uniform_delta is not None and moving_juncs and (dx_i != 0 or dy_i != 0):
+            for idx, j in enumerate(new_junctions):
+                if j.id in moving_juncs:
+                    new_junctions[idx] = Junction(
+                        j.id, (j.pos[0] + dx_i, j.pos[1] + dy_i), net_label=j.net_label
+                    )
                     changed = True
-                new_wires.append(Wire(w.id, w.end_a, w.end_b, shifted_hints))
-            elif a_hit or b_hit:
+
+        new_wires: list[Wire] = []
+        for w in graph.wires:
+            a_comp = isinstance(w.end_a, TerminalRef) and w.end_a.component in comp_names
+            b_comp = isinstance(w.end_b, TerminalRef) and w.end_b.component in comp_names
+            a_junc = isinstance(w.end_a, JunctionRef) and w.end_a.id in moving_juncs
+            b_junc = isinstance(w.end_b, JunctionRef) and w.end_b.id in moving_juncs
+            w_sel = w.id in selected_wids
+            a_hit = a_comp or a_junc or (w_sel and isinstance(w.end_a, FreeEnd))
+            b_hit = b_comp or b_junc or (w_sel and isinstance(w.end_b, FreeEnd))
+
+            if uniform_delta is not None and a_hit and b_hit:
+                new_a = (
+                    FreeEnd(w.end_a.x + dx_i, w.end_a.y + dy_i)
+                    if isinstance(w.end_a, FreeEnd)
+                    else w.end_a
+                )
+                new_b = (
+                    FreeEnd(w.end_b.x + dx_i, w.end_b.y + dy_i)
+                    if isinstance(w.end_b, FreeEnd)
+                    else w.end_b
+                )
+                shifted_hints = (
+                    tuple((hx + dx_i, hy + dy_i) for hx, hy in w.hints)
+                    if w.hints
+                    else ()
+                )
+                if new_a != w.end_a or new_b != w.end_b or shifted_hints != w.hints:
+                    changed = True
+                new_wires.append(
+                    Wire(
+                        w.id,
+                        new_a,
+                        new_b,
+                        shifted_hints,
+                        net_label=w.net_label,
+                    )
+                )
+            elif (a_comp or b_comp) and w.hints:
                 changed = True
-                new_wires.append(Wire(w.id, w.end_a, w.end_b, ()))
+                new_wires.append(Wire(w.id, w.end_a, w.end_b, (), net_label=w.net_label))
             else:
                 new_wires.append(w)
         if not changed:
             return graph
-        return WireGraph(wires=tuple(new_wires), junctions=graph.junctions)
+        return WireGraph(wires=tuple(new_wires), junctions=tuple(new_junctions))
 
     def begin_component_move_tracking(self) -> None:
         """Snapshot component positions and `WireGraph` before drag."""
@@ -2978,7 +3049,7 @@ class CircuitScene(QGraphicsScene):
 
         self._paste_serial += 1
         if offset_px is None or isinstance(offset_px, bool):
-            step = float(GRID_PITCH_PX * 2 * self._paste_serial)
+            step = float(GRID_PITCH_PX * 3 * self._paste_serial)
             dx, dy = step, step
         else:
             dx, dy = snap_to_grid(offset_px[0], offset_px[1], GRID_PITCH_PX)
@@ -3059,6 +3130,7 @@ class CircuitScene(QGraphicsScene):
                     end_a=wire_obj.end_a,
                     end_b=wire_obj.end_b,
                     hints=wire_obj.hints,
+                    net_label=wire_obj.net_label,
                 )
             )
 
@@ -3078,6 +3150,12 @@ class CircuitScene(QGraphicsScene):
             )
         )
         return True
+
+    def duplicate_selected(self) -> bool:
+        """Copy selected subcircuit items and paste them offset by `(+60, +60)` in one undo step."""
+        if not self.copy_selected():
+            return False
+        return self.paste_clipboard()
 
     # ------------------------------------------------------------------
     # Netlist Extraction (CircuitScene.build_circuit)

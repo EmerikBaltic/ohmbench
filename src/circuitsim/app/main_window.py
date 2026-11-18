@@ -319,6 +319,12 @@ class MainWindow(QMainWindow):
         self.act_paste.triggered.connect(self.circuit_scene.paste_clipboard)
         edit_menu.addAction(self.act_paste)
 
+        self.act_duplicate = QAction("D&uplicate", self)
+        self.act_duplicate.setShortcut(QKeySequence("Ctrl+D"))
+        self.act_duplicate.setToolTip("Duplicate selected subcircuit (Shortcut: Ctrl+D)")
+        self.act_duplicate.triggered.connect(self.circuit_scene.duplicate_selected)
+        edit_menu.addAction(self.act_duplicate)
+
         self.act_delete = QAction("&Delete", self)
         self.act_delete.setIconText("Del")
         self.act_delete.setShortcut(QKeySequence.StandardKey.Delete)
