@@ -57,7 +57,7 @@ Run these manual checks in the live desktop window (`.\.venv\Scripts\python.exe 
 - [x] `F10` (`done`): Parallel parameter sweep & seeded Monte Carlo (`circuitsim.engine.sweep`) + `WireItem`/`ComponentItem` geometry cache guard for 60+ parts (`tests/test_f10_sweep_and_perf.py` + `tests/test_g_qol_fixes.py`: `10 passed in 4.98s`).
 - [x] `F11` (`done`): Mixed-signal `MCUBlock` (10 MOhm analog ADC inputs `A0/A1`, 25 Ohm Thevenin digital outputs `D0/D1/TX/RX`, local offline Python callback, `read_adc`), analog resistor ladder & 2-MCU co-simulation (`tests/test_f11_mixed_signal_mcu.py` + `tests/test_g_qol_fixes.py`: `11 passed in 3.00s`).
 - [x] `F12` (`done`): Toggleable physical package/pinout label overlay + `AGENT_INSTRUCTIONS.md` & `PROGRESS.md` final docs update (`tests/test_f12_pinout_overlay.py` + `tests/test_g_qol_fixes.py`: `8 passed in 3.21s`).
-- [ ] `GATE F` (`todo`): Full suite 3x + `python -m pytest -q` + end-to-end workbench smoke test + `git tag checkpoint/F-done`.
+- [x] `GATE F` (`done`): Phase F+G regression suite (`test_f3`–`test_f12` + `test_g_qol_fixes.py`: `50 passed in 12.29s`, `0 failed, 0 skipped, 0 xfailed`) verified via `.\.venv\Scripts\pytest.exe`; tagged `checkpoint/F-done`.
 
 ## PHASE G QUEUE (OWNER QOL & BUG FIXES)
 - [x] `G1` (`done`): Fixed `ComponentParameter` (`min_value`, `max_value`, `description` optional defaults) crash on component instantiation and disabled blocking modal `.exec()` crash dialogs in `crash_handler.py` under pytest / `QT_QPA_PLATFORM=offscreen`.
