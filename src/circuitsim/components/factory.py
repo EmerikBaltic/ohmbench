@@ -17,6 +17,8 @@ from circuitsim.components.lightbulb import Lightbulb
 from circuitsim.components.logic_gate import GATE_COMPONENT_TYPES, GATE_OPERATIONS, LogicGate
 from circuitsim.components.mcu import MCUBlock
 from circuitsim.components.meters import Ammeter, Voltmeter
+from circuitsim.components.mosfet import NMOS, PMOS
+from circuitsim.components.opamp import OpAmp
 from circuitsim.components.potentiometer import Potentiometer
 from circuitsim.components.resistor import Resistor
 from circuitsim.components.sources import (
@@ -44,6 +46,9 @@ KNOWN_COMPONENT_TYPES: tuple[str, ...] = (
     "zener_diode",
     "npn_bjt",
     "pnp_bjt",
+    "nmos",
+    "pmos",
+    "opamp",
     "voltmeter",
     "ammeter",
     "mcu",
@@ -86,6 +91,12 @@ def create_default_component_model(component_id: str, name: str) -> Component:
         return NPNBJT(name, f"{name}_B", f"{name}_C", f"{name}_E")
     if component_id == "pnp_bjt":
         return PNPBJT(name, f"{name}_B", f"{name}_C", f"{name}_E")
+    if component_id == "nmos":
+        return NMOS(name, f"{name}_G", f"{name}_D", f"{name}_S")
+    if component_id == "pmos":
+        return PMOS(name, f"{name}_G", f"{name}_D", f"{name}_S")
+    if component_id == "opamp":
+        return OpAmp(name, f"{name}_in_pos", f"{name}_in_neg", f"{name}_out")
     if component_id == "voltmeter":
         return Voltmeter(name, n0, n1)
     if component_id == "ammeter":

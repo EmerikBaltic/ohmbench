@@ -51,6 +51,8 @@ from circuitsim.components import (
     Inductor,
     LED,
     Lightbulb,
+    MOSFETBase,
+    OpAmp,
     Potentiometer,
     Resistor,
     Switch,
@@ -74,6 +76,9 @@ COMPONENT_PREFIXES: dict[str, str] = {
     "zener_diode": "DZ",
     "npn_bjt": "Q",
     "pnp_bjt": "Q",
+    "nmos": "M",
+    "pmos": "M",
+    "opamp": "U",
     "gate_not": "U",
     "gate_and": "U",
     "gate_or": "U",
@@ -124,6 +129,10 @@ def format_component_value_summary(comp: Component) -> str:
         return comp.model_name
     if isinstance(comp, BJTBase):
         return f"β={comp.beta_f:g}"
+    if isinstance(comp, MOSFETBase):
+        return f"Vth={comp.v_th:g}V"
+    if isinstance(comp, OpAmp):
+        return f"A={comp.a_ol:.0e}"
     if isinstance(comp, (Voltmeter, Ammeter)):
         return comp.format_reading()
     if isinstance(comp, LogicGate):
@@ -808,6 +817,10 @@ class ComponentItem(QGraphicsObject):
             return ("DO-41", {"anode": "Anode", "cathode": "Cathode"})
         if ctype in ("npn_bjt", "pnp_bjt"):
             return ("TO-92: 1-E, 2-B, 3-C", {"B": "2:B", "C": "3:C", "E": "1:E"})
+        if ctype in ("nmos", "pmos"):
+            return ("TO-92: 1-S, 2-G, 3-D", {"G": "2:G", "D": "3:D", "S": "1:S"})
+        if ctype == "opamp":
+            return ("DIP-8", {"in_pos": "3:+IN", "in_neg": "2:-IN", "out": "1:OUT"})
         if ctype == "led":
             return ("LED-5mm", {"anode": "A(+)", "cathode": "K(-)"})
         if ctype == "capacitor":

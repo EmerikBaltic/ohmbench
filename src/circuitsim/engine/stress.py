@@ -121,20 +121,17 @@ def _extract_component_records(
             i = float(getattr(telem, "current", 0.0))
             p = float(getattr(telem, "power", v * i))
         elif comp is not None:
-            if (
-                node_voltages
-                and hasattr(comp, "nodes")
-                and len(getattr(comp, "nodes", ())) >= 2
-            ):
-                va = float(node_voltages.get(comp.nodes[0], 0.0))
-                vb = float(node_voltages.get(comp.nodes[1], 0.0))
+            nodes_list = getattr(comp, "nodes", ())
+            if node_voltages and len(nodes_list) == 2:
+                va = float(node_voltages.get(nodes_list[0], 0.0))
+                vb = float(node_voltages.get(nodes_list[1], 0.0))
                 v = va - vb
+                i = float(branch_currents.get(name, getattr(comp, "current", 0.0)))
+                p = v * i if (branch_currents and name in branch_currents) else float(getattr(comp, "power", v * i))
             else:
                 v = float(getattr(comp, "voltage", 0.0))
-            i = float(branch_currents.get(name, getattr(comp, "current", 0.0)))
-            p = float(getattr(comp, "power", v * i))
-            if branch_currents and name in branch_currents:
-                p = v * i
+                i = float(branch_currents.get(name, getattr(comp, "current", 0.0)))
+                p = float(getattr(comp, "power", v * i))
         else:
             continue
         records.append((name, ctype, comp, v, i, p))

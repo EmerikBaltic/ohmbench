@@ -126,6 +126,25 @@ _DEFAULT_PARAMETERS_BY_TYPE: dict[str, tuple[ComponentParameter, ...]] = {
         ComponentParameter("v_af", "Early Voltage (VAF)", "V"),
         ComponentParameter("max_power_w", "Max Power Rating", "W"),
     ),
+    "nmos": (
+        ComponentParameter("v_th", "Threshold Voltage (VTO)", "V", allow_zero=True, allow_negative=True),
+        ComponentParameter("k_p", "Transconductance (KP)", "A/V²"),
+        ComponentParameter("lambda_", "Channel Modulation (LAMBDA)", "1/V", allow_zero=True),
+        ComponentParameter("max_power_w", "Max Power Rating", "W"),
+    ),
+    "pmos": (
+        ComponentParameter("v_th", "Threshold Voltage (VTO)", "V", allow_zero=True, allow_negative=True),
+        ComponentParameter("k_p", "Transconductance (KP)", "A/V²"),
+        ComponentParameter("lambda_", "Channel Modulation (LAMBDA)", "1/V", allow_zero=True),
+        ComponentParameter("max_power_w", "Max Power Rating", "W"),
+    ),
+    "opamp": (
+        ComponentParameter("a_ol", "Open-Loop Gain (Aol)", ""),
+        ComponentParameter("r_in", "Input Resistance", "Ω"),
+        ComponentParameter("r_out", "Output Resistance", "Ω"),
+        ComponentParameter("v_rail_pos", "Positive Rail (+Vcc)", "V", allow_zero=True, allow_negative=True),
+        ComponentParameter("v_rail_neg", "Negative Rail (-Vee)", "V", allow_zero=True, allow_negative=True),
+    ),
     "switch": (
         ComponentParameter("r_on", "ON Resistance", "Ω"),
         ComponentParameter("v_breakdown", "Breakdown Voltage", "V"),

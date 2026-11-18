@@ -84,6 +84,15 @@ _EXTRA_SETTINGS: dict[str, dict[str, str]] = {
     "pnp_bjt": {
         "model_name": "str",
     },
+    "nmos": {
+        "model_name": "str",
+    },
+    "pmos": {
+        "model_name": "str",
+    },
+    "opamp": {
+        "model_name": "str",
+    },
     "gate_not": {
         "family": "str",
         "initial_state": "bool",

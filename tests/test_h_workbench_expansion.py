@@ -20,7 +20,10 @@ from circuitsim.components import (
     DCVoltageSource,
     Ground,
     KNOWN_COMPONENT_TYPES,
+    NMOS,
     NPNBJT,
+    OpAmp,
+    PMOS,
     PNPBJT,
     Resistor,
     ZenerDiode,
@@ -217,3 +220,90 @@ def test_h3_zener_regulator_npn_pnp_emitter_follower_and_spice(qapp) -> None:
     assert isinstance(imp_npn, NPNBJT) and math.isclose(imp_npn.beta_f, 150.0)
     assert isinstance(imp_pnp, PNPBJT) and math.isclose(imp_pnp.beta_f, 120.0)
     assert isinstance(imp_dz, ZenerDiode) and math.isclose(imp_dz.v_z, 5.1)
+
+
+def test_h4_nmos_pmos_saturation_and_opamp_amplifiers(qapp) -> None:
+    """H4: NMOS/PMOS Level-1 saturation, Op-Amp inverting/non-inverting/clipping & UI wiring."""
+    # 1. NMOS saturation: V_G = 3.5V, V_S = 0V, Vth = 1.5V, kp = 0.02 -> I_D = 40 mA, V_D = 6.0 V
+    c_nmos = Circuit()
+    c_nmos.add(Ground("GND", "0"))
+    c_nmos.add(DCVoltageSource("VDD", "vdd", "0", voltage=10.0))
+    c_nmos.add(DCVoltageSource("VG", "g", "0", voltage=3.5))
+    c_nmos.add(Resistor("RD", "vdd", "d", resistance=100.0))
+    m_nmos = NMOS("M1", "g", "d", "0", v_th=1.5, k_p=0.02, lambda_=0.0, max_power_w=0.5)
+    c_nmos.add(m_nmos)
+    res_n = MNASolver(c_nmos).solve_dc()
+    assert math.isclose(res_n.node_voltages["d"], 6.0, abs_tol=1e-3)
+    assert math.isclose(m_nmos.i_d, 0.040, abs_tol=1e-5)
+
+    # 2. PMOS high-side saturation: S=10V, G=6.5V (V_SG=3.5V), RD=100 ohm to ground -> V_D = 4.0 V
+    c_pmos = Circuit()
+    c_pmos.add(Ground("GND", "0"))
+    c_pmos.add(DCVoltageSource("VDD", "vdd", "0", voltage=10.0))
+    c_pmos.add(DCVoltageSource("VG", "g", "0", voltage=6.5))
+    c_pmos.add(Resistor("RD", "d", "0", resistance=100.0))
+    m_pmos = PMOS("M2", "g", "d", "vdd", v_th=-1.5, k_p=0.02, lambda_=0.0, max_power_w=0.5)
+    c_pmos.add(m_pmos)
+    res_p = MNASolver(c_pmos).solve_dc()
+    assert math.isclose(res_p.node_voltages["d"], 4.0, abs_tol=1e-3)
+    assert math.isclose(m_pmos.i_d, -0.040, abs_tol=1e-5)
+
+    # 3. Op-Amp inverting amplifier: Vin=1V, Rin=10k, Rf=20k -> Vout=-2.000V, V(-)=~0V
+    c_inv = Circuit()
+    c_inv.add(Ground("GND", "0"))
+    c_inv.add(DCVoltageSource("VIN", "vin", "0", voltage=1.0))
+    c_inv.add(Resistor("RIN", "vin", "n_inv", resistance=10_000.0))
+    c_inv.add(Resistor("RF", "n_inv", "out", resistance=20_000.0))
+    op_inv = OpAmp("U1", "0", "n_inv", "out")
+    c_inv.add(op_inv)
+    res_inv = MNASolver(c_inv).solve_dc()
+    assert abs(res_inv.node_voltages["n_inv"]) < 1e-3
+    assert math.isclose(res_inv.node_voltages["out"], -2.0, abs_tol=0.005)
+
+    # 4. Op-Amp non-inverting amplifier: Vin=2V, Rg=10k, Rf=30k (gain=4) -> Vout=+8.000V
+    c_ni = Circuit()
+    c_ni.add(Ground("GND", "0"))
+    c_ni.add(DCVoltageSource("VIN", "vin", "0", voltage=2.0))
+    c_ni.add(Resistor("RG", "n_inv", "0", resistance=10_000.0))
+    c_ni.add(Resistor("RF", "n_inv", "out", resistance=30_000.0))
+    op_ni = OpAmp("U2", "vin", "n_inv", "out")
+    c_ni.add(op_ni)
+    res_ni = MNASolver(c_ni).solve_dc()
+    assert math.isclose(res_ni.node_voltages["out"], 8.0, abs_tol=0.005)
+
+    # 5. Rail clipping at +15V when ideal target (20V) exceeds v_rail_pos
+    c_clip = Circuit()
+    c_clip.add(Ground("GND", "0"))
+    c_clip.add(DCVoltageSource("VIN", "vin", "0", voltage=5.0))
+    c_clip.add(Resistor("RG", "n_inv", "0", resistance=10_000.0))
+    c_clip.add(Resistor("RF", "n_inv", "out", resistance=30_000.0))
+    op_clip = OpAmp("U3", "vin", "n_inv", "out", v_rail_pos=15.0, v_rail_neg=-15.0)
+    c_clip.add(op_clip)
+    res_clip = MNASolver(c_clip).solve_dc()
+    assert 14.8 <= res_clip.node_voltages["out"] <= 15.05
+
+    # 6. Catalog, Pinout (F12), Stress (F4), and .circ v2 persistence
+    for ctype in ("nmos", "pmos", "opamp"):
+        assert ctype in KNOWN_COMPONENT_TYPES
+        m = create_default_component_model(ctype, f"TEST_{ctype}")
+        assert len(m.nodes) == 3
+
+    scene = CircuitScene(SymbolLibrary())
+    try:
+        q1 = scene.place_new_component("nmos", QPointF(0.0, 0.0))
+        q2 = scene.place_new_component("pmos", QPointF(160.0, 0.0))
+        u1 = scene.place_new_component("opamp", QPointF(320.0, 0.0))
+        assert "TO-92" in ComponentItem.package_and_pinout_labels(q1.component)[0]
+        assert "TO-92" in ComponentItem.package_and_pinout_labels(q2.component)[0]
+        assert "DIP-8" in ComponentItem.package_and_pinout_labels(u1.component)[0]
+
+        m_nmos.set_max_ratings(max_power=0.1)
+        stress = evaluate_component_stress(c_nmos, res_n)
+        assert "M1" in stress and stress["M1"].utilization_pct >= 200.0 and stress["M1"].level == "overload"
+
+        payload = dumps_document_v2(scene.to_document_v2())
+        loaded = loads_document_v2(payload)
+        assert [p.component.component_type for p in loaded.placed] == ["nmos", "pmos", "opamp"]
+    finally:
+        scene.shutdown_scene()
+        qapp.processEvents()

@@ -17,6 +17,8 @@ from circuitsim.components.lightbulb import Lightbulb
 from circuitsim.components.logic_gate import LogicGate
 from circuitsim.components.mcu import MCUBlock
 from circuitsim.components.meters import Ammeter, Voltmeter
+from circuitsim.components.mosfet import MOSFETBase
+from circuitsim.components.opamp import OpAmp
 from circuitsim.components.potentiometer import Potentiometer
 from circuitsim.components.resistor import Resistor
 from circuitsim.components.sources import (
@@ -269,7 +271,7 @@ def run_ac_sweep(
                 _stamp_complex_admittance(
                     mat_y, node_to_idx, comp.nodes[0], comp.nodes[1], complex(g_lin)
                 )
-            elif isinstance(comp, BJTBase):
+            elif isinstance(comp, (BJTBase, MOSFETBase, OpAmp)):
                 g_mat, _ = comp.companion_stamp()
                 idxs = [node_to_idx.get(n) for n in comp.nodes]
                 for r_i, row_idx in enumerate(idxs):

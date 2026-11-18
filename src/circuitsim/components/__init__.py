@@ -22,6 +22,8 @@ from circuitsim.components.logic_gate import (
 )
 from circuitsim.components.mcu import MCUBlock
 from circuitsim.components.meters import Ammeter, MeterMode, Voltmeter
+from circuitsim.components.mosfet import MOSFETBase, NMOS, PMOS
+from circuitsim.components.opamp import OpAmp
 from circuitsim.components.potentiometer import Potentiometer
 from circuitsim.components.resistor import Resistor
 from circuitsim.components.sources import (
@@ -54,8 +56,12 @@ __all__ = [
     "Lightbulb",
     "LogicGate",
     "MCUBlock",
+    "MOSFETBase",
     "MeterMode",
+    "NMOS",
     "NPNBJT",
+    "OpAmp",
+    "PMOS",
     "PNPBJT",
     "Potentiometer",
     "Resistor",

@@ -476,6 +476,42 @@ class SymbolLibrary:
             painter.drawLine(tip, QPointF(tip.x() + 7.0 * ax + 4.5 * px, tip.y() + 7.0 * ay + 4.5 * py))
             painter.drawLine(tip, QPointF(tip.x() + 7.0 * ax - 4.5 * px, tip.y() + 7.0 * ay - 4.5 * py))
 
+        elif component_id in ("nmos", "pmos"):
+            painter.drawEllipse(QPointF(2.0, 0.0), 22.0, 22.0)
+            painter.drawLine(QPointF(-40.0, 0.0), QPointF(-10.0, 0.0))
+            painter.drawLine(QPointF(-10.0, -14.0), QPointF(-10.0, 14.0))
+            # Broken enhancement channel segments
+            for cy in (-12.0, 0.0, 12.0):
+                painter.drawLine(QPointF(-3.0, cy - 3.5), QPointF(-3.0, cy + 3.5))
+            # Drain lead -> (40, -40)
+            painter.drawLine(QPointF(-3.0, -12.0), QPointF(16.0, -12.0))
+            painter.drawLine(QPointF(16.0, -12.0), QPointF(16.0, -40.0))
+            painter.drawLine(QPointF(16.0, -40.0), QPointF(40.0, -40.0))
+            # Source lead -> (40, 40)
+            painter.drawLine(QPointF(-3.0, 12.0), QPointF(16.0, 12.0))
+            painter.drawLine(QPointF(16.0, 12.0), QPointF(16.0, 40.0))
+            painter.drawLine(QPointF(16.0, 40.0), QPointF(40.0, 40.0))
+            # Substrate tie arrow (points left into channel for NMOS, right for PMOS)
+            painter.drawLine(QPointF(-3.0, 0.0), QPointF(16.0, 0.0))
+            painter.drawLine(QPointF(16.0, 0.0), QPointF(16.0, 12.0))
+            if component_id == "nmos":
+                painter.drawLine(QPointF(-1.0, 0.0), QPointF(5.0, -3.5))
+                painter.drawLine(QPointF(-1.0, 0.0), QPointF(5.0, 3.5))
+            else:
+                painter.drawLine(QPointF(10.0, 0.0), QPointF(4.0, -3.5))
+                painter.drawLine(QPointF(10.0, 0.0), QPointF(4.0, 3.5))
+
+        elif component_id == "opamp":
+            painter.drawLine(QPointF(-40.0, -20.0), QPointF(-20.0, -20.0))
+            painter.drawLine(QPointF(-40.0, 20.0), QPointF(-20.0, 20.0))
+            painter.drawLine(QPointF(22.0, 0.0), QPointF(40.0, 0.0))
+            tri = QPolygonF([QPointF(-20.0, -32.0), QPointF(-20.0, 32.0), QPointF(22.0, 0.0)])
+            painter.drawPolygon(tri)
+            # '+' on in_pos (-20, -20) and '-' on in_neg (-20, 20)
+            painter.drawLine(QPointF(-15.0, -14.0), QPointF(-9.0, -14.0))
+            painter.drawLine(QPointF(-12.0, -17.0), QPointF(-12.0, -11.0))
+            painter.drawLine(QPointF(-15.0, 14.0), QPointF(-9.0, 14.0))
+
         elif component_id in ("voltmeter", "ammeter"):
             # Circle (r = 15) and leads
             painter.drawLine(QPointF(-40.0, 0.0), QPointF(-15.0, 0.0))

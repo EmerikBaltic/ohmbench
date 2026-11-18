@@ -19,6 +19,8 @@ from circuitsim.components.lightbulb import Lightbulb
 from circuitsim.components.logic_gate import LogicGate
 from circuitsim.components.mcu import MCUBlock
 from circuitsim.components.meters import Ammeter, Voltmeter
+from circuitsim.components.mosfet import MOSFETBase
+from circuitsim.components.opamp import OpAmp
 from circuitsim.components.potentiometer import Potentiometer
 from circuitsim.components.resistor import Resistor
 from circuitsim.components.sources import (
@@ -50,6 +52,8 @@ _TAG_POTENTIOMETER = 14
 _TAG_DIODE = 15
 _TAG_MCU = 16
 _TAG_BJT = 17
+_TAG_MOSFET = 18
+_TAG_OPAMP = 19
 
 
 class IntegrationMethod(str, Enum):
@@ -187,6 +191,8 @@ class MNASolver:
         self._bucket_leds: tuple[LED, ...] = ()
         self._bucket_diodes: tuple[Diode, ...] = ()
         self._bucket_bjts: tuple[BJTBase, ...] = ()
+        self._bucket_mosfets: tuple[MOSFETBase, ...] = ()
+        self._bucket_opamps: tuple[OpAmp, ...] = ()
         self._bucket_switches: tuple[Switch, ...] = ()
         self._bucket_inductors: tuple[Inductor, ...] = ()
         self._bucket_logic_gates: tuple[LogicGate, ...] = ()
@@ -214,6 +220,8 @@ class MNASolver:
         leds: list[LED] = []
         diodes: list[Diode] = []
         bjts: list[BJTBase] = []
+        mosfets: list[MOSFETBase] = []
+        opamps: list[OpAmp] = []
         switches: list[Switch] = []
         inductors: list[Inductor] = []
         logic_gates: list[LogicGate] = []
@@ -246,6 +254,14 @@ class MNASolver:
                 tagged.append((comp, _TAG_BJT))
                 rhs_tagged.append((comp, _TAG_BJT))
                 bjts.append(comp)
+            elif isinstance(comp, MOSFETBase):
+                tagged.append((comp, _TAG_MOSFET))
+                rhs_tagged.append((comp, _TAG_MOSFET))
+                mosfets.append(comp)
+            elif isinstance(comp, OpAmp):
+                tagged.append((comp, _TAG_OPAMP))
+                rhs_tagged.append((comp, _TAG_OPAMP))
+                opamps.append(comp)
             elif isinstance(comp, Switch):
                 tagged.append((comp, _TAG_SWITCH))
                 rhs_tagged.append((comp, _TAG_SWITCH))
@@ -287,6 +303,8 @@ class MNASolver:
         self._bucket_leds = tuple(leds)
         self._bucket_diodes = tuple(diodes)
         self._bucket_bjts = tuple(bjts)
+        self._bucket_mosfets = tuple(mosfets)
+        self._bucket_opamps = tuple(opamps)
         self._bucket_switches = tuple(switches)
         self._bucket_inductors = tuple(inductors)
         self._bucket_logic_gates = tuple(logic_gates)
@@ -445,6 +463,10 @@ class MNASolver:
                 sig.append(comp.companion_model(0.0, "dc")[0])
             elif isinstance(comp, BJTBase):
                 sig.extend((comp.operating_vbe, comp.operating_vbc))
+            elif isinstance(comp, MOSFETBase):
+                sig.extend((comp.operating_vg, comp.operating_vd, comp.operating_vs))
+            elif isinstance(comp, OpAmp):
+                sig.append(comp.operating_vd)
             elif isinstance(comp, Inductor):
                 sig.append(comp.dc_conductance)
             elif isinstance(comp, LogicGate):
@@ -481,6 +503,10 @@ class MNASolver:
                 sig.append(g_eq)
             elif tag == _TAG_BJT:
                 sig.extend((comp.operating_vbe, comp.operating_vbc))
+            elif tag == _TAG_MOSFET:
+                sig.extend((comp.operating_vg, comp.operating_vd, comp.operating_vs))
+            elif tag == _TAG_OPAMP:
+                sig.append(comp.operating_vd)
             elif tag == _TAG_LOGIC_GATE:
                 sig.extend((comp.g_in, comp.g_out))
             elif tag == _TAG_MCU:
@@ -539,7 +565,7 @@ class MNASolver:
                     method_str if mode != "dc" else "dc",
                 )
                 self._stamp_conductance(matrix_a, comp.nodes[0], comp.nodes[1], g_d)
-            elif isinstance(comp, BJTBase):
+            elif isinstance(comp, (BJTBase, MOSFETBase, OpAmp)):
                 g_mat, _ = comp.companion_stamp()
                 self._stamp_small_matrix(matrix_a, self._node_to_idx, comp.nodes, g_mat)
             elif isinstance(comp, Switch):
@@ -740,7 +766,7 @@ class MNASolver:
                     rhs_b[idx_a] += i_eq
                 if idx_k is not None:
                     rhs_b[idx_k] -= i_eq
-            elif isinstance(comp, BJTBase):
+            elif isinstance(comp, (BJTBase, MOSFETBase, OpAmp)):
                 _, rhs_3 = comp.companion_stamp()
                 self._stamp_small_rhs(rhs_b, self._node_to_idx, comp.nodes, rhs_3)
             elif isinstance(comp, LogicGate):
@@ -797,7 +823,7 @@ class MNASolver:
                     rhs_b[idx_a] += i_eq
                 if idx_k is not None:
                     rhs_b[idx_k] -= i_eq
-            elif tag == _TAG_BJT:
+            elif tag in (_TAG_BJT, _TAG_MOSFET, _TAG_OPAMP):
                 _, rhs_3 = comp.companion_stamp()
                 self._stamp_small_rhs(rhs_b, node_to_idx, comp.nodes, rhs_3)
             elif tag == _TAG_SWITCH:
@@ -1079,7 +1105,7 @@ class MNASolver:
                 if ia is not None and ib is not None:
                     mat[ia, ib] -= g_d
                     mat[ib, ia] -= g_d
-            elif isinstance(comp, BJTBase):
+            elif isinstance(comp, (BJTBase, MOSFETBase, OpAmp)):
                 g_mat, rhs_3 = comp.companion_stamp()
                 self._stamp_small_matrix(mat, node_to_idx, comp.nodes, g_mat)
                 self._stamp_small_rhs(base_rhs, node_to_idx, comp.nodes, rhs_3)
@@ -1248,12 +1274,15 @@ class MNASolver:
         gates = [c for c in self.circuit.components if isinstance(c, LogicGate)]
         has_ac = any(isinstance(c, ACVoltageSource) for c in self.circuit.components)
         has_diode = any(isinstance(c, Diode) for c in self.circuit.components)
+        has_active_nl = any(
+            isinstance(c, (BJTBase, MOSFETBase, OpAmp)) for c in self.circuit.components
+        )
         all_zero_ic = all(abs(c.initial_voltage) == 0.0 for c in caps) and all(
             abs(i.initial_current) == 0.0 for i in inds
         )
         if all_zero_ic and (
             len(gates) >= 1
-            or (not has_ac and (len(caps) >= 2 or len(inds) >= 1 or has_diode))
+            or (not has_ac and (len(caps) >= 2 or len(inds) >= 1 or has_diode or has_active_nl))
         ):
             caps[0].cap_voltage += self.startup_perturbation_uv * 1e-6
             self._startup_perturbation_applied = True
@@ -1297,6 +1326,38 @@ class MNASolver:
         bjt.power = abs((vc - ve) * ic + (vb - ve) * ib)
         return ic
 
+    @staticmethod
+    def _update_mosfet_telemetry(mosfet: MOSFETBase, node_voltages: dict[str, float]) -> float:
+        """Update MOSFET terminal operating voltages, drain current `i_d`, and power."""
+        vg = node_voltages.get(mosfet.node_g, 0.0)
+        vd = node_voltages.get(mosfet.node_d, 0.0)
+        vs = node_voltages.get(mosfet.node_s, 0.0)
+        mosfet.operating_vg = vg
+        mosfet.operating_vd = vd
+        mosfet.operating_vs = vs
+        i_d = mosfet.drain_current_at(vg, vd, vs)
+        mosfet.i_d = i_d
+        mosfet.voltage = vd - vs
+        mosfet.current = i_d
+        mosfet.power = abs((vd - vs) * i_d)
+        return i_d
+
+    @staticmethod
+    def _update_opamp_telemetry(opamp: OpAmp, node_voltages: dict[str, float]) -> float:
+        """Update Op-Amp differential input state, output current, and power."""
+        vp = node_voltages.get(opamp.node_in_pos, 0.0)
+        vn = node_voltages.get(opamp.node_in_neg, 0.0)
+        vo = node_voltages.get(opamp.node_out, 0.0)
+        vd = vp - vn
+        opamp.operating_vd = vd
+        v_target, _ = opamp.eval_transfer(vd)
+        i_out = (v_target - vo) / opamp.r_out
+        i_in = vd / opamp.r_in
+        opamp.voltage = vo
+        opamp.current = i_out
+        opamp.power = abs((v_target - vo) * i_out) + abs(vd * i_in)
+        return i_out
+
     def _update_led_discrete_states(
         self, node_voltages: dict[str, float]
     ) -> bool:
@@ -1332,10 +1393,12 @@ class MNASolver:
         self._ensure_component_buckets()
         diodes = self._bucket_diodes
         bjts = self._bucket_bjts
+        mosfets = self._bucket_mosfets
+        opamps = self._bucket_opamps
         leds = self._bucket_leds
         gates = self._bucket_logic_gates
 
-        if not diodes and not bjts:
+        if not diodes and not bjts and not mosfets and not opamps:
             n_outer = 10 if leds else 1
         else:
             n_outer = max(1, max_iters)
@@ -1405,7 +1468,7 @@ class MNASolver:
 
             led_changed = self._update_led_discrete_states(node_voltages) if leds else False
 
-            if not diodes and not bjts:
+            if not diodes and not bjts and not mosfets and not opamps:
                 if not led_changed:
                     return (solution_x, node_voltages, True, rebuilt_any, damping_used)
                 continue
@@ -1448,6 +1511,37 @@ class MNASolver:
                 bjt.operating_vbe = vbe_next
                 bjt.operating_vbc = vbc_next
 
+            for mosfet in mosfets:
+                vg_sol = node_voltages.get(mosfet.node_g, 0.0)
+                vd_sol = node_voltages.get(mosfet.node_d, 0.0)
+                vs_sol = node_voltages.get(mosfet.node_s, 0.0)
+                max_vd_err = max(
+                    max_vd_err,
+                    abs(vg_sol - mosfet.operating_vg),
+                    abs(vd_sol - mosfet.operating_vd),
+                    abs(vs_sol - mosfet.operating_vs),
+                )
+                vg_next, vd_next, vs_next, m_lim = mosfet.limit_terminal_voltages(
+                    vg_sol, vd_sol, vs_sol
+                )
+                if m_lim:
+                    any_limited = True
+                    damping_used = True
+                mosfet.operating_vg = vg_next
+                mosfet.operating_vd = vd_next
+                mosfet.operating_vs = vs_next
+
+            for opamp in opamps:
+                vd_sol = node_voltages.get(opamp.node_in_pos, 0.0) - node_voltages.get(
+                    opamp.node_in_neg, 0.0
+                )
+                max_vd_err = max(max_vd_err, abs(vd_sol - opamp.operating_vd))
+                vd_next, op_lim = opamp.limit_diff_voltage(vd_sol, opamp.operating_vd)
+                if op_lim:
+                    any_limited = True
+                    damping_used = True
+                opamp.operating_vd = vd_next
+
             if prev_node_voltages is not None:
                 max_dv = max(
                     (abs(node_voltages[n] - prev_node_voltages[n]) for n in node_voltages),
@@ -1471,16 +1565,22 @@ class MNASolver:
         diodes = self._bucket_diodes
         leds = self._bucket_leds
         bjts = self._bucket_bjts
+        mosfets = self._bucket_mosfets
+        opamps = self._bucket_opamps
         return (
             [d.operating_vd for d in diodes],
             [d.operating_vak for d in diodes],
             [bool(l.is_conducting) for l in leds],
             [(b.operating_vbe, b.operating_vbc) for b in bjts],
+            [(m.operating_vg, m.operating_vd, m.operating_vs) for m in mosfets],
+            [o.operating_vd for o in opamps],
         )
 
     def _restore_nonlinear_states(self, snap: tuple[Any, ...]) -> None:
         vds, vaks, led_states = snap[0], snap[1], snap[2]
         bjt_states = snap[3] if len(snap) > 3 else []
+        mos_states = snap[4] if len(snap) > 4 else []
+        op_states = snap[5] if len(snap) > 5 else []
         for d, vd, vak in zip(self._bucket_diodes, vds, vaks):
             d.operating_vd = vd
             d.operating_vak = vak
@@ -1489,6 +1589,12 @@ class MNASolver:
         for bjt, (vbe, vbc) in zip(self._bucket_bjts, bjt_states):
             bjt.operating_vbe = vbe
             bjt.operating_vbc = vbc
+        for mos, (vg, vd, vs) in zip(self._bucket_mosfets, mos_states):
+            mos.operating_vg = vg
+            mos.operating_vd = vd
+            mos.operating_vs = vs
+        for op, vd in zip(self._bucket_opamps, op_states):
+            op.operating_vd = vd
 
     def _reset_nonlinear_guess(self) -> None:
         for d in self._bucket_diodes:
@@ -1500,6 +1606,12 @@ class MNASolver:
         for bjt in self._bucket_bjts:
             bjt.operating_vbe = 0.0
             bjt.operating_vbc = 0.0
+        for mos in self._bucket_mosfets:
+            mos.operating_vg = 0.0
+            mos.operating_vd = 0.0
+            mos.operating_vs = 0.0
+        for op in self._bucket_opamps:
+            op.operating_vd = 0.0
 
     def _recover_via_gmin_stepping(
         self,
@@ -1690,6 +1802,8 @@ class MNASolver:
             not self._bucket_diodes
             and not self._bucket_leds
             and not self._bucket_bjts
+            and not self._bucket_mosfets
+            and not self._bucket_opamps
             and recovery_mode == "auto"
         ):
             self._auto_regularized_warnings = []
@@ -1783,6 +1897,14 @@ class MNASolver:
 
             if isinstance(comp, BJTBase):
                 branch_currents[comp.name] = self._update_bjt_telemetry(comp, node_voltages)
+                continue
+
+            if isinstance(comp, MOSFETBase):
+                branch_currents[comp.name] = self._update_mosfet_telemetry(comp, node_voltages)
+                continue
+
+            if isinstance(comp, OpAmp):
+                branch_currents[comp.name] = self._update_opamp_telemetry(comp, node_voltages)
                 continue
 
             v_a = node_voltages.get(comp.nodes[0], 0.0)
@@ -1997,7 +2119,7 @@ class MNASolver:
                 if ia is not None and ib is not None:
                     mat[ia, ib] -= g_d
                     mat[ib, ia] -= g_d
-            elif isinstance(comp, BJTBase):
+            elif isinstance(comp, (BJTBase, MOSFETBase, OpAmp)):
                 g_mat, rhs_3 = comp.companion_stamp()
                 self._stamp_small_matrix(mat, node_to_idx, comp.nodes, g_mat)
                 self._stamp_small_rhs(rhs, node_to_idx, comp.nodes, rhs_3)
@@ -2113,7 +2235,12 @@ class MNASolver:
                 self._be_steps_remaining = 0
 
         # Snapshot lightweight pre-step state only if nonlinear devices/switches exist and bisection is still allowed.
-        has_smooth_nl = bool(self._bucket_diodes or self._bucket_bjts)
+        has_smooth_nl = bool(
+            self._bucket_diodes
+            or self._bucket_bjts
+            or self._bucket_mosfets
+            or self._bucket_opamps
+        )
         can_bisect = bool(
             _substep_depth < 6 and (has_smooth_nl or self._bucket_leds or self._bucket_switches)
         )
@@ -2376,6 +2503,14 @@ class MNASolver:
 
             if tag == _TAG_BJT:
                 branch_currents[comp.name] = self._update_bjt_telemetry(comp, node_voltages)
+                continue
+
+            if tag == _TAG_MOSFET:
+                branch_currents[comp.name] = self._update_mosfet_telemetry(comp, node_voltages)
+                continue
+
+            if tag == _TAG_OPAMP:
+                branch_currents[comp.name] = self._update_opamp_telemetry(comp, node_voltages)
                 continue
 
             v_a = node_voltages.get(comp.nodes[0], 0.0)

@@ -15,6 +15,8 @@ from circuitsim.components.lightbulb import Lightbulb
 from circuitsim.components.logic_gate import LogicGate
 from circuitsim.components.mcu import MCUBlock
 from circuitsim.components.meters import Ammeter, Voltmeter
+from circuitsim.components.mosfet import MOSFETBase
+from circuitsim.components.opamp import OpAmp
 from circuitsim.components.potentiometer import Potentiometer
 from circuitsim.components.resistor import Resistor
 from circuitsim.components.sources import ACVoltageSource, DCCurrentSource, DCVoltageSource
@@ -364,14 +366,26 @@ class Circuit:
                     adjacency[cv].add(cu)
                 continue
 
-            if isinstance(comp, BJTBase):
-                cb, cc, ce = canonical(comp.node_b), canonical(comp.node_c), canonical(comp.node_e)
-                terminal_degree[comp.node_b] += 1
-                terminal_degree[comp.node_c] += 1
-                terminal_degree[comp.node_e] += 1
-                adjacency[cb].update((cc, ce))
-                adjacency[cc].update((cb, ce))
-                adjacency[ce].update((cb, cc))
+            if isinstance(comp, (BJTBase, MOSFETBase)):
+                c0, c1, c2 = canonical(comp.nodes[0]), canonical(comp.nodes[1]), canonical(comp.nodes[2])
+                for n in comp.nodes[:3]:
+                    terminal_degree[n] += 1
+                adjacency[c0].update((c1, c2))
+                adjacency[c1].update((c0, c2))
+                adjacency[c2].update((c0, c1))
+                continue
+
+            if isinstance(comp, OpAmp):
+                cp = canonical(comp.node_in_pos)
+                cn = canonical(comp.node_in_neg)
+                co = canonical(comp.node_out)
+                terminal_degree[comp.node_in_pos] += 1
+                terminal_degree[comp.node_in_neg] += 1
+                terminal_degree[comp.node_out] += 2
+                adjacency[cp].add(cn)
+                adjacency[cn].add(cp)
+                adjacency[co].add(CANONICAL_GND)
+                adjacency[CANONICAL_GND].add(co)
                 continue
 
             if len(comp.nodes) < 2:
@@ -508,23 +522,15 @@ class Circuit:
                     if comp.is_output_pin(pin):
                         driven_seeds.add(canonical(p_node))
                 continue
-            if isinstance(comp, Potentiometer):
-                for u, v in ((comp.node_a, comp.node_w), (comp.node_w, comp.node_b)):
-                    cu, cv = canonical(u), canonical(v)
-                    terminal_degree[u] += 1
-                    terminal_degree[v] += 1
-                    adjacency[cu].add(cv)
-                    adjacency[cv].add(cu)
+
+            if isinstance(comp, (BJTBase, MOSFETBase)):
+                c1, c2 = canonical(comp.nodes[1]), canonical(comp.nodes[2])
+                external_adj[c1].add(c2)
+                external_adj[c2].add(c1)
                 continue
 
-            if isinstance(comp, BJTBase):
-                cb, cc, ce = canonical(comp.node_b), canonical(comp.node_c), canonical(comp.node_e)
-                terminal_degree[comp.node_b] += 1
-                terminal_degree[comp.node_c] += 1
-                terminal_degree[comp.node_e] += 1
-                adjacency[cb].update((cc, ce))
-                adjacency[cc].update((cb, ce))
-                adjacency[ce].update((cb, cc))
+            if isinstance(comp, OpAmp):
+                driven_seeds.add(canonical(comp.node_out))
                 continue
 
             if len(comp.nodes) < 2:
