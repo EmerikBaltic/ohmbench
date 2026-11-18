@@ -260,6 +260,21 @@ class MainWindow(QMainWindow):
         self.act_import_spice.triggered.connect(self._on_import_spice)
         file_menu.addAction(self.act_import_spice)
 
+        self.act_export_kicad = QAction("Export as &KiCad Schematic (.kicad_sch)...", self)
+        self.act_export_kicad.setToolTip("Export schematic to KiCad S-expression (.kicad_sch)")
+        self.act_export_kicad.triggered.connect(self._on_export_kicad)
+        file_menu.addAction(self.act_export_kicad)
+
+        self.act_copy_share_url = QAction("Copy Share &URL (ohmbench://...)", self)
+        self.act_copy_share_url.setToolTip("Encode schematic into an ohmbench://c/... sharing link")
+        self.act_copy_share_url.triggered.connect(self.copy_share_url)
+        file_menu.addAction(self.act_copy_share_url)
+
+        self.act_open_share_url = QAction("Open Share U&RL...", self)
+        self.act_open_share_url.setToolTip("Decode and open an ohmbench://c/... sharing link")
+        self.act_open_share_url.triggered.connect(self._on_open_share_url)
+        file_menu.addAction(self.act_open_share_url)
+
         file_menu.addSeparator()
         act_exit = QAction("E&xit", self)
         act_exit.setShortcut(QKeySequence.StandardKey.Quit)
@@ -1187,6 +1202,59 @@ class MainWindow(QMainWindow):
             item.component.ibv = d.ibv  # type: ignore[attr-defined]
             item.component.model_name = d.model_name  # type: ignore[attr-defined]
             self.statusBar().showMessage(f"Imported SPICE diode model: {d.model_name}", 4000)
+
+    def copy_share_url(self) -> str:
+        """Encode current schematic to an `ohmbench://c/...` share URL and copy to clipboard."""
+        from PySide6.QtWidgets import QApplication
+        from circuitsim.io.share_codec import encode_circuit_share_url
+
+        doc = self.circuit_scene.to_document_v2(self._current_view_state())
+        url = encode_circuit_share_url(doc)
+        cb = QApplication.clipboard()
+        if cb is not None:
+            cb.setText(url)
+        self.statusBar().showMessage("Copied ohmbench:// share URL to clipboard.", 4000)
+        return url
+
+    def load_share_url(self, url: str) -> None:
+        """Decode an `ohmbench://c/...` share URL and load it into the schematic scene."""
+        from circuitsim.io.share_codec import decode_circuit_share_url
+
+        doc = decode_circuit_share_url(url)
+        self.circuit_scene.load_document(doc)
+        self.stop_simulation()
+        self._current_path = None
+        self._switch_modified = False
+        self._update_window_title()
+        self.statusBar().showMessage("Loaded circuit from share URL.", 4000)
+
+    def _on_open_share_url(self) -> None:
+        from PySide6.QtWidgets import QInputDialog
+
+        url, ok = QInputDialog.getText(
+            self, "Open Share URL", "Paste ohmbench://c/... link:"
+        )
+        if not ok or not url.strip():
+            return
+        try:
+            self.load_share_url(url)
+        except Exception as exc:
+            self._show_error("Invalid Share URL", str(exc))
+
+    def _on_export_kicad(self) -> None:
+        from circuitsim.io.kicad_export import export_to_kicad_sch
+
+        default_name = "schematic.kicad_sch"
+        if self._current_path:
+            default_name = f"{self._current_path.stem}.kicad_sch"
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Export KiCad Schematic", default_name, "KiCad Schematic (*.kicad_sch)"
+        )
+        if not path:
+            return
+        doc = self.circuit_scene.to_document_v2(self._current_view_state())
+        export_to_kicad_sch(doc, path, title=Path(path).stem)
+        self.statusBar().showMessage(f"Exported KiCad schematic: {path}", 4000)
 
     def _on_speed_combo_changed(self, index: int) -> None:
         raw = self.speed_combo.itemData(index)

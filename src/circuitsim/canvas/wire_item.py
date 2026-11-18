@@ -369,7 +369,9 @@ class WireItem(QGraphicsObject):
                 for dp in dot_pts:
                     painter.drawEllipse(dp, 2.5, 2.5)
 
-        if not self.is_preview and active_color is not None:
+        sc = self.scene()
+        suppress_chrome = bool(sc is not None and getattr(sc, "_suppress_export_chrome", False))
+        if not self.is_preview and active_color is not None and not suppress_chrome:
             marker_pen = QPen(active_color, 1.6)
             painter.setPen(marker_pen)
             painter.setBrush(Qt.BrushStyle.NoBrush)
