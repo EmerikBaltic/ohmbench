@@ -214,6 +214,10 @@ class ComponentItem(QGraphicsObject):
         self.diagnostic_severity: str | None = None  # "error", "warning", or None
         self.diagnostic_message: str = ""
         self.diagnostic_code: str = ""
+        self.stress_level: str = "normal"  # "normal", "warning", "overload"
+        self.stress_reason: str = ""
+        self.stress_utilization_pct: float = 0.0
+        self.stress_warnings_enabled: bool = True
         self.is_unconnected: bool = False
         self.label_position: str = "default"
 
@@ -424,10 +428,37 @@ class ComponentItem(QGraphicsObject):
         self.setToolTip(self.get_live_tooltip(is_running=True))
         self.update()
 
+    def set_stress_state(
+        self,
+        level: str | None,
+        reason: str = "",
+        utilization_pct: float = 0.0,
+        *,
+        warnings_enabled: bool | None = None,
+    ) -> None:
+        """Update component stress/overload badge state (F4)."""
+        norm_level = (level or "normal").lower()
+        changed = (
+            self.stress_level != norm_level
+            or self.stress_reason != reason
+            or abs(self.stress_utilization_pct - utilization_pct) > 1e-9
+            or (warnings_enabled is not None and self.stress_warnings_enabled != bool(warnings_enabled))
+        )
+        self.stress_level = norm_level
+        self.stress_reason = reason
+        self.stress_utilization_pct = float(utilization_pct)
+        if warnings_enabled is not None:
+            self.stress_warnings_enabled = bool(warnings_enabled)
+        if changed:
+            self.update()
+
     def reset_live_telemetry(self) -> None:
         """Clear live telemetry and restore initial component state (when simulation stops)."""
         self.live_display_value = None
         self.logic_level = ""
+        self.stress_level = "normal"
+        self.stress_reason = ""
+        self.stress_utilization_pct = 0.0
         self.component.reset_state()
         if isinstance(self.component, Switch):
             self._lever_angle_deg = (
@@ -1101,7 +1132,7 @@ class ComponentItem(QGraphicsObject):
                         painter.fillRect(val_plate, QColor(palette.canvas_bg))
                     painter.drawText(val_rect, text_align, val_text)
 
-            # Over-bright, over-current, or problem badge in upright coordinates
+            # Over-bright, over-current, stress/smoke overload, or problem badge in upright coordinates
             is_over_bulb = (
                 isinstance(self.component, Lightbulb)
                 and self.component.is_over_bright
@@ -1110,12 +1141,26 @@ class ComponentItem(QGraphicsObject):
                 isinstance(self.component, LED)
                 and getattr(self.component, "is_over_current", False)
             )
-            if self.diagnostic_severity in ("error", "warning") or is_over_bulb or is_over_led:
-                badge_col = (
-                    QColor("#FF5252")
-                    if self.diagnostic_severity == "error"
-                    else QColor("#FFA726")
-                )
+            stress_overload = self.stress_warnings_enabled and self.stress_level == "overload"
+            stress_warning = self.stress_warnings_enabled and self.stress_level == "warning"
+            if (
+                self.diagnostic_severity in ("error", "warning")
+                or is_over_bulb
+                or is_over_led
+                or stress_overload
+                or stress_warning
+            ):
+                if self.diagnostic_severity == "error" or stress_overload:
+                    badge_col = QColor("#FF5252")
+                else:
+                    badge_col = QColor("#FFA726")
+                if stress_overload:
+                    # Subtle smoke wisps rising inside upright body region
+                    painter.setPen(Qt.PenStyle.NoPen)
+                    painter.setBrush(QBrush(QColor(255, 82, 82, 70)))
+                    painter.drawEllipse(QPointF(16.0, -24.0), 4.5, 4.5)
+                    painter.setBrush(QBrush(QColor(180, 180, 180, 75)))
+                    painter.drawEllipse(QPointF(21.0, -29.0), 4.0, 4.0)
                 painter.setPen(Qt.PenStyle.NoPen)
                 painter.setBrush(QBrush(badge_col))
                 badge_center = QPointF(18.0, -18.0)

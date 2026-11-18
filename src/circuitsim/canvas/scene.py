@@ -60,6 +60,10 @@ from circuitsim.engine.simulation_session import (
     SimulationFrame,
     SimulationState,
 )
+from circuitsim.engine.stress import (
+    StressReport,
+    evaluate_component_stress,
+)
 from circuitsim.io.circ_serializer import CircuitDocument, CircuitFileError, ViewState
 from circuitsim.wiring.model import (
     Attachment,
@@ -194,6 +198,8 @@ class CircuitScene(QGraphicsScene):
         self._last_sim_frame: SimulationFrame | None = None
         self.voltage_colors_enabled: bool = False
         self.current_dots_enabled: bool = False
+        self.stress_warnings_enabled: bool = True
+        self.latest_stress_reports: dict[str, StressReport] = {}
         self.last_power_probe_text: str = ""
         self._dot_anim_timer = QTimer(self)
         self._dot_anim_timer.setInterval(50)
@@ -3263,6 +3269,7 @@ class CircuitScene(QGraphicsScene):
                     item.apply_telemetry(telem)
 
         self._refresh_wire_overlays()
+        self._refresh_stress_badges()
         self._sync_dot_anim_timer()
 
         # Map diagnostics to components and wires (error takes precedence over warning)
@@ -3337,6 +3344,39 @@ class CircuitScene(QGraphicsScene):
             return
         for wire in self._wire_items:
             wire.advance_dot_phase(step_scale)
+
+    def set_stress_warnings_enabled(self, enabled: bool) -> None:
+        """Enable or disable amber derating and red overload/smoke warning badges (F4)."""
+        self.stress_warnings_enabled = bool(enabled)
+        self._refresh_stress_badges()
+        self.update()
+
+    def _refresh_stress_badges(self) -> None:
+        if not self.is_simulation_running or self._last_sim_frame is None:
+            self.latest_stress_reports = {}
+            for item in self._placed_items:
+                item.set_stress_state(
+                    "normal", "", 0.0, warnings_enabled=self.stress_warnings_enabled
+                )
+            return
+        comp_map = {item.component.name: item.component for item in self._placed_items}
+        reports = evaluate_component_stress(
+            self._wire_graph, self._last_sim_frame, components=comp_map
+        )
+        self.latest_stress_reports = reports
+        for item in self._placed_items:
+            rep = reports.get(item.component.name)
+            if rep is not None:
+                item.set_stress_state(
+                    rep.level.value,
+                    rep.reason,
+                    rep.utilization_pct,
+                    warnings_enabled=self.stress_warnings_enabled,
+                )
+            else:
+                item.set_stress_state(
+                    "normal", "", 0.0, warnings_enabled=self.stress_warnings_enabled
+                )
 
     def _refresh_wire_overlays(self) -> None:
         if not self.is_simulation_running or self._last_sim_frame is None:

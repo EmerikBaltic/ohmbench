@@ -27,6 +27,11 @@ from circuitsim.engine.solver import (
     SolveResult,
     TransientResult,
 )
+from circuitsim.engine.stress import (
+    StressLevel,
+    StressReport,
+    evaluate_component_stress,
+)
 from circuitsim.engine.overlay import (
     compute_current_dot_velocity,
     format_power_probe_text,
@@ -51,12 +56,15 @@ __all__ = [
     "SimulationState",
     "SingularMatrixError",
     "SolveResult",
+    "StressLevel",
+    "StressReport",
     "TransientResult",
     "TransportControlsViewState",
     "VoltageSourceLoopError",
     "ZeroDelayLoopError",
     "compute_current_dot_velocity",
     "compute_transport_controls_state",
+    "evaluate_component_stress",
     "format_power_probe_text",
     "format_watts_si",
     "map_voltage_to_rgb",

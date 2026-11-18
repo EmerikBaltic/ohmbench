@@ -392,6 +392,16 @@ class MainWindow(QMainWindow):
         )
         self.view_menu.addAction(self.act_current_dots)
 
+        self.act_stress_warnings = QAction("Stress & Overload Warnings", self, checkable=True)
+        self.act_stress_warnings.setChecked(True)
+        self.act_stress_warnings.setToolTip(
+            "Show amber derating and red overload/smoke warning badges on stressed components"
+        )
+        self.act_stress_warnings.toggled.connect(
+            self.circuit_scene.set_stress_warnings_enabled
+        )
+        self.view_menu.addAction(self.act_stress_warnings)
+
         # Place menu (cross-platform accessible entry alongside canvas hotkeys)
         self.place_menu = menu_bar.addMenu("&Place")
         self.place_actions: dict[str, QAction] = {}
