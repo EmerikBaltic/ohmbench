@@ -26,6 +26,7 @@ from circuitsim.components.sources import (
     ACVoltageSource,
     DCCurrentSource,
     DCVoltageSource,
+    WavVoltageSource,
     WaveformType,
 )
 from circuitsim.components.switch import Switch
@@ -54,6 +55,7 @@ __all__ = [
     "Resistor",
     "Switch",
     "Voltmeter",
+    "WavVoltageSource",
     "WaveformType",
     "create_default_component_model",
     "evaluate_gate_boolean",

@@ -225,6 +225,9 @@ class MainWindow(QMainWindow):
         file_menu.addMenu(self.examples_menu)
         self._build_examples_menu()
 
+        self.test_jigs_menu = file_menu.addMenu("Test &Jigs")
+        self._build_test_jigs_menu()
+
         self.act_save = QAction("&Save", self)
         self.act_save.setIconText("Save")
         self.act_save.setToolTip("Save current circuit to file (Ctrl+S)")
@@ -1132,6 +1135,37 @@ class MainWindow(QMainWindow):
         self._switch_modified = False
         self._update_window_title()
         self.statusBar().showMessage(f"Loaded example: {title}", 4000)
+
+    def _build_test_jigs_menu(self) -> None:
+        from circuitsim.templates.test_jigs import list_test_jigs
+
+        self.test_jigs_menu.clear()
+        for jig in list_test_jigs():
+            act = QAction(jig.title, self)
+            act.setToolTip(jig.description)
+            act.setStatusTip(jig.description)
+            act.triggered.connect(
+                lambda _checked=False, jid=jig.jig_id, t=jig.title: self.load_test_jig(
+                    jid, title=t
+                )
+            )
+            self.test_jigs_menu.addAction(act)
+
+    def load_test_jig(
+        self, jig_id: str, *, title: str | None = None, prompt_discard: bool = True
+    ) -> None:
+        """Load one of the 6 built-in Test Jigs directly onto the schematic canvas."""
+        from circuitsim.templates.test_jigs import build_test_jig
+
+        if prompt_discard and not self._confirm_discard_changes("loading a test jig"):
+            return
+        doc = build_test_jig(jig_id)
+        self.circuit_scene.load_document(doc)
+        self.stop_simulation()
+        self._current_path = None
+        self._switch_modified = False
+        self._update_window_title()
+        self.statusBar().showMessage(f"Loaded test jig: {title or jig_id}", 4000)
 
     def _on_speed_combo_changed(self, index: int) -> None:
         raw = self.speed_combo.itemData(index)

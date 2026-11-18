@@ -21,6 +21,7 @@ from circuitsim.components.sources import (
     ACVoltageSource,
     DCCurrentSource,
     DCVoltageSource,
+    WavVoltageSource,
 )
 from circuitsim.components.switch import Switch
 
@@ -31,6 +32,7 @@ KNOWN_COMPONENT_TYPES: tuple[str, ...] = (
     "potentiometer",
     "dc_voltage",
     "ac_voltage",
+    "wav_voltage",
     "dc_current",
     "ground",
     "switch",
@@ -58,6 +60,8 @@ def create_default_component_model(component_id: str, name: str) -> Component:
         return DCVoltageSource(name, n0, n1, voltage=12.0)
     if component_id == "ac_voltage":
         return ACVoltageSource(name, n0, n1, amplitude=10.0, frequency=1000.0)
+    if component_id == "wav_voltage":
+        return WavVoltageSource(name, n0, n1)
     if component_id == "dc_current":
         return DCCurrentSource(name, n0, n1, current=0.01)
     if component_id == "ground":

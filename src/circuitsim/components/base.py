@@ -72,6 +72,17 @@ _DEFAULT_PARAMETERS_BY_TYPE: dict[str, tuple[ComponentParameter, ...]] = {
             allow_negative=True,
         ),
     ),
+    "wav_voltage": (
+        ComponentParameter("gain_v", "Gain", "V/FS", allow_negative=True, allow_zero=True),
+        ComponentParameter(
+            "dc_offset",
+            "DC Offset",
+            "V",
+            allow_zero=True,
+            allow_negative=True,
+        ),
+        ComponentParameter("r_internal", "Internal Resistance", "Ω", allow_zero=True),
+    ),
     "dc_current": (
         ComponentParameter(
             "dc_current", "Current", "A", allow_zero=True, allow_negative=True

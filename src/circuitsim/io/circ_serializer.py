@@ -62,6 +62,7 @@ _EXTRA_SETTINGS: dict[str, dict[str, str]] = {
         "momentary": "bool",
     },
     "ac_voltage": {"waveform": "str", "phase_deg": "float", "duty_cycle": "float"},
+    "wav_voltage": {"wav_path": "str", "sample_rate_hz": "float", "loop": "bool"},
     "lightbulb": {"use_filament_model": "bool", "burnout_enabled": "bool"},
     "led": {
         "color_name": "str",

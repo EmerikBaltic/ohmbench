@@ -310,6 +310,13 @@ class SymbolLibrary:
             sine.cubicTo(QPointF(0.0, 10.0), QPointF(4.5, 10.0), QPointF(9.0, 0.0))
             painter.drawPath(sine)
 
+        elif component_id == "wav_voltage":
+            painter.drawLine(QPointF(-40.0, 0.0), QPointF(-15.0, 0.0))
+            painter.drawEllipse(QPointF(0.0, 0.0), 15.0, 15.0)
+            painter.drawLine(QPointF(15.0, 0.0), QPointF(40.0, 0.0))
+            for bx, bh in ((-7.0, 4.0), (-3.5, 9.0), (0.0, 6.0), (3.5, 10.0), (7.0, 5.0)):
+                painter.drawLine(QPointF(bx, -bh), QPointF(bx, bh))
+
         elif component_id == "dc_current":
             # Circle (r = 15) with arrow pointing toward 'pos' terminal
             painter.drawLine(QPointF(-40.0, 0.0), QPointF(-15.0, 0.0))
