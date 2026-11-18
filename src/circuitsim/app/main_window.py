@@ -255,6 +255,12 @@ class MainWindow(QMainWindow):
         file_menu.addAction(self.act_export_svg)
 
         file_menu.addSeparator()
+        self.act_import_spice = QAction("Import &SPICE Model / Subcircuit...", self)
+        self.act_import_spice.setToolTip("Parse 3rd-party .MODEL or .SUBCKT library with pin-order mapper")
+        self.act_import_spice.triggered.connect(self._on_import_spice)
+        file_menu.addAction(self.act_import_spice)
+
+        file_menu.addSeparator()
         act_exit = QAction("E&xit", self)
         act_exit.setShortcut(QKeySequence.StandardKey.Quit)
         act_exit.triggered.connect(self.close)
@@ -1166,6 +1172,21 @@ class MainWindow(QMainWindow):
         self._switch_modified = False
         self._update_window_title()
         self.statusBar().showMessage(f"Loaded test jig: {title or jig_id}", 4000)
+
+    def _on_import_spice(self) -> None:
+        from circuitsim.dialogs.spice_import_dialog import ImportSPICEDialog
+
+        dlg = ImportSPICEDialog(self)
+        if dlg.exec() and dlg.selected_diode is not None:
+            d = dlg.selected_diode
+            item = self.circuit_scene.place_new_component("diode", self.circuit_view.mapToScene(self.circuit_view.viewport().rect().center()))
+            item.component.is_sat = d.is_sat  # type: ignore[attr-defined]
+            item.component.n = d.n  # type: ignore[attr-defined]
+            item.component.rs = d.rs  # type: ignore[attr-defined]
+            item.component.bv = d.bv  # type: ignore[attr-defined]
+            item.component.ibv = d.ibv  # type: ignore[attr-defined]
+            item.component.model_name = d.model_name  # type: ignore[attr-defined]
+            self.statusBar().showMessage(f"Imported SPICE diode model: {d.model_name}", 4000)
 
     def _on_speed_combo_changed(self, index: int) -> None:
         raw = self.speed_combo.itemData(index)
