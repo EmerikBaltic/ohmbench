@@ -300,3 +300,9 @@ Every UI bug fix MUST follow this discipline:
 1. **Reproduce first with a real-input test**: write a failing offscreen Qt test (`QTest` mouse/key events sent through `CircuitView` / `MainWindow`, at multiple zoom levels where hit-testing applies) before writing the fix.
 2. **Assert on explicit model state & physics**: assert on `WireGraph` attachments (`TerminalRef`, `JunctionRef`, `FreeEnd`), component placement/selection, and solved circuit values (node voltages / branch currents derived from hand calculation), never on rendered pixels to decide connectivity (pixel checks are only for visual-rendering issues such as label overlap/themes).
 3. **Preserve Qt-free engine boundaries**: keep `circuitsim.wiring`, `circuitsim.engine`, `circuitsim.components`, and `circuitsim.io` free of Qt imports; compute terminal positions & polarities solely from the shared transform function.
+
+---
+
+## 13. PHASE H WORKBENCH EXPANSION CAPABILITIES
+- **Active Semiconductors**: `NPNBJT` (`npn_bjt`), `PNPBJT` (`pnp_bjt`), `ZenerDiode` (`zener_diode`), Level-1 `NMOS` (`nmos`) & `PMOS` (`pmos`), and rail-saturated `OpAmp` (`opamp`) with full DC/AC/transient MNA companion stamps, NR damping, pinout overlays (`F12`), stress checks (`F4`), and SPICE `.MODEL` import (`F8`).
+- **Workbench UI & Mixed-Signal**: Palette search/scrollbar/expand-collapse, `MCUFirmwareDialog` script editor + 6-row Pin Table + Serial Monitor, `SweepAnalysisDialog` (`.STEP` sweep & Monte Carlo + CSV export), Named Net Labels / Port Flags (`N`, case-insensitive MNA unification, KiCad `(label ...)`), Qt-free `compute_fft_spectrum` + FFT Spectrum / THD% tab, wire Voltage Probe Badges, rigid subcircuit group move + `Ctrl+D` Duplicate, and 12 built-in Test Jigs.

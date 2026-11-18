@@ -48,6 +48,7 @@ from circuitsim.io.spice_import import (
     instantiate_diode_model,
     parse_spice_library,
 )
+from circuitsim.templates.test_jigs import build_test_jig, list_test_jigs
 from circuitsim.wiring.model import FreeEnd, JunctionRef, TerminalRef
 from circuitsim.wiring.serializer import dumps_document_v2, loads_document_v2
 
@@ -665,6 +666,48 @@ def test_h9_subcircuit_duplicate_copy_paste_and_rigid_group_move(qapp) -> None:
             assert (it.pos().x(), it.pos().y()) == (ox, oy)
         assert scene.wire_graph.junction(j1_id).pos == j_pos_orig
         assert scene.wire_graph.wire(w_top.wire_id).hints == (bend_orig,)
+    finally:
+        scene.shutdown_scene()
+        qapp.processEvents()
+
+
+def test_h10_all_twelve_test_jigs_load_validate_and_solve(qapp) -> None:
+    """H10: All 12 Test Jigs load cleanly into CircuitScene, validate topology, and solve accurately."""
+    jigs = list_test_jigs()
+    assert len(jigs) == 12
+
+    scene = CircuitScene(SymbolLibrary())
+    try:
+        for jig in jigs:
+            doc = build_test_jig(jig.jig_id)
+            assert not any(
+                isinstance(w.end_a, FreeEnd) or isinstance(w.end_b, FreeEnd)
+                for w in doc.graph.wires
+            ), f"{jig.jig_id} has FreeEnd"
+            scene.load_document(doc)
+            conn = scene.extract_connectivity_result()
+            assert not conn.unconnected_components, f"{jig.jig_id} unconnected: {conn.unconnected_components}"
+
+            circ = conn.circuit
+            solver = MNASolver(circ)
+            dc_res = solver.solve_dc()
+            assert all(math.isfinite(v) for v in dc_res.node_voltages.values())
+
+            if jig.jig_id == "zener_5v1_regulator":
+                dz = circ.get_component("DZ1")
+                assert math.isclose(-dz.voltage, 5.1, abs_tol=0.12)
+            elif jig.jig_id == "opamp_non_inverting_amp":
+                u1 = circ.get_component("U1")
+                assert math.isclose(dc_res.node_voltages[u1.nodes[2]], 8.0, abs_tol=0.02)
+            elif jig.jig_id == "mcu_analog_threshold_controller":
+                u1 = circ.get_component("U1")
+                assert isinstance(u1, MCUBlock)
+                assert 511 <= u1.adc_read("A0") <= 513
+                assert dc_res.node_voltages[u1.nodes[2]] > 4.5
+            elif jig.jig_id == "opamp_relaxation_oscillator":
+                tr = solver.solve_transient(duration=3e-3, dt=1e-5)
+                u1 = circ.get_component("U1")
+                assert float(np.ptp(tr.component_voltages[u1.name])) > 1.0
     finally:
         scene.shutdown_scene()
         qapp.processEvents()
