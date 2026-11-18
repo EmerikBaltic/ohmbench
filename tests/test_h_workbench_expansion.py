@@ -8,8 +8,10 @@ from pathlib import Path
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6.QtCore import QPointF
+from PySide6.QtCore import QPointF, Qt
 
+from circuitsim.app.palette_dock import ComponentPaletteWidget
+from circuitsim.app.themes import ThemeMode, build_stylesheet, get_theme_palette
 from circuitsim.canvas.scene import CircuitScene
 from circuitsim.canvas.symbol_renderer import SymbolLibrary
 from circuitsim.wiring.model import TerminalRef
@@ -54,4 +56,60 @@ def test_h1_parallel_voltmeter_inductor_straight_2point_wires(qapp) -> None:
         assert w_right.points == (vm1_terms["neg"], l1_terms["b"])
     finally:
         scene.shutdown_scene()
+        qapp.processEvents()
+
+
+def test_h2_palette_vertical_scrollbar_search_and_expand_collapse(qapp) -> None:
+    """H2: Component palette has visible vertical scrollbar, live search filter, and Expand/Collapse All."""
+    palette = ComponentPaletteWidget(SymbolLibrary(), theme=ThemeMode.DARK)
+    try:
+        # Verify themes.py QSS includes explicit vertical scrollbar rules in both Dark & Light themes
+        for mode in (ThemeMode.DARK, ThemeMode.LIGHT):
+            qss = build_stylesheet(get_theme_palette(mode))
+            assert "QScrollBar:vertical" in qss
+            assert "QScrollBar::handle:vertical" in qss
+
+        palette.resize(240, 300)
+        palette.show()
+        palette.expand_all()
+        qapp.processEvents()
+
+        vbar = palette.tree.verticalScrollBar()
+        assert palette.tree.verticalScrollBarPolicy() == Qt.ScrollBarPolicy.ScrollBarAsNeeded
+        assert vbar.maximum() > 0
+        assert vbar.isVisible()
+
+        # Collapse All then filter for "mcu" -> Mixed-Signal auto-expands, others hidden
+        palette.btn_collapse_all.click()
+        qapp.processEvents()
+        palette.search_input.setText("mcu")
+        qapp.processEvents()
+
+        visible_cats: list[str] = []
+        mcu_visible = False
+        for i in range(palette.tree.topLevelItemCount()):
+            cat = palette.tree.topLevelItem(i)
+            assert cat is not None
+            if not cat.isHidden():
+                visible_cats.append(cat.text(0))
+                assert cat.isExpanded()
+                for j in range(cat.childCount()):
+                    ch = cat.child(j)
+                    if ch is not None and not ch.isHidden() and ch.text(0) == "MCU Block":
+                        mcu_visible = True
+        assert mcu_visible
+        assert visible_cats == ["Mixed-Signal"]
+
+        # Clearing search restores all categories; Expand All works cleanly
+        palette.search_input.clear()
+        palette.btn_expand_all.click()
+        qapp.processEvents()
+        hidden_cats = [
+            palette.tree.topLevelItem(i).text(0)
+            for i in range(palette.tree.topLevelItemCount())
+            if palette.tree.topLevelItem(i).isHidden()
+        ]
+        assert hidden_cats == []
+    finally:
+        palette.close()
         qapp.processEvents()

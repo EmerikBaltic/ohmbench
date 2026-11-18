@@ -151,6 +151,27 @@ def build_stylesheet(palette: ThemePalette) -> str:
     QPushButton:hover {{
         border: 1px solid {palette.selection_accent};
     }}
+    QScrollBar:vertical {{
+        background-color: {palette.panel_bg};
+        width: 10px;
+        margin: 0px;
+        border: 1px solid {palette.border_color};
+        border-radius: 4px;
+    }}
+    QScrollBar::handle:vertical {{
+        background-color: {palette.symbol_label};
+        min-height: 24px;
+        border-radius: 4px;
+    }}
+    QScrollBar::handle:vertical:hover {{
+        background-color: {palette.selection_accent};
+    }}
+    QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{
+        height: 0px;
+    }}
+    QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {{
+        background: none;
+    }}
     QStatusBar {{
         background-color: {palette.panel_bg};
         border-top: 1px solid {palette.border_color};
