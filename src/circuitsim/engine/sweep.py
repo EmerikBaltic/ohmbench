@@ -17,14 +17,26 @@ from circuitsim.engine.netlist import Circuit
 from circuitsim.engine.solver import IntegrationMethod, MNASolver, SolveResult, TransientResult
 
 
+_PARAM_ALIASES: dict[str, str] = {
+    "resistance_ohm": "resistance",
+    "capacitance_f": "capacitance",
+    "inductance_h": "inductance",
+    "dc_voltage": "voltage",
+}
+
+
 def _set_component_param(circuit: Circuit, comp_name: str, param: str, value: float) -> None:
     comp = circuit.get_component(comp_name)
+    key = _PARAM_ALIASES.get(param, param)
     try:
-        comp.set_parameter_value(param, float(value))
+        comp.set_parameter_value(key, float(value))
     except KeyError:
-        if not hasattr(comp, param):
+        if hasattr(comp, key):
+            setattr(comp, key, float(value))
+        elif hasattr(comp, param):
+            setattr(comp, param, float(value))
+        else:
             raise
-        setattr(comp, param, float(value))
 
 
 @dataclass(frozen=True)

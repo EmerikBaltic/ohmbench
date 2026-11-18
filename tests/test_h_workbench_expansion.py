@@ -12,6 +12,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 from PySide6.QtCore import QPointF, Qt
 
 from circuitsim.app.palette_dock import ComponentPaletteWidget
+from circuitsim.app.sweep_panel import SweepAnalysisDialog
 from circuitsim.app.themes import ThemeMode, build_stylesheet, get_theme_palette
 from circuitsim.canvas.component_item import ComponentItem
 from circuitsim.canvas.scene import CircuitScene
@@ -380,4 +381,54 @@ def test_h5_mcu_firmware_dialog_editor_serial_monitor_and_share_url(qapp) -> Non
         assert "mcu.adc_read('A0')" in decoded_mcus[0].code
     finally:
         scene.shutdown_scene()
+        qapp.processEvents()
+
+
+def test_h6_parameter_sweep_and_monte_carlo_dialog_and_csv(qapp, tmp_path: Path) -> None:
+    """H6: SweepAnalysisDialog .STEP voltage divider sweep, Monte Carlo N=40 stats & CSV export."""
+    c = Circuit()
+    c.add(Ground("GND", "0"))
+    c.add(DCVoltageSource("V1", "vin", "0", voltage=10.0))
+    c.add(Resistor("R1", "vin", "vout", resistance=1_000.0))
+    c.add(Resistor("R2", "vout", "0", resistance=1_000.0))
+
+    dlg = SweepAnalysisDialog(circuit=c)
+    try:
+        idx_r2 = dlg.component_combo.findData("R2")
+        assert idx_r2 >= 0
+        dlg.component_combo.setCurrentIndex(idx_r2)
+        idx_res = dlg.param_combo.findData("resistance")
+        assert idx_res >= 0
+        dlg.param_combo.setCurrentIndex(idx_res)
+
+        dlg.start_edit.setText("1k")
+        dlg.stop_edit.setText("9k")
+        dlg.points_spin.setValue(5)
+        dlg.scale_combo.setCurrentText("Linear")
+        dlg.target_node_combo.setCurrentText("vout")
+
+        res_sw = dlg.run_parameter_sweep_now()
+        assert res_sw is not None
+        assert dlg.sweep_table.rowCount() == 5
+        assert math.isclose(float(dlg.sweep_table.item(0, 1).text()), 5.0, abs_tol=1e-3)
+        assert math.isclose(float(dlg.sweep_table.item(4, 1).text()), 9.0, abs_tol=1e-3)
+
+        csv_sw = dlg.export_sweep_csv(tmp_path / "sweep.csv")
+        lines = csv_sw.read_text(encoding="utf-8").strip().splitlines()
+        assert len(lines) == 6  # 1 header + 5 rows
+
+        dlg.trials_spin.setValue(40)
+        dlg.seed_spin.setValue(42)
+        dlg.default_tol_spin.setValue(5.0)
+        dlg.mc_target_node_combo.setCurrentText("vout")
+        res_mc = dlg.run_monte_carlo_now()
+        assert res_mc is not None and len(res_mc.trial_metrics) == 40
+        assert abs(res_mc.mean - 5.0) <= 0.15
+        assert res_mc.std > 0.01
+        assert "Mean:" in dlg.mc_mean_label.text()
+
+        csv_mc = dlg.export_monte_carlo_csv(tmp_path / "mc.csv")
+        assert len(csv_mc.read_text(encoding="utf-8").strip().splitlines()) == 41
+    finally:
+        dlg.close()
         qapp.processEvents()

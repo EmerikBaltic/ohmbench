@@ -174,6 +174,7 @@ class MainWindow(QMainWindow):
         self._user_closed_problems_panel: bool = False
         self._prev_error_count: int = 0
         self.instruments_dialog: object | None = None
+        self.sweep_dialog: object | None = None
 
         self._build_menus_and_toolbars()
         self._build_docks()
@@ -510,6 +511,15 @@ class MainWindow(QMainWindow):
         )
         self.act_virtual_instruments.triggered.connect(self.show_instruments_panel)
         sim_menu.addAction(self.act_virtual_instruments)
+
+        self.act_sweep_analysis = QAction(
+            "Parameter &Sweep && Monte Carlo...", self
+        )
+        self.act_sweep_analysis.setToolTip(
+            "Open .STEP Parameter Sweep & Monte Carlo Tolerance Analyzer"
+        )
+        self.act_sweep_analysis.triggered.connect(self.show_sweep_panel)
+        sim_menu.addAction(self.act_sweep_analysis)
 
         # Help menu
         help_menu = menu_bar.addMenu("&Help")
@@ -1372,6 +1382,22 @@ class MainWindow(QMainWindow):
             )
         dlg: BenchtopInstrumentsDialog = self.instruments_dialog  # type: ignore[assignment]
         dlg.refresh_nodes()
+        dlg.show()
+        dlg.raise_()
+        dlg.activateWindow()
+        return dlg
+
+    def show_sweep_panel(self):
+        """Open (or focus) the Parameter Sweep (.STEP) & Monte Carlo Analyzer dialog."""
+        from circuitsim.app.sweep_panel import SweepAnalysisDialog
+
+        if self.sweep_dialog is None:
+            self.sweep_dialog = SweepAnalysisDialog(
+                circuit_provider=self.circuit_scene.build_circuit,
+                parent=self,
+            )
+        dlg: SweepAnalysisDialog = self.sweep_dialog  # type: ignore[assignment]
+        dlg.refresh_circuit()
         dlg.show()
         dlg.raise_()
         dlg.activateWindow()
