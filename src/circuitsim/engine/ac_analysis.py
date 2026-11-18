@@ -7,6 +7,7 @@ import math
 from typing import Iterable
 import numpy as np
 
+from circuitsim.components.bjt import BJTBase
 from circuitsim.components.capacitor import Capacitor
 from circuitsim.components.diode import Diode
 from circuitsim.components.ground import Ground
@@ -268,6 +269,15 @@ def run_ac_sweep(
                 _stamp_complex_admittance(
                     mat_y, node_to_idx, comp.nodes[0], comp.nodes[1], complex(g_lin)
                 )
+            elif isinstance(comp, BJTBase):
+                g_mat, _ = comp.companion_stamp()
+                idxs = [node_to_idx.get(n) for n in comp.nodes]
+                for r_i, row_idx in enumerate(idxs):
+                    if row_idx is None:
+                        continue
+                    for c_j, col_idx in enumerate(idxs):
+                        if col_idx is not None:
+                            mat_y[row_idx, col_idx] += g_mat[r_i][c_j]
             elif isinstance(comp, Switch):
                 y_sw = complex(comp.conductance)
                 if getattr(comp, "c_parasitic", 0.0) > 0.0:

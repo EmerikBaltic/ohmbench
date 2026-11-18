@@ -7,10 +7,11 @@ loader (rebuilding a part from its saved type name).
 from __future__ import annotations
 
 from circuitsim.components.base import Component
+from circuitsim.components.bjt import NPNBJT, PNPBJT
 from circuitsim.components.capacitor import Capacitor
 from circuitsim.components.ground import Ground
 from circuitsim.components.inductor import Inductor
-from circuitsim.components.diode import Diode
+from circuitsim.components.diode import Diode, ZenerDiode
 from circuitsim.components.led import LED
 from circuitsim.components.lightbulb import Lightbulb
 from circuitsim.components.logic_gate import GATE_COMPONENT_TYPES, GATE_OPERATIONS, LogicGate
@@ -40,6 +41,9 @@ KNOWN_COMPONENT_TYPES: tuple[str, ...] = (
     "lightbulb",
     "led",
     "diode",
+    "zener_diode",
+    "npn_bjt",
+    "pnp_bjt",
     "voltmeter",
     "ammeter",
     "mcu",
@@ -76,6 +80,12 @@ def create_default_component_model(component_id: str, name: str) -> Component:
         return LED(name, n0, n1, forward_voltage=2.0, color_name="Red")
     if component_id == "diode":
         return Diode(name, n0, n1)
+    if component_id == "zener_diode":
+        return ZenerDiode(name, n0, n1)
+    if component_id == "npn_bjt":
+        return NPNBJT(name, f"{name}_B", f"{name}_C", f"{name}_E")
+    if component_id == "pnp_bjt":
+        return PNPBJT(name, f"{name}_B", f"{name}_C", f"{name}_E")
     if component_id == "voltmeter":
         return Voltmeter(name, n0, n1)
     if component_id == "ammeter":

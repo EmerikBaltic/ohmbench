@@ -439,6 +439,43 @@ class SymbolLibrary:
             painter.drawLine(QPointF(8.0, -11.0), QPointF(8.0, 11.0))
             painter.drawLine(QPointF(8.0, 0.0), QPointF(40.0, 0.0))
 
+        elif component_id == "zener_diode":
+            painter.drawLine(QPointF(-40.0, 0.0), QPointF(-10.0, 0.0))
+            poly = QPolygonF([QPointF(-10.0, -10.0), QPointF(-10.0, 10.0), QPointF(8.0, 0.0)])
+            painter.drawPolygon(poly)
+            z_bar = QPainterPath(QPointF(3.0, -13.0))
+            z_bar.lineTo(QPointF(8.0, -10.0))
+            z_bar.lineTo(QPointF(8.0, 10.0))
+            z_bar.lineTo(QPointF(13.0, 13.0))
+            painter.drawPath(z_bar)
+            painter.drawLine(QPointF(8.0, 0.0), QPointF(40.0, 0.0))
+
+        elif component_id in ("npn_bjt", "pnp_bjt"):
+            painter.drawEllipse(QPointF(2.0, 0.0), 22.0, 22.0)
+            painter.drawLine(QPointF(-40.0, 0.0), QPointF(-8.0, 0.0))
+            painter.drawLine(QPointF(-8.0, -14.0), QPointF(-8.0, 14.0))
+            # Collector leg to (40, -40)
+            painter.drawLine(QPointF(-8.0, -6.0), QPointF(16.0, -22.0))
+            painter.drawLine(QPointF(16.0, -22.0), QPointF(16.0, -40.0))
+            painter.drawLine(QPointF(16.0, -40.0), QPointF(40.0, -40.0))
+            # Emitter leg to (40, 40)
+            painter.drawLine(QPointF(-8.0, 6.0), QPointF(16.0, 22.0))
+            painter.drawLine(QPointF(16.0, 22.0), QPointF(16.0, 40.0))
+            painter.drawLine(QPointF(16.0, 40.0), QPointF(40.0, 40.0))
+            # Arrow on emitter leg
+            dx, dy = 24.0, 16.0
+            norm = math.hypot(dx, dy)
+            ux, uy = dx / norm, dy / norm
+            px, py = -uy, ux
+            if component_id == "npn_bjt":
+                tip = QPointF(14.0, 20.7)
+                ax, ay = -ux, -uy
+            else:
+                tip = QPointF(-4.0, 8.7)
+                ax, ay = ux, uy
+            painter.drawLine(tip, QPointF(tip.x() + 7.0 * ax + 4.5 * px, tip.y() + 7.0 * ay + 4.5 * py))
+            painter.drawLine(tip, QPointF(tip.x() + 7.0 * ax - 4.5 * px, tip.y() + 7.0 * ay - 4.5 * py))
+
         elif component_id in ("voltmeter", "ammeter"):
             # Circle (r = 15) and leads
             painter.drawLine(QPointF(-40.0, 0.0), QPointF(-15.0, 0.0))

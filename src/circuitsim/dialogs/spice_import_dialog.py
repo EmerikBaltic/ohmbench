@@ -17,13 +17,14 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from circuitsim.components import Diode
+from circuitsim.components import Component, Diode
 from circuitsim.io.spice_import import (
     EncryptedModelError,
     SpiceImportError,
     SpiceLibrary,
     SpiceModelDef,
     SpiceSubcktDef,
+    instantiate_bjt_model,
     instantiate_diode_model,
     map_subckt_pins,
     parse_spice_file,
@@ -40,6 +41,14 @@ _CANONICAL_TERMINAL_CHOICES: tuple[str, ...] = (
     "in",
     "out",
     "w",
+    "B",
+    "C",
+    "E",
+    "G",
+    "D",
+    "S",
+    "in_pos",
+    "in_neg",
 )
 
 
@@ -53,6 +62,7 @@ class ImportSPICEDialog(QDialog):
 
         self.library: SpiceLibrary | None = None
         self.selected_diode: Diode | None = None
+        self.selected_component: Component | None = None
         self.selected_subckt: SpiceSubcktDef | None = None
         self.selected_pin_mapping: dict[str, str] = {}
         self.last_error: str = ""
@@ -216,8 +226,21 @@ class ImportSPICEDialog(QDialog):
         kind, name = data
         if kind == "model":
             mdef = self.library.models[name]
+            mtype = mdef.model_type.upper()
             try:
-                self.selected_diode = instantiate_diode_model(mdef, mdef.name, "anode", "cathode")
+                if mtype in ("NPN", "PNP"):
+                    bjt = instantiate_bjt_model(mdef, mdef.name, "B", "C", "E")
+                    self.selected_component = bjt
+                    self.selected_diode = None
+                else:
+                    is_zener = (
+                        "BV" in mdef.params and abs(mdef.params["BV"]) <= 30.0
+                    ) or mdef.name.upper().startswith(("1N47", "1N52", "BZX"))
+                    d = instantiate_diode_model(
+                        mdef, mdef.name, "anode", "cathode", as_zener=is_zener
+                    )
+                    self.selected_diode = d
+                    self.selected_component = d
             except SpiceImportError as exc:
                 self._set_error(str(exc))
                 return
@@ -233,4 +256,5 @@ class ImportSPICEDialog(QDialog):
             return
         self.selected_subckt = subckt
         self.selected_diode = None
+        self.selected_component = None
         self.accept()

@@ -74,6 +74,16 @@ _EXTRA_SETTINGS: dict[str, dict[str, str]] = {
         "model_name": "str",
         "ibv": "float",
     },
+    "zener_diode": {
+        "model_name": "str",
+        "ibv": "float",
+    },
+    "npn_bjt": {
+        "model_name": "str",
+    },
+    "pnp_bjt": {
+        "model_name": "str",
+    },
     "gate_not": {
         "family": "str",
         "initial_state": "bool",

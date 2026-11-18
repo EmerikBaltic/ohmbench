@@ -15,7 +15,10 @@ from circuitsim.components import (
     DCVoltageSource,
     Diode,
     Inductor,
+    NPNBJT,
+    PNPBJT,
     Resistor,
+    ZenerDiode,
 )
 
 
@@ -213,6 +216,12 @@ def _parse_element_line(line: str) -> SpiceElement:
         nodes = (tokens[1], tokens[2])
         model_name = tokens[3]
         return SpiceElement(refdes=refdes, kind="D", nodes=nodes, model_name=model_name)
+    if kind == "Q":
+        if len(tokens) < 5:
+            raise SpiceImportError(f"Expected C, B, E nodes and model on Q line: {line!r}")
+        nodes = (tokens[1], tokens[2], tokens[3])
+        model_name = tokens[4]
+        return SpiceElement(refdes=refdes, kind="Q", nodes=nodes, model_name=model_name)
     if kind in ("V", "I"):
         if len(tokens) < 4:
             raise SpiceImportError(f"Expected 2 nodes and value on {kind} line: {line!r}")
@@ -308,13 +317,27 @@ def instantiate_diode_model(
     name: str,
     node_anode: str,
     node_cathode: str,
+    *,
+    as_zener: bool = False,
 ) -> Diode:
-    """Construct a calibrated Shockley `Diode` from a parsed SPICE diode `.MODEL`."""
+    """Construct a calibrated Shockley `Diode` or `ZenerDiode` from a SPICE `.MODEL`."""
     if not model.model_type.upper().startswith("D"):
         raise SpiceImportError(
             f"Model {model.name!r} has type {model.model_type!r}; expected Diode ('D')."
         )
     p = model.params
+    if as_zener:
+        return ZenerDiode(
+            name=name,
+            node_anode=node_anode,
+            node_cathode=node_cathode,
+            v_z=abs(p.get("BV", ZenerDiode.DEFAULT_VZ)),
+            i_s=p.get("IS", ZenerDiode.DEFAULT_ZENER_IS),
+            n=p.get("N", ZenerDiode.DEFAULT_ZENER_N),
+            r_s=p.get("RS", ZenerDiode.DEFAULT_ZENER_RS),
+            ibv=p.get("IBV", ZenerDiode.DEFAULT_ZENER_IBV),
+            model_name=model.name,
+        )
     return Diode(
         name=name,
         node_anode=node_anode,
@@ -324,6 +347,34 @@ def instantiate_diode_model(
         rs=p.get("RS", Diode.DEFAULT_RS),
         bv=abs(p.get("BV", Diode.DEFAULT_BV)),
         ibv=p.get("IBV", Diode.DEFAULT_IBV),
+        model_name=model.name,
+    )
+
+
+def instantiate_bjt_model(
+    model: SpiceModelDef,
+    name: str,
+    node_b: str,
+    node_c: str,
+    node_e: str,
+) -> NPNBJT | PNPBJT:
+    """Construct a calibrated `NPNBJT` or `PNPBJT` from a SPICE `.MODEL ... NPN/PNP(...)`."""
+    mtype = model.model_type.upper()
+    if mtype not in ("NPN", "PNP"):
+        raise SpiceImportError(
+            f"Model {model.name!r} has type {model.model_type!r}; expected 'NPN' or 'PNP'."
+        )
+    p = model.params
+    cls = NPNBJT if mtype == "NPN" else PNPBJT
+    return cls(
+        name=name,
+        node_b=node_b,
+        node_c=node_c,
+        node_e=node_e,
+        beta_f=p.get("BF", cls.DEFAULT_BF),
+        beta_r=p.get("BR", cls.DEFAULT_BR),
+        i_s=p.get("IS", cls.DEFAULT_IS),
+        v_af=p.get("VAF", cls.DEFAULT_VAF),
         model_name=model.name,
     )
 
@@ -419,6 +470,15 @@ def instantiate_subckt_elements(
             else:
                 components.append(
                     instantiate_diode_model(mdef, cname, mapped_nodes[0], mapped_nodes[1])
+                )
+        elif elem.kind == "Q":
+            # Standard SPICE Q line order: Q<name> <collector> <base> <emitter> <model>
+            mdef = model_lookup.get(elem.model_name or "")
+            if mdef is None:
+                components.append(NPNBJT(cname, mapped_nodes[1], mapped_nodes[0], mapped_nodes[2]))
+            else:
+                components.append(
+                    instantiate_bjt_model(mdef, cname, mapped_nodes[1], mapped_nodes[0], mapped_nodes[2])
                 )
         else:
             raise SpiceImportError(

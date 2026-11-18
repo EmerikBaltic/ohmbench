@@ -1,8 +1,9 @@
 """Component physics models for CircuitSim (no Qt dependencies)."""
 
 from circuitsim.components.base import Component, ComponentParameter
+from circuitsim.components.bjt import BJTBase, NPNBJT, PNPBJT
 from circuitsim.components.capacitor import Capacitor
-from circuitsim.components.diode import Diode
+from circuitsim.components.diode import Diode, ZenerDiode
 from circuitsim.components.factory import (
     KNOWN_COMPONENT_TYPES,
     create_default_component_model,
@@ -35,6 +36,7 @@ from circuitsim.components.switch import Switch
 __all__ = [
     "ACVoltageSource",
     "Ammeter",
+    "BJTBase",
     "Capacitor",
     "Component",
     "ComponentParameter",
@@ -53,12 +55,15 @@ __all__ = [
     "LogicGate",
     "MCUBlock",
     "MeterMode",
+    "NPNBJT",
+    "PNPBJT",
     "Potentiometer",
     "Resistor",
     "Switch",
     "Voltmeter",
     "WavVoltageSource",
     "WaveformType",
+    "ZenerDiode",
     "create_default_component_model",
     "evaluate_gate_boolean",
     "normalize_logic_family",

@@ -244,6 +244,22 @@ def evaluate_component_stress(
             )
             continue
 
+        if ctype in ("zener_diode", "npn_bjt", "pnp_bjt", "nmos", "pmos"):
+            max_p = max(
+                float(getattr(comp, "max_power_w", getattr(comp, "max_power", 0.5))),
+                1e-12,
+            )
+            p_diss = abs(p_val)
+            util = (p_diss / max_p) * 100.0
+            reports[name] = _classify_utilization(
+                name,
+                util,
+                "power",
+                f"{p_diss * 1000.0:.2f} mW" if p_diss < 1.0 else f"{p_diss:.3f} W",
+                f"{max_p * 1000.0:.1f} mW" if max_p < 1.0 else f"{max_p:.3f} W",
+            )
+            continue
+
         if ctype == "lightbulb":
             p_max = max(float(getattr(comp, "rated_power", 0.5)), 1e-12)
             util = (abs(p_val) / p_max) * 100.0

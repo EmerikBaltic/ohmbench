@@ -41,10 +41,12 @@ from circuitsim.canvas.symbol_renderer import SymbolLibrary
 from circuitsim.components import (
     ACVoltageSource,
     Ammeter,
+    BJTBase,
     Capacitor,
     Component,
     DCCurrentSource,
     DCVoltageSource,
+    Diode,
     Ground,
     Inductor,
     LED,
@@ -53,6 +55,7 @@ from circuitsim.components import (
     Resistor,
     Switch,
     Voltmeter,
+    ZenerDiode,
 )
 from circuitsim.dialogs.value_parser import format_engineering_value
 from circuitsim.engine.simulation_session import ComponentTelemetry
@@ -67,6 +70,10 @@ COMPONENT_PREFIXES: dict[str, str] = {
     "dc_current": "I",
     "ground": "GND",
     "switch": "SW",
+    "diode": "D",
+    "zener_diode": "DZ",
+    "npn_bjt": "Q",
+    "pnp_bjt": "Q",
     "gate_not": "U",
     "gate_and": "U",
     "gate_or": "U",
@@ -77,6 +84,7 @@ COMPONENT_PREFIXES: dict[str, str] = {
     "lightbulb": "B",
     "voltmeter": "VM",
     "ammeter": "A",
+    "mcu": "U",
 }
 
 
@@ -110,6 +118,12 @@ def format_component_value_summary(comp: Component) -> str:
         if comp.burned_out:
             return "BURNED OUT"
         return f"{comp.rated_power:g}W / {comp.rated_voltage:g}V"
+    if isinstance(comp, ZenerDiode):
+        return f"{comp.v_z:g} V"
+    if isinstance(comp, Diode):
+        return comp.model_name
+    if isinstance(comp, BJTBase):
+        return f"β={comp.beta_f:g}"
     if isinstance(comp, (Voltmeter, Ammeter)):
         return comp.format_reading()
     if isinstance(comp, LogicGate):
@@ -789,7 +803,11 @@ class ComponentItem(QGraphicsObject):
         """Return `(package_name, {terminal_name: physical_pin_label})` for `comp`."""
         ctype = comp.component_type
         if ctype == "diode":
-            return ("DO-35", {"anode": "A", "cathode": "K"})
+            return ("DO-35", {"anode": "Anode", "cathode": "Cathode"})
+        if ctype == "zener_diode":
+            return ("DO-41", {"anode": "Anode", "cathode": "Cathode"})
+        if ctype in ("npn_bjt", "pnp_bjt"):
+            return ("TO-92: 1-E, 2-B, 3-C", {"B": "2:B", "C": "3:C", "E": "1:E"})
         if ctype == "led":
             return ("LED-5mm", {"anode": "A(+)", "cathode": "K(-)"})
         if ctype == "capacitor":

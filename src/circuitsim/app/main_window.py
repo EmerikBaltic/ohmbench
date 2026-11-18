@@ -1204,16 +1204,25 @@ class MainWindow(QMainWindow):
         from circuitsim.dialogs.spice_import_dialog import ImportSPICEDialog
 
         dlg = ImportSPICEDialog(self)
-        if dlg.exec() and dlg.selected_diode is not None:
-            d = dlg.selected_diode
-            item = self.circuit_scene.place_new_component("diode", self.circuit_view.mapToScene(self.circuit_view.viewport().rect().center()))
-            item.component.is_sat = d.is_sat  # type: ignore[attr-defined]
-            item.component.n = d.n  # type: ignore[attr-defined]
-            item.component.rs = d.rs  # type: ignore[attr-defined]
-            item.component.bv = d.bv  # type: ignore[attr-defined]
-            item.component.ibv = d.ibv  # type: ignore[attr-defined]
-            item.component.model_name = d.model_name  # type: ignore[attr-defined]
-            self.statusBar().showMessage(f"Imported SPICE diode model: {d.model_name}", 4000)
+        if dlg.exec():
+            comp = dlg.selected_component or dlg.selected_diode
+            if comp is not None:
+                center = self.circuit_view.mapToScene(self.circuit_view.viewport().rect().center())
+                item = self.circuit_scene.place_new_component(comp.component_type, center)
+                for p in comp.get_editable_parameters():
+                    try:
+                        item.component.set_parameter_value(p.key, comp.get_parameter_value(p.key))
+                    except Exception:
+                        pass
+                if hasattr(comp, "model_name") and hasattr(item.component, "model_name"):
+                    item.component.model_name = comp.model_name  # type: ignore[attr-defined]
+                if hasattr(comp, "ibv") and hasattr(item.component, "ibv"):
+                    item.component.ibv = comp.ibv  # type: ignore[attr-defined]
+                item.update()
+                self.statusBar().showMessage(
+                    f"Imported SPICE {comp.component_type} model: {getattr(comp, 'model_name', comp.name)}",
+                    4000,
+                )
 
     def copy_share_url(self) -> str:
         """Encode current schematic to an `ohmbench://c/...` share URL and copy to clipboard."""

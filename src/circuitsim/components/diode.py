@@ -287,3 +287,101 @@ class Diode(Component):
         super().reset_state()
         self.operating_vd = 0.0
         self.operating_vak = 0.0
+
+
+class ZenerDiode(Diode):
+    """Zener voltage-regulator diode conducting smoothly in reverse breakdown at ``v_z``."""
+
+    DEFAULT_VZ: float = 5.1
+    DEFAULT_ZENER_IS: float = 1e-14
+    DEFAULT_ZENER_N: float = 1.0
+    DEFAULT_ZENER_RS: float = 1.0
+    DEFAULT_ZENER_IBV: float = 5e-3
+
+    def __init__(
+        self,
+        name: str,
+        node_anode: str,
+        node_cathode: str,
+        *,
+        v_z: float | str = DEFAULT_VZ,
+        i_s: float | str = DEFAULT_ZENER_IS,
+        n: float | str = DEFAULT_ZENER_N,
+        r_s: float | str = DEFAULT_ZENER_RS,
+        ibv: float | str = DEFAULT_ZENER_IBV,
+        max_current: float | str = 0.2,
+        max_power_w: float | str = 0.5,
+        thermal_voltage: float | str = Diode.DEFAULT_VT,
+        model_name: str = "",
+        label: str | None = None,
+        show_value: bool = True,
+        **spice_aliases: Any,
+    ) -> None:
+        raw_vz = spice_aliases.pop("BV", spice_aliases.pop("bv", v_z))
+        raw_is = spice_aliases.pop("IS", spice_aliases.pop("is_sat", i_s))
+        raw_n = spice_aliases.pop("N", n)
+        raw_rs = spice_aliases.pop("RS", spice_aliases.pop("rs", r_s))
+        raw_pmax = spice_aliases.pop("rated_power", spice_aliases.pop("max_power", max_power_w))
+        vz_val = abs(parse_engineering_value(raw_vz))
+        if vz_val <= 0.0:
+            raise ValueError(f"ZenerDiode {name!r}: v_z must be > 0 V, got {vz_val}.")
+        super().__init__(
+            name=name,
+            node_anode=node_anode,
+            node_cathode=node_cathode,
+            is_sat=raw_is,
+            n=raw_n,
+            rs=raw_rs,
+            bv=vz_val,
+            ibv=ibv,
+            max_current=max_current,
+            rated_power=raw_pmax,
+            thermal_voltage=thermal_voltage,
+            model_name=model_name or f"{vz_val:g}V",
+            label=label,
+            show_value=show_value,
+            **spice_aliases,
+        )
+
+    @property
+    def component_type(self) -> str:
+        return "zener_diode"
+
+    @property
+    def v_z(self) -> float:
+        return self.bv
+
+    @v_z.setter
+    def v_z(self, value: float) -> None:
+        self.bv = abs(float(value))
+        self.set_max_ratings(max_voltage=self.bv)
+        self.model_name = f"{self.bv:g}V"
+
+    @property
+    def i_s(self) -> float:
+        return self.is_sat
+
+    @i_s.setter
+    def i_s(self, value: float) -> None:
+        self.is_sat = float(value)
+
+    @property
+    def r_s(self) -> float:
+        return self.rs
+
+    @r_s.setter
+    def r_s(self, value: float) -> None:
+        self.rs = float(value)
+
+    @property
+    def max_power_w(self) -> float:
+        return self.max_power
+
+    @max_power_w.setter
+    def max_power_w(self, value: float) -> None:
+        self.set_max_ratings(max_power=float(value))
+        self.rated_power = float(value)
+
+    @property
+    def display_value(self) -> str:
+        return f"{self.bv:g}V"

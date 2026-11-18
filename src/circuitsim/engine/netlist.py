@@ -6,6 +6,7 @@ from collections import defaultdict, deque
 import numpy as np
 
 from circuitsim.components.base import Component
+from circuitsim.components.bjt import BJTBase
 from circuitsim.components.capacitor import Capacitor
 from circuitsim.components.ground import Ground
 from circuitsim.components.inductor import Inductor
@@ -363,6 +364,16 @@ class Circuit:
                     adjacency[cv].add(cu)
                 continue
 
+            if isinstance(comp, BJTBase):
+                cb, cc, ce = canonical(comp.node_b), canonical(comp.node_c), canonical(comp.node_e)
+                terminal_degree[comp.node_b] += 1
+                terminal_degree[comp.node_c] += 1
+                terminal_degree[comp.node_e] += 1
+                adjacency[cb].update((cc, ce))
+                adjacency[cc].update((cb, ce))
+                adjacency[ce].update((cb, cc))
+                continue
+
             if len(comp.nodes) < 2:
                 continue
             n_a, n_b = comp.nodes[0], comp.nodes[1]
@@ -504,6 +515,16 @@ class Circuit:
                     terminal_degree[v] += 1
                     adjacency[cu].add(cv)
                     adjacency[cv].add(cu)
+                continue
+
+            if isinstance(comp, BJTBase):
+                cb, cc, ce = canonical(comp.node_b), canonical(comp.node_c), canonical(comp.node_e)
+                terminal_degree[comp.node_b] += 1
+                terminal_degree[comp.node_c] += 1
+                terminal_degree[comp.node_e] += 1
+                adjacency[cb].update((cc, ce))
+                adjacency[cc].update((cb, ce))
+                adjacency[ce].update((cb, cc))
                 continue
 
             if len(comp.nodes) < 2:

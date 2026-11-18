@@ -105,6 +105,27 @@ _DEFAULT_PARAMETERS_BY_TYPE: dict[str, tuple[ComponentParameter, ...]] = {
         ComponentParameter("max_current", "Max Forward Current", "A"),
         ComponentParameter("max_power", "Max Power Rating", "W"),
     ),
+    "zener_diode": (
+        ComponentParameter("v_z", "Zener Voltage (Vz / BV)", "V"),
+        ComponentParameter("i_s", "Saturation Current (Is)", "A"),
+        ComponentParameter("n", "Ideality Factor (N)", ""),
+        ComponentParameter("r_s", "Series Resistance (Rs)", "Ω", allow_zero=True),
+        ComponentParameter("max_power_w", "Max Power Rating", "W"),
+    ),
+    "npn_bjt": (
+        ComponentParameter("beta_f", "Forward Beta (BF)", ""),
+        ComponentParameter("beta_r", "Reverse Beta (BR)", ""),
+        ComponentParameter("i_s", "Saturation Current (IS)", "A"),
+        ComponentParameter("v_af", "Early Voltage (VAF)", "V"),
+        ComponentParameter("max_power_w", "Max Power Rating", "W"),
+    ),
+    "pnp_bjt": (
+        ComponentParameter("beta_f", "Forward Beta (BF)", ""),
+        ComponentParameter("beta_r", "Reverse Beta (BR)", ""),
+        ComponentParameter("i_s", "Saturation Current (IS)", "A"),
+        ComponentParameter("v_af", "Early Voltage (VAF)", "V"),
+        ComponentParameter("max_power_w", "Max Power Rating", "W"),
+    ),
     "switch": (
         ComponentParameter("r_on", "ON Resistance", "Ω"),
         ComponentParameter("v_breakdown", "Breakdown Voltage", "V"),
