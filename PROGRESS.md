@@ -1,5 +1,19 @@
 # Project Progress — Ohmbench (formerly CircuitSim)
 
+## PHASE H QUEUE (PALETTE, ROUTER, ACTIVE SEMICONDUCTORS & WORKBENCH UI)
+- [x] `H0` (`done`): Initialized Phase H queue in `PROGRESS.md`, verified clean `wire-redesign` tree at `checkpoint/F-done` (`a451b18`), and created `tests/test_h_workbench_expansion.py` with offscreen Qt scaffolding.
+- [ ] `H1` (`todo`): Fix parallel component wire routing — remove 1-unit outward U-loop jogs on unobstructed aligned terminals.
+- [ ] `H2` (`todo`): Component palette vertical scrollbar, live search filter & Expand/Collapse All buttons.
+- [ ] `H3` (`todo`): Active semiconductors Part 1 — NPN BJT, PNP BJT & Zener Diode (models, symbols, solver stamps, pinouts, SPICE import).
+- [ ] `H4` (`todo`): Active semiconductors Part 2 — N-Channel MOSFET, P-Channel MOSFET & Op-Amp (models, symbols, solver stamps).
+- [ ] `H5` (`todo`): Interactive MCU code editor (`MCUFirmwareDialog`) & live serial / pin monitor dialog + persistence.
+- [ ] `H6` (`todo`): Parameter Sweep (`.STEP`) & Monte Carlo UI dialog + plotter (`SweepAnalysisDialog`) + CSV export.
+- [ ] `H7` (`todo`): Named net labels / net port flags (`VCC`, `GND_REF`, `IN`, `OUT`) uniting disconnected subcircuits.
+- [ ] `H8` (`todo`): On-canvas live voltage probe badges + Qt-free `compute_fft_spectrum` & FFT Spectrum / THD% tab in Virtual Instruments.
+- [ ] `H9` (`todo`): Subcircuit rigid group box move & clipboard Copy/Paste/Duplicate (`Ctrl+C`, `Ctrl+V`, `Ctrl+D`) in one undo step.
+- [ ] `H10` (`todo`): Expanded Test Jigs (12 total circuits) & `PROGRESS.md` / `AGENT_INSTRUCTIONS.md` documentation update.
+- [ ] `GATE H` (`todo`): Run Phase H, wire router, QoL, and Phase F regression suites, update `PROGRESS.md`, commit, and tag `checkpoint/H-done`.
+
 ## FIX QUEUE (branch `wire-redesign`)
 - [x] `E0` (`done`): Created `tests/ui_flow_helpers.py` and `tests/test_ui_flow_bugs.py`; reproduced E1–E5 on both `wire-redesign` (`99e80b2`) and `main` (`checkpoint/A-done` `12fb46f` via worktree), marked `xfail(strict=True)`.
   | Bug | Fails on `main` (`12fb46f`) | Fails on `wire-redesign` (`99e80b2`) | Notes / Failing Line |
