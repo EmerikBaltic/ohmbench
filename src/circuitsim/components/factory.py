@@ -14,6 +14,7 @@ from circuitsim.components.diode import Diode
 from circuitsim.components.led import LED
 from circuitsim.components.lightbulb import Lightbulb
 from circuitsim.components.logic_gate import GATE_COMPONENT_TYPES, GATE_OPERATIONS, LogicGate
+from circuitsim.components.mcu import MCUBlock
 from circuitsim.components.meters import Ammeter, Voltmeter
 from circuitsim.components.potentiometer import Potentiometer
 from circuitsim.components.resistor import Resistor
@@ -41,6 +42,7 @@ KNOWN_COMPONENT_TYPES: tuple[str, ...] = (
     "diode",
     "voltmeter",
     "ammeter",
+    "mcu",
     *GATE_COMPONENT_TYPES,
 )
 
@@ -78,6 +80,8 @@ def create_default_component_model(component_id: str, name: str) -> Component:
         return Voltmeter(name, n0, n1)
     if component_id == "ammeter":
         return Ammeter(name, n0, n1)
+    if component_id == "mcu":
+        return MCUBlock(name)
     if component_id.startswith("gate_"):
         op = component_id.removeprefix("gate_")
         if op in GATE_OPERATIONS:

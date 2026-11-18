@@ -14,6 +14,7 @@ from circuitsim.components.inductor import Inductor
 from circuitsim.components.led import LED
 from circuitsim.components.lightbulb import Lightbulb
 from circuitsim.components.logic_gate import LogicGate
+from circuitsim.components.mcu import MCUBlock
 from circuitsim.components.meters import Ammeter, Voltmeter
 from circuitsim.components.potentiometer import Potentiometer
 from circuitsim.components.resistor import Resistor
@@ -296,6 +297,11 @@ def run_ac_sweep(
                 io = node_to_idx.get(comp.output_node)
                 if io is not None:
                     mat_y[io, io] += comp.g_out
+            elif isinstance(comp, MCUBlock):
+                for pin, p_node in zip(comp.pin_names, comp.nodes):
+                    ip = node_to_idx.get(p_node)
+                    if ip is not None:
+                        mat_y[ip, ip] += comp.pin_conductance(pin)
 
         for comp in vs_list:
             row_k = vs_to_idx[comp.name]

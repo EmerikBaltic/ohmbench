@@ -19,6 +19,7 @@ from circuitsim.components.logic_gate import (
     evaluate_gate_boolean,
     normalize_logic_family,
 )
+from circuitsim.components.mcu import MCUBlock
 from circuitsim.components.meters import Ammeter, MeterMode, Voltmeter
 from circuitsim.components.potentiometer import Potentiometer
 from circuitsim.components.resistor import Resistor
@@ -50,6 +51,7 @@ __all__ = [
     "LOGIC_FAMILY_PRESETS",
     "Lightbulb",
     "LogicGate",
+    "MCUBlock",
     "MeterMode",
     "Potentiometer",
     "Resistor",

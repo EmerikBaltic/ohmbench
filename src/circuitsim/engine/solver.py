@@ -15,6 +15,7 @@ from circuitsim.components.inductor import Inductor
 from circuitsim.components.led import LED
 from circuitsim.components.lightbulb import Lightbulb
 from circuitsim.components.logic_gate import LogicGate
+from circuitsim.components.mcu import MCUBlock
 from circuitsim.components.meters import Ammeter, Voltmeter
 from circuitsim.components.potentiometer import Potentiometer
 from circuitsim.components.resistor import Resistor
@@ -45,6 +46,7 @@ _TAG_GROUND = 12
 _TAG_OTHER = 13
 _TAG_POTENTIOMETER = 14
 _TAG_DIODE = 15
+_TAG_MCU = 16
 
 
 class IntegrationMethod(str, Enum):
@@ -184,6 +186,7 @@ class MNASolver:
         self._bucket_switches: tuple[Switch, ...] = ()
         self._bucket_inductors: tuple[Inductor, ...] = ()
         self._bucket_logic_gates: tuple[LogicGate, ...] = ()
+        self._bucket_mcus: tuple[MCUBlock, ...] = ()
 
     def invalidate_cache(self) -> None:
         """Force the solver to rebuild and re-factorize the MNA matrix on next solve."""
@@ -209,6 +212,7 @@ class MNASolver:
         switches: list[Switch] = []
         inductors: list[Inductor] = []
         logic_gates: list[LogicGate] = []
+        mcus: list[MCUBlock] = []
 
         for comp in raw_comps:
             if isinstance(comp, Ground):
@@ -248,6 +252,10 @@ class MNASolver:
                 tagged.append((comp, _TAG_LOGIC_GATE))
                 rhs_tagged.append((comp, _TAG_LOGIC_GATE))
                 logic_gates.append(comp)
+            elif isinstance(comp, MCUBlock):
+                tagged.append((comp, _TAG_MCU))
+                rhs_tagged.append((comp, _TAG_MCU))
+                mcus.append(comp)
             elif isinstance(comp, Potentiometer):
                 tagged.append((comp, _TAG_POTENTIOMETER))
             elif isinstance(comp, DCVoltageSource):
@@ -272,6 +280,7 @@ class MNASolver:
         self._bucket_switches = tuple(switches)
         self._bucket_inductors = tuple(inductors)
         self._bucket_logic_gates = tuple(logic_gates)
+        self._bucket_mcus = tuple(mcus)
         self._buckets_len = len(tagged)
         self._buckets_version = circ_ver
 
@@ -398,6 +407,8 @@ class MNASolver:
                 sig.append(comp.dc_conductance)
             elif isinstance(comp, LogicGate):
                 sig.extend((comp.g_in, comp.g_out))
+            elif isinstance(comp, MCUBlock):
+                sig.extend(comp.pin_conductance(p) for p in comp.pin_names)
             elif isinstance(comp, Potentiometer):
                 sig.extend((comp.g_aw, comp.g_wb))
             elif isinstance(comp, (DCVoltageSource, ACVoltageSource)):
@@ -428,6 +439,8 @@ class MNASolver:
                 sig.append(g_eq)
             elif tag == _TAG_LOGIC_GATE:
                 sig.extend((comp.g_in, comp.g_out))
+            elif tag == _TAG_MCU:
+                sig.extend(comp.pin_conductance(p) for p in comp.pin_names)
             elif tag == _TAG_POTENTIOMETER:
                 sig.extend((comp.g_aw, comp.g_wb))
             elif tag <= _TAG_AC_VS:
@@ -505,6 +518,11 @@ class MNASolver:
                 idx_out = self._node_to_idx.get(comp.output_node)
                 if idx_out is not None:
                     matrix_a[idx_out, idx_out] += comp.g_out
+            elif isinstance(comp, MCUBlock):
+                for pin, p_node in zip(comp.pin_names, comp.nodes):
+                    idx_p = self._node_to_idx.get(p_node)
+                    if idx_p is not None:
+                        matrix_a[idx_p, idx_p] += comp.pin_conductance(pin)
             elif isinstance(comp, Inductor):
                 if mode == "dc":
                     self._stamp_conductance(
@@ -679,6 +697,12 @@ class MNASolver:
                 idx_out = self._node_to_idx.get(comp.output_node)
                 if idx_out is not None:
                     rhs_b[idx_out] += comp.g_out * comp.drive_voltage * source_scale
+            elif isinstance(comp, MCUBlock):
+                for pin, p_node in zip(comp.pin_names, comp.nodes):
+                    if comp.is_output_pin(pin):
+                        idx_p = self._node_to_idx.get(p_node)
+                        if idx_p is not None:
+                            rhs_b[idx_p] += comp.pin_conductance(pin) * comp.drive_voltage(pin) * source_scale
 
         return rhs_b
 
@@ -756,6 +780,12 @@ class MNASolver:
                 idx_out = node_to_idx.get(comp.output_node)
                 if idx_out is not None:
                     rhs_b[idx_out] += comp.g_out * comp.drive_voltage * source_scale
+            elif tag == _TAG_MCU:
+                for pin, p_node in zip(comp.pin_names, comp.nodes):
+                    if comp.is_output_pin(pin):
+                        idx_p = node_to_idx.get(p_node)
+                        if idx_p is not None:
+                            rhs_b[idx_p] += comp.pin_conductance(pin) * comp.drive_voltage(pin) * source_scale
 
         return rhs_b
 
@@ -872,11 +902,21 @@ class MNASolver:
                 nv[node] = float(sol_x[idx])
             return sol_x, nv
 
-        if not gates:
+        if not gates and not self._bucket_mcus:
             return solve_once()
 
-        seen_states: set[tuple[bool, ...]] = {tuple(g.output_level for g in gates)}
-        max_sweeps = max(2 * len(gates) + 4, 8)
+        seen_states: set[tuple[object, ...]] = {
+            (
+                tuple(g.output_level for g in gates),
+                tuple(
+                    round(m.drive_voltage(p), 6)
+                    for m in self._bucket_mcus
+                    for p in m.pin_names
+                    if m.is_output_pin(p)
+                ),
+            )
+        }
+        max_sweeps = max(2 * (len(gates) + len(self._bucket_mcus)) + 4, 8)
         for _ in range(max_sweeps):
             any_changed = False
             for gate in gates:
@@ -885,9 +925,21 @@ class MNASolver:
                 if target != gate.output_level:
                     gate.set_steady_state_level(target)
                     any_changed = True
+            for mcu in self._bucket_mcus:
+                _, nv = solve_once()
+                if mcu.evaluate_firmware(nv, 0.0, 0.0):
+                    any_changed = True
             if not any_changed:
                 break
-            sig = tuple(g.output_level for g in gates)
+            sig = (
+                tuple(g.output_level for g in gates),
+                tuple(
+                    round(m.drive_voltage(p), 6)
+                    for m in self._bucket_mcus
+                    for p in m.pin_names
+                    if m.is_output_pin(p)
+                ),
+            )
             if sig in seen_states:
                 break
             seen_states.add(sig)
@@ -895,15 +947,19 @@ class MNASolver:
         return solve_once()
 
     def _initialize_logic_gates_t0(self, step_dt: float) -> None:
-        """Settle initial t = 0+ logic gate states and queue any initial ring edges."""
+        """Settle initial t = 0+ logic gate & MCU states and queue any initial ring edges."""
         self._logic_t0_initialized = True
+        self._ensure_component_buckets()
         gates = self._logic_gates()
-        if not gates:
+        mcus = self._bucket_mcus
+        if not gates and not mcus:
             self._t0_node_voltages = {}
             return
 
         for gate in gates:
             gate.reset_state()
+        for mcu in mcus:
+            mcu.reset_state()
 
         capacitors = [c for c in self.circuit.components if isinstance(c, Capacitor)]
         inductors = [c for c in self.circuit.components if isinstance(c, Inductor)]
@@ -920,6 +976,8 @@ class MNASolver:
             self._t0_node_voltages = {g: 0.0 for g in self.circuit.grounded_nodes()}
             for gate in gates:
                 gate.sample_inputs_and_schedule(self._t0_node_voltages, 0.0, step_dt)
+            for mcu in mcus:
+                mcu.evaluate_firmware(self._t0_node_voltages, 0.0, step_dt)
             return
 
         mat = np.zeros((dim, dim), dtype=np.float64)
@@ -990,6 +1048,11 @@ class MNASolver:
                 io = node_to_idx.get(comp.output_node)
                 if io is not None:
                     mat[io, io] += comp.g_out
+            elif isinstance(comp, MCUBlock):
+                for pin, p_node in zip(comp.pin_names, comp.nodes):
+                    ip = node_to_idx.get(p_node)
+                    if ip is not None:
+                        mat[ip, ip] += comp.pin_conductance(pin)
             elif isinstance(comp, DCCurrentSource):
                 ia = node_to_idx.get(comp.nodes[0])
                 ib = node_to_idx.get(comp.nodes[1])
@@ -1048,14 +1111,30 @@ class MNASolver:
                 io = node_to_idx.get(gate.output_node)
                 if io is not None:
                     rhs[io] += gate.g_out * gate.drive_voltage
+            for mcu in mcus:
+                for pin, p_node in zip(mcu.pin_names, mcu.nodes):
+                    if mcu.is_output_pin(pin):
+                        ip = node_to_idx.get(p_node)
+                        if ip is not None:
+                            rhs[ip] += mcu.pin_conductance(pin) * mcu.drive_voltage(pin)
             sol = lu_solve(t0_lu, rhs, check_finite=True)
             nv = {g: 0.0 for g in self.circuit.grounded_nodes()}
             for node, idx in node_to_idx.items():
                 nv[node] = float(sol[idx])
             return nv
 
-        seen_states: set[tuple[bool, ...]] = {tuple(g.output_level for g in gates)}
-        max_sweeps = max(2 * len(gates) + 4, 8)
+        seen_states: set[tuple[object, ...]] = {
+            (
+                tuple(g.output_level for g in gates),
+                tuple(
+                    round(m.drive_voltage(p), 6)
+                    for m in mcus
+                    for p in m.pin_names
+                    if m.is_output_pin(p)
+                ),
+            )
+        }
+        max_sweeps = max(2 * (len(gates) + len(mcus)) + 4, 8)
         for _ in range(max_sweeps):
             any_changed = False
             for gate in gates:
@@ -1064,9 +1143,21 @@ class MNASolver:
                 if target != gate.output_level:
                     gate.set_steady_state_level(target)
                     any_changed = True
+            for mcu in mcus:
+                nv = solve_t0()
+                if mcu.evaluate_firmware(nv, 0.0, 0.0):
+                    any_changed = True
             if not any_changed:
                 break
-            sig = tuple(g.output_level for g in gates)
+            sig = (
+                tuple(g.output_level for g in gates),
+                tuple(
+                    round(m.drive_voltage(p), 6)
+                    for m in mcus
+                    for p in m.pin_names
+                    if m.is_output_pin(p)
+                ),
+            )
             if sig in seen_states:
                 break
             seen_states.add(sig)
@@ -1082,6 +1173,9 @@ class MNASolver:
             gate.current = i_out
             gate.power = p_out + p_in
             gate.sample_inputs_and_schedule(node_v0, 0.0, step_dt)
+        for mcu in mcus:
+            self._update_mcu_telemetry(mcu, node_v0)
+            mcu.evaluate_firmware(node_v0, 0.0, step_dt)
 
     def _maybe_apply_startup_perturbation(self) -> None:
         """Inject a deterministic +1 uV perturbation once at t = 0+ for symmetric oscillators."""
@@ -1106,6 +1200,27 @@ class MNASolver:
         ):
             caps[0].cap_voltage += self.startup_perturbation_uv * 1e-6
             self._startup_perturbation_applied = True
+
+    @staticmethod
+    def _update_mcu_telemetry(mcu: MCUBlock, node_voltages: dict[str, float]) -> float:
+        """Update MCU voltage/current/power telemetry and return primary digital drive current."""
+        mcu.sense_nodes(node_voltages)
+        total_power = 0.0
+        primary_i = 0.0
+        for pin, p_node in zip(mcu.pin_names, mcu.nodes):
+            v_p = node_voltages.get(p_node, 0.0)
+            g_p = mcu.pin_conductance(pin)
+            if mcu.is_output_pin(pin):
+                i_out = (mcu.drive_voltage(pin) - v_p) * g_p
+                total_power += abs((mcu.drive_voltage(pin) - v_p) * i_out)
+                if pin == "D0":
+                    primary_i = i_out
+            else:
+                total_power += (v_p**2) * g_p
+        mcu.voltage = node_voltages.get(mcu.nodes[2], 0.0)  # D0 output node voltage
+        mcu.current = primary_i
+        mcu.power = total_power
+        return primary_i
 
     def _update_led_discrete_states(
         self, node_voltages: dict[str, float]
@@ -1189,7 +1304,7 @@ class MNASolver:
             dim = self._matrix_a.shape[0]
 
             try:
-                if relax_gates and gates:
+                if relax_gates and (gates or self._bucket_mcus):
                     solution_x, node_voltages = self._relax_logic_gates_dc(
                         source_scale=source_scale
                     )
@@ -1464,6 +1579,8 @@ class MNASolver:
         gates = self._logic_gates()
         for gate in gates:
             gate.reset_state()
+        for mcu in self._bucket_mcus:
+            mcu.reset_state()
 
         if (
             not self._bucket_diodes
@@ -1488,7 +1605,7 @@ class MNASolver:
             assert self._lu_piv is not None
             assert self._matrix_a is not None
             dim = self._matrix_a.shape[0]
-            if gates:
+            if gates or self._bucket_mcus:
                 solution_x, node_voltages = self._relax_logic_gates_dc()
             else:
                 if dim > 0:
@@ -1553,6 +1670,10 @@ class MNASolver:
                 comp.current = i_out
                 comp.power = p_out + p_in
                 branch_currents[comp.name] = i_out
+                continue
+
+            if isinstance(comp, MCUBlock):
+                branch_currents[comp.name] = self._update_mcu_telemetry(comp, node_voltages)
                 continue
 
             v_a = node_voltages.get(comp.nodes[0], 0.0)
@@ -1746,6 +1867,14 @@ class MNASolver:
                 if io is not None:
                     mat[io, io] += comp.g_out
                     rhs[io] += comp.g_out * comp.drive_voltage
+            elif isinstance(comp, MCUBlock):
+                for pin, p_node in zip(comp.pin_names, comp.nodes):
+                    ip = node_to_idx.get(p_node)
+                    if ip is not None:
+                        gp = comp.pin_conductance(pin)
+                        mat[ip, ip] += gp
+                        if comp.is_output_pin(pin):
+                            rhs[ip] += gp * comp.drive_voltage(pin)
             elif isinstance(comp, Diode):
                 g_d, i_eq = comp.companion_model(0.0, "dc")
                 ia = node_to_idx.get(comp.nodes[0])
@@ -2064,9 +2193,11 @@ class MNASolver:
             self.last_convergence_method = "substep_recovery"
             return res_second
 
-        # 3d. Sample logic-gate inputs after convergence and schedule future delayed transitions.
+        # 3d. Sample logic-gate inputs & execute offline MCU callbacks after step convergence.
         for comp in self._bucket_logic_gates:
             comp.sample_inputs_and_schedule(node_voltages, t_next, dt)
+        for mcu in self._bucket_mcus:
+            mcu.evaluate_firmware(node_voltages, t_next, dt)
 
         # 4. Update component voltages, currents, companion states, and meter buffers.
         step_warnings = self._collect_gate_runtime_warnings(
@@ -2123,6 +2254,10 @@ class MNASolver:
                 comp.current = i_out
                 comp.power = p_out + p_in
                 branch_currents[comp.name] = i_out
+                continue
+
+            if tag == _TAG_MCU:
+                branch_currents[comp.name] = self._update_mcu_telemetry(comp, node_voltages)
                 continue
 
             v_a = node_voltages.get(comp.nodes[0], 0.0)

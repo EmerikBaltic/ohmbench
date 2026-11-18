@@ -539,6 +539,21 @@ class SymbolLibrary:
                 painter.drawLine(QPointF(2.0, 6.0), QPointF(7.0, 6.0))
             painter.restore()
 
+        elif component_id == "mcu":
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            for py in (-20.0, 0.0, 20.0):
+                painter.drawLine(QPointF(-60.0, py), QPointF(-36.0, py))
+                painter.drawLine(QPointF(36.0, py), QPointF(60.0, py))
+            painter.drawRect(QRectF(-36.0, -34.0, 72.0, 68.0))
+            painter.save()
+            if rotation_deg:
+                painter.rotate(-float(rotation_deg))
+            if flipped_h:
+                painter.scale(-1.0, 1.0)
+            painter.setFont(QFont("Segoe UI", 8, QFont.Weight.Bold))
+            painter.drawText(QRectF(-34.0, -14.0, 68.0, 28.0), Qt.AlignmentFlag.AlignCenter, "MCU")
+            painter.restore()
+
         else:
             painter.drawRect(QRectF(-20.0, -10.0, 40.0, 20.0))
             painter.setFont(QFont("Segoe UI", 8))

@@ -12,6 +12,7 @@ from circuitsim.components.inductor import Inductor
 from circuitsim.components.led import LED
 from circuitsim.components.lightbulb import Lightbulb
 from circuitsim.components.logic_gate import LogicGate
+from circuitsim.components.mcu import MCUBlock
 from circuitsim.components.meters import Ammeter, Voltmeter
 from circuitsim.components.potentiometer import Potentiometer
 from circuitsim.components.resistor import Resistor
@@ -196,6 +197,12 @@ class Circuit:
                     if io is not None:
                         mat[io, io] += comp.g_out
                     continue
+                if isinstance(comp, MCUBlock):
+                    for pin, p_node in zip(comp.pin_names, comp.nodes):
+                        ip = node_to_idx.get(p_node)
+                        if ip is not None:
+                            mat[ip, ip] += comp.pin_conductance(pin)
+                    continue
 
                 if isinstance(comp, Potentiometer):
                     for na, nb, g in (
@@ -339,6 +346,13 @@ class Circuit:
                 adjacency[c_out].add(CANONICAL_GND)
                 adjacency[CANONICAL_GND].add(c_out)
                 continue
+            if isinstance(comp, MCUBlock):
+                for p_node in comp.nodes:
+                    c_pin = canonical(p_node)
+                    terminal_degree[p_node] += 2
+                    adjacency[c_pin].add(CANONICAL_GND)
+                    adjacency[CANONICAL_GND].add(c_pin)
+                continue
 
             if isinstance(comp, Potentiometer):
                 for u, v in ((comp.node_a, comp.node_w), (comp.node_w, comp.node_b)):
@@ -477,6 +491,11 @@ class Circuit:
 
             if isinstance(comp, LogicGate):
                 driven_seeds.add(canonical(comp.output_node))
+                continue
+            if isinstance(comp, MCUBlock):
+                for pin, p_node in zip(comp.pin_names, comp.nodes):
+                    if comp.is_output_pin(pin):
+                        driven_seeds.add(canonical(p_node))
                 continue
             if isinstance(comp, Potentiometer):
                 for u, v in ((comp.node_a, comp.node_w), (comp.node_w, comp.node_b)):

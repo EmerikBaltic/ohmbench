@@ -54,7 +54,7 @@ Run these manual checks in the live desktop window (`.\.venv\Scripts\python.exe 
 - [x] `F8` (`done`): 3rd-party SPICE `.MODEL`/`.SUBCKT` importer (`circuitsim.io.spice_import`), explicit pin-order mapper, encrypted vendor detector (`EncryptedModelError`), UI import dialog (`tests/test_f8_spice_import.py` + `tests/test_g_qol_fixes.py`: `15 passed in 3.21s`).
 - [x] `F9` (`done`): Share URL codec (`ohmbench://c/...`), KiCad `.kicad_sch` S-expression exporter, publication high-contrast light-background SVG/PNG export without UI chrome (`tests/test_f9_share_kicad_export.py` + `tests/test_g_qol_fixes.py`: `10 passed in 3.05s`).
 - [x] `F10` (`done`): Parallel parameter sweep & seeded Monte Carlo (`circuitsim.engine.sweep`) + `WireItem`/`ComponentItem` geometry cache guard for 60+ parts (`tests/test_f10_sweep_and_perf.py` + `tests/test_g_qol_fixes.py`: `10 passed in 4.98s`).
-- [ ] `F11` (`todo`): Mixed-signal `MCUBlock` (10 MOhm analog ADC inputs `A0/A1`, 25 Ohm Thevenin digital outputs `D0/D1/TX/RX`, local offline Python callback, `read_adc`), analog resistor ladder & 2-MCU co-simulation.
+- [x] `F11` (`done`): Mixed-signal `MCUBlock` (10 MOhm analog ADC inputs `A0/A1`, 25 Ohm Thevenin digital outputs `D0/D1/TX/RX`, local offline Python callback, `read_adc`), analog resistor ladder & 2-MCU co-simulation (`tests/test_f11_mixed_signal_mcu.py` + `tests/test_g_qol_fixes.py`: `11 passed in 3.00s`).
 - [ ] `F12` (`todo`): Toggleable physical package/pinout label overlay + `AGENT_INSTRUCTIONS.md` & `PROGRESS.md` final docs update.
 - [ ] `GATE F` (`todo`): Full suite 3x + `python -m pytest -q` + end-to-end workbench smoke test + `git tag checkpoint/F-done`.
 

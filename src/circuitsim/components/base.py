@@ -112,6 +112,11 @@ _DEFAULT_PARAMETERS_BY_TYPE: dict[str, tuple[ComponentParameter, ...]] = {
     "voltmeter": (
         ComponentParameter("r_internal", "Input Resistance", "Ω"),
     ),
+    "mcu": (
+        ComponentParameter("v_cc", "Logic / ADC Supply (Vcc)", "V"),
+        ComponentParameter("r_adc_in", "ADC Input Impedance", "Ω"),
+        ComponentParameter("r_dig_out", "GPIO Output Impedance", "Ω"),
+    ),
     "ammeter": (
         ComponentParameter("r_internal", "Series Resistance", "Ω"),
     ),
