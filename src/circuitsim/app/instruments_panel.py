@@ -27,6 +27,7 @@ from PySide6.QtWidgets import (
 )
 
 from circuitsim.engine.ac_analysis import ACAnalysisResult, run_ac_sweep
+from circuitsim.engine.fft_analysis import FFTSpectrumResult, compute_fft_spectrum
 from circuitsim.engine.netlist import Circuit
 from circuitsim.engine.simulation_session import SimulationFrame, SimulationState
 from circuitsim.engine.solver import MNASolver, TransientResult
@@ -261,6 +262,71 @@ class _BodeCanvas(QWidget):
         painter.drawText(int(plot.right() + 4), int(plot.bottom()), "-180°")
 
 
+class _FFTCanvas(QWidget):
+    """Dark-theme spectrum plotter displaying magnitude in dBV vs Frequency (Hz)."""
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setMinimumSize(520, 260)
+        self._result: FFTSpectrumResult | None = None
+
+    def set_spectrum(self, result: FFTSpectrumResult | None) -> None:
+        self._result = result
+        self.update()
+
+    def paintEvent(self, event) -> None:
+        _ = event
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        painter.fillRect(self.rect(), QColor("#11161C"))
+        plot = QRectF(56.0, 20.0, max(80.0, self.width() - 78.0), max(80.0, self.height() - 52.0))
+        painter.setPen(QPen(QColor("#24303D"), 1.0, Qt.PenStyle.DotLine))
+        for i in range(9):
+            y = plot.top() + plot.height() * (i / 8.0)
+            painter.drawLine(int(plot.left()), int(y), int(plot.right()), int(y))
+        painter.setPen(QPen(QColor("#3E5063"), 1.2))
+        painter.drawRect(plot)
+
+        if self._result is None or len(self._result.freqs_hz) < 2:
+            painter.setPen(QColor("#8CA0B3"))
+            painter.drawText(plot, Qt.AlignmentFlag.AlignCenter, "Click 'Compute FFT' to plot spectrum.")
+            return
+
+        freqs = np.asarray(self._result.freqs_hz, dtype=np.float64)
+        dbv = np.asarray(self._result.magnitude_dbv, dtype=np.float64)
+        f_max = max(float(freqs[-1]), 1.0)
+        db_max = max(float(np.max(dbv)), 0.0) + 6.0
+        db_min = max(float(np.min(dbv)), db_max - 120.0)
+        db_span = max(db_max - db_min, 1.0)
+
+        path = QPainterPath()
+        for idx, (f_val, mag) in enumerate(zip(freqs, dbv)):
+            px = plot.left() + (float(f_val) / f_max) * plot.width()
+            clamped = max(db_min, min(db_max, float(mag)))
+            py = plot.bottom() - ((clamped - db_min) / db_span) * plot.height()
+            if idx == 0:
+                path.moveTo(px, py)
+            else:
+                path.lineTo(px, py)
+        painter.setPen(QPen(QColor("#60A5FA"), 1.8))
+        painter.drawPath(path)
+
+        # Fundamental peak marker
+        if self._result.fundamental_freq_hz > 0.0:
+            fx = plot.left() + (min(self._result.fundamental_freq_hz, f_max) / f_max) * plot.width()
+            fy = plot.bottom() - ((max(db_min, min(db_max, self._result.peak_dbv)) - db_min) / db_span) * plot.height()
+            painter.setBrush(QColor("#FBBF24"))
+            painter.setPen(QPen(QColor("#11161C"), 1.0))
+            painter.drawEllipse(QRectF(fx - 3.5, fy - 3.5, 7.0, 7.0))
+
+        painter.setPen(QColor("#8CA0B3"))
+        painter.setFont(QFont("Consolas", 8))
+        painter.drawText(4, int(plot.top() + 10), f"{db_max:.0f} dBV")
+        painter.drawText(4, int(plot.bottom()), f"{db_min:.0f} dBV")
+        painter.drawText(int(plot.left()), int(plot.bottom() + 16), "0 Hz")
+        painter.drawText(int(plot.right() - 70), int(plot.bottom() + 16), f"{f_max:.0f} Hz")
+
+
 class BenchtopInstrumentsDialog(QDialog):
     """Non-modal benchtop Waveform Analyzer (4-Ch) + AC Bode & Z_in instrument suite."""
 
@@ -280,6 +346,7 @@ class BenchtopInstrumentsDialog(QDialog):
         self.latest_scope_frame: ScopeFrame | None = None
         self.latest_cursor_readout: CursorReadout | None = None
         self.latest_ac_result: ACAnalysisResult | None = None
+        self.latest_fft_result: FFTSpectrumResult | None = None
         self._last_live_t: float | None = None
 
         root = QVBoxLayout(self)
@@ -288,6 +355,7 @@ class BenchtopInstrumentsDialog(QDialog):
 
         self._build_waveform_tab()
         self._build_bode_tab()
+        self._build_fft_tab()
         self.refresh_nodes()
 
     def _build_waveform_tab(self) -> None:
@@ -434,6 +502,35 @@ class BenchtopInstrumentsDialog(QDialog):
 
         self.tabs.addTab(tab, "AC Bode & Z_in")
 
+    def _build_fft_tab(self) -> None:
+        tab = QWidget(self)
+        layout = QVBoxLayout(tab)
+
+        top = QHBoxLayout()
+        top.addWidget(QLabel("Node / Channel:"))
+        self.fft_channel_combo = QComboBox(tab)
+        top.addWidget(self.fft_channel_combo, 1)
+
+        self.compute_fft_btn = QPushButton("Compute FFT", tab)
+        self.compute_fft_btn.clicked.connect(self._on_run_fft_clicked)
+        top.addWidget(self.compute_fft_btn)
+        layout.addLayout(top)
+
+        self.fft_canvas = _FFTCanvas(tab)
+        layout.addWidget(self.fft_canvas, 1)
+
+        grp = QGroupBox("Spectrum & Harmonic Distortion Readout", tab)
+        g_layout = QHBoxLayout(grp)
+        self.fft_readout_label = QLabel(
+            "Click 'Compute FFT' (after Waveform Capture) to inspect Fundamental, Peak dBV, and THD%.",
+            tab,
+        )
+        self.fft_readout_label.setWordWrap(True)
+        g_layout.addWidget(self.fft_readout_label)
+        layout.addWidget(grp)
+
+        self.tabs.addTab(tab, "FFT Spectrum")
+
     def refresh_nodes(self, circuit: Circuit | None = None) -> None:
         """Populate probe node selectors from the supplied or current schematic circuit."""
         if circuit is None and self._circuit_provider is not None:
@@ -469,6 +566,16 @@ class BenchtopInstrumentsDialog(QDialog):
             self.bode_node_combo.setCurrentText(prev_bode)
         elif nodes:
             self.bode_node_combo.setCurrentIndex(len(nodes) - 1)
+
+        if hasattr(self, "fft_channel_combo"):
+            prev_fft = self.fft_channel_combo.currentText()
+            self.fft_channel_combo.clear()
+            for n in nodes:
+                self.fft_channel_combo.addItem(n)
+            if prev_fft in nodes:
+                self.fft_channel_combo.setCurrentText(prev_fft)
+            elif nodes:
+                self.fft_channel_combo.setCurrentIndex(len(nodes) - 1)
 
     def _on_channel_assignment_changed(self) -> None:
         for ch_name, cmb in self.ch_combos.items():
@@ -625,6 +732,52 @@ class BenchtopInstrumentsDialog(QDialog):
             self.bode_node_combo.setCurrentText(target_node)
         self._update_bode_cursor_readout()
         return ac_res
+
+    def _on_run_fft_clicked(self) -> None:
+        self.run_fft_analysis()
+
+    def run_fft_analysis(
+        self,
+        times: object | None = None,
+        voltages: object | None = None,
+        *,
+        node: str | None = None,
+    ) -> FFTSpectrumResult | None:
+        """Compute Hann-windowed FFT spectrum & THD% for explicit data or captured transient node."""
+        t_arr = times
+        v_arr = voltages
+        target = node or (
+            self.fft_channel_combo.currentText().strip()
+            if hasattr(self, "fft_channel_combo")
+            else ""
+        )
+        if t_arr is None or v_arr is None:
+            if self.latest_transient is None and self._circuit_provider is not None:
+                self.capture_transient(
+                    self._circuit_provider(),
+                    duration_s=self.duration_ms_spin.value() * 1e-3,
+                    dt_s=self.dt_us_spin.value() * 1e-6,
+                )
+            if self.latest_transient is None:
+                return None
+            tr = self.latest_transient
+            if not target or target not in tr.node_voltages:
+                keys = sorted(k for k in tr.node_voltages if k != "0")
+                target = keys[-1] if keys else ""
+            if not target or target not in tr.node_voltages:
+                return None
+            t_arr = tr.times
+            v_arr = tr.node_voltages[target]
+
+        fft_res = compute_fft_spectrum(t_arr, v_arr)  # type: ignore[arg-type]
+        self.latest_fft_result = fft_res
+        self.fft_canvas.set_spectrum(fft_res)
+        self.fft_readout_label.setText(
+            f"Fundamental: {fft_res.fundamental_freq_hz:.2f} Hz | "
+            f"Peak: {fft_res.peak_dbv:.2f} dBV | "
+            f"THD: {fft_res.thd_percent:.2f}%"
+        )
+        return fft_res
 
     def _update_bode_cursor_readout(self) -> None:
         ac_res = self.latest_ac_result

@@ -76,6 +76,8 @@ class WireItem(QGraphicsObject):
         self.overlay_rgb: tuple[int, int, int] | None = None
         self.dot_velocity: float = 0.0
         self.dot_phase: float = 0.0
+        self.show_probe_badge: bool = False
+        self.probe_badge_text: str = ""
         self._rebuild_paths()
 
         if not is_preview:
@@ -108,6 +110,17 @@ class WireItem(QGraphicsObject):
             return
         self.prepareGeometryChange()
         self.net_label = cleaned
+        self._rebuild_paths()
+        self.update()
+
+    def set_probe_badge(self, enabled: bool, text: str = "") -> None:
+        """Toggle on-canvas live voltage/current probe badge visibility and text."""
+        text_s = str(text or "")
+        if self.show_probe_badge == bool(enabled) and self.probe_badge_text == text_s:
+            return
+        self.prepareGeometryChange()
+        self.show_probe_badge = bool(enabled)
+        self.probe_badge_text = text_s
         self._rebuild_paths()
         self.update()
 
@@ -252,6 +265,10 @@ class WireItem(QGraphicsObject):
             mp = self._polyline_midpoint()
             flag_w = max(36.0, float(len(self.net_label)) * 7.5 + 16.0)
             base_rect = base_rect.united(QRectF(mp.x() - 4.0, mp.y() - 26.0, flag_w + 10.0, 28.0))
+        if self.show_probe_badge and len(self._points) >= 2:
+            mp = self._polyline_midpoint()
+            pill_w = max(92.0, float(len(self.probe_badge_text or "V: -- | I: --")) * 6.8 + 16.0)
+            base_rect = base_rect.united(QRectF(mp.x() - pill_w * 0.5, mp.y() + 6.0, pill_w + 8.0, 24.0))
         self._cached_bounding_rect = base_rect
 
     def boundingRect(self) -> QRectF:
@@ -454,6 +471,25 @@ class WireItem(QGraphicsObject):
                 Qt.AlignmentFlag.AlignCenter,
                 lbl_txt,
             )
+
+        if not self.is_preview and self.show_probe_badge and not suppress_chrome:
+            mp = self._polyline_midpoint()
+            txt = self.probe_badge_text or "V: -- V | I: -- A"
+            pill_w = max(92.0, float(len(txt)) * 6.4 + 16.0)
+            pill_h = 18.0
+            pill_rect = QRectF(mp.x() - pill_w * 0.5, mp.y() + 8.0, pill_w, pill_h)
+            is_dark = self.theme == ThemeMode.DARK
+            fill_c = QColor("#0f172a") if is_dark else QColor("#fffbeb")
+            border_c = QColor("#f59e0b")
+            txt_c = QColor("#fef3c7") if is_dark else QColor("#78350f")
+            painter.setPen(QPen(border_c, 1.3))
+            painter.setBrush(QBrush(fill_c))
+            painter.drawRoundedRect(pill_rect, 4.0, 4.0)
+            pf = QFont("Consolas", 8)
+            pf.setBold(True)
+            painter.setFont(pf)
+            painter.setPen(txt_c)
+            painter.drawText(pill_rect, Qt.AlignmentFlag.AlignCenter, txt)
 
         painter.restore()
 

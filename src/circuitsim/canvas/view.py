@@ -741,6 +741,13 @@ class CircuitView(QGraphicsView):
                 )
             )
             menu.addAction(act_net_lbl)
+            if len(selected_wires) == 1:
+                wid_probe = selected_wires[0].wire_id
+                act_probe = QAction("Toggle Voltage Probe Badge", menu)
+                act_probe.triggered.connect(
+                    lambda wp=wid_probe: self.circuit_scene.toggle_voltage_probe_badge(wp)
+                )
+                menu.addAction(act_probe)
             menu.addSeparator()
 
         act_rotate = QAction("Rotate 90° CW\tR", menu)

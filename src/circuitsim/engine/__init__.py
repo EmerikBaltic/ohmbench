@@ -43,6 +43,10 @@ from circuitsim.engine.ac_analysis import (
     ACFrequencySample,
     run_ac_sweep,
 )
+from circuitsim.engine.fft_analysis import (
+    FFTSpectrumResult,
+    compute_fft_spectrum,
+)
 from circuitsim.engine.sweep import (
     MonteCarloResult,
     MonteCarloTolerance,
@@ -58,6 +62,7 @@ __all__ = [
     "CircuitError",
     "CircuitWarning",
     "ComponentTelemetry",
+    "FFTSpectrumResult",
     "FloatingNodeError",
     "IntegrationMethod",
     "MNASolver",
@@ -79,6 +84,7 @@ __all__ = [
     "TransportControlsViewState",
     "VoltageSourceLoopError",
     "ZeroDelayLoopError",
+    "compute_fft_spectrum",
     "compute_current_dot_velocity",
     "compute_transport_controls_state",
     "evaluate_component_stress",

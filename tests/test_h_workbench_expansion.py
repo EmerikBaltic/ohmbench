@@ -2,15 +2,18 @@
 
 from __future__ import annotations
 
+import ast
 import math
 import os
 import sys
 from pathlib import Path
+import numpy as np
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtCore import QPointF, Qt
 
+from circuitsim.app.instruments_panel import BenchtopInstrumentsDialog
 from circuitsim.app.palette_dock import ComponentPaletteWidget
 from circuitsim.app.sweep_panel import SweepAnalysisDialog
 from circuitsim.app.themes import ThemeMode, build_stylesheet, get_theme_palette
@@ -32,7 +35,12 @@ from circuitsim.components import (
     create_default_component_model,
 )
 from circuitsim.dialogs.mcu_firmware_dialog import MCUFirmwareDialog
-from circuitsim.engine import Circuit, MNASolver, evaluate_component_stress
+from circuitsim.engine import (
+    Circuit,
+    MNASolver,
+    compute_fft_spectrum,
+    evaluate_component_stress,
+)
 from circuitsim.io.kicad_export import export_to_kicad_sch
 from circuitsim.io.share_codec import decode_circuit_share_url, encode_circuit_share_url
 from circuitsim.io.spice_import import (
@@ -506,6 +514,77 @@ def test_h7_named_net_labels_electrical_unification_and_serialization(qapp) -> N
         kicad_txt = export_to_kicad_sch(doc_v2)
         assert '(label "VCC"' in kicad_txt
         assert '(label "V_MID"' in kicad_txt
+    finally:
+        scene.shutdown_scene()
+        qapp.processEvents()
+
+
+def test_h8_fft_spectrum_thd_and_on_canvas_probe_badge(qapp) -> None:
+    """H8: Qt-free FFT/THD engine, FFT Spectrum tab in Instruments, and on-canvas wire probe badges."""
+    # 1. Verify fft_analysis.py is 100% Qt-free
+    fft_path = (
+        Path(__file__).resolve().parent.parent
+        / "src"
+        / "circuitsim"
+        / "engine"
+        / "fft_analysis.py"
+    )
+    tree = ast.parse(fft_path.read_text(encoding="utf-8"))
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                assert not alias.name.startswith(("PySide6", "PyQt")), alias.name
+        elif isinstance(node, ast.ImportFrom) and node.module:
+            assert not node.module.startswith(("PySide6", "PyQt")), node.module
+
+    # 2. Pure 1 kHz sine -> ~1000 Hz fundamental, THD < 0.5%
+    t = np.linspace(0.0, 0.02, 400, endpoint=False)
+    v_pure = np.sin(2.0 * math.pi * 1000.0 * t)
+    res_pure = compute_fft_spectrum(t, v_pure)
+    assert abs(res_pure.fundamental_freq_hz - 1000.0) <= 5.0
+    assert res_pure.thd_percent < 0.5
+
+    # 3. 1 kHz + 10% 3 kHz -> THD = 10.0% (+/- 0.5%)
+    v_dist = np.sin(2.0 * math.pi * 1000.0 * t) + 0.10 * np.sin(2.0 * math.pi * 3000.0 * t)
+    res_dist = compute_fft_spectrum(t, v_dist)
+    assert abs(res_dist.fundamental_freq_hz - 1000.0) <= 5.0
+    assert abs(res_dist.thd_percent - 10.0) <= 0.5
+
+    # 4. BenchtopInstrumentsDialog 3rd tab "FFT Spectrum"
+    dlg = BenchtopInstrumentsDialog()
+    try:
+        assert dlg.tabs.count() >= 3
+        assert "FFT Spectrum" in [dlg.tabs.tabText(i) for i in range(dlg.tabs.count())]
+        out_fft = dlg.run_fft_analysis(t, v_dist)
+        assert out_fft is not None
+        assert "Fundamental:" in dlg.fft_readout_label.text()
+        assert "THD:" in dlg.fft_readout_label.text()
+    finally:
+        dlg.close()
+
+    # 5. On-canvas live Voltage Probe Badge on divider midpoint wire
+    scene = CircuitScene(SymbolLibrary())
+    try:
+        v1 = scene.place_new_component("dc_voltage", QPointF(-160.0, 0.0))
+        v1.component.dc_voltage = 10.0
+        r1 = scene.place_new_component("resistor", QPointF(0.0, -40.0))
+        r1.component.resistance = 1_000.0
+        r2 = scene.place_new_component("resistor", QPointF(0.0, 80.0))
+        r2.component.resistance = 1_000.0
+        gnd = scene.place_new_component("ground", QPointF(0.0, 180.0))
+
+        scene.add_wire(TerminalRef(v1.component.name, "neg"), TerminalRef(gnd.component.name, "gnd"))
+        scene.add_wire(TerminalRef(v1.component.name, "pos"), TerminalRef(r1.component.name, "a"))
+        w_mid = scene.add_wire(TerminalRef(r1.component.name, "b"), TerminalRef(r2.component.name, "a"))
+        scene.add_wire(TerminalRef(r2.component.name, "b"), TerminalRef(gnd.component.name, "gnd"))
+        assert w_mid is not None
+
+        dc_res = MNASolver(scene.build_circuit()).solve_dc()
+        scene.apply_solve_result(dc_res)
+        assert scene.toggle_voltage_probe_badge(w_mid.wire_id) is True
+        assert w_mid.show_probe_badge is True
+        assert "5.00 V" in w_mid.probe_badge_text
+        assert "5 mA" in w_mid.probe_badge_text or "5.00 mA" in w_mid.probe_badge_text
     finally:
         scene.shutdown_scene()
         qapp.processEvents()

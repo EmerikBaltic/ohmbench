@@ -194,12 +194,14 @@ class CircuitScene(QGraphicsScene):
 
         # Live simulation telemetry cache & visual intuition overlays (F3)
         self.latest_node_voltages: dict[str, float] = {}
+        self._last_branch_currents: dict[str, float] = {}
         self.is_simulation_running: bool = False
         self._last_sim_frame: SimulationFrame | None = None
         self.voltage_colors_enabled: bool = False
         self.current_dots_enabled: bool = False
         self.stress_warnings_enabled: bool = True
         self.pinout_labels_enabled: bool = False
+        self.probe_wire_ids: set[str] = set()
         self.latest_stress_reports: dict[str, StressReport] = {}
         self.last_power_probe_text: str = ""
         self._dot_anim_timer = QTimer(self)
@@ -3317,16 +3319,41 @@ class CircuitScene(QGraphicsScene):
         for wire in self._wire_items:
             wire.set_diagnostic(None, "")
 
+    def apply_solve_result(self, result: object) -> None:
+        """Apply telemetry from a direct `SolveResult` onto canvas overlays and probe badges."""
+        self.latest_node_voltages = dict(getattr(result, "node_voltages", {}) or {})
+        self._last_branch_currents = dict(getattr(result, "branch_currents", {}) or {})
+        self.is_simulation_running = bool(self.latest_node_voltages)
+        self._last_sim_frame = None
+        self._refresh_wire_overlays()
+
+    def toggle_voltage_probe_badge(self, wire_id: str) -> bool:
+        """Toggle an on-canvas live voltage/current probe badge on `wire_id`."""
+        if wire_id not in self._wire_items_by_id:
+            return False
+        if wire_id in self.probe_wire_ids:
+            self.probe_wire_ids.discard(wire_id)
+            enabled = False
+        else:
+            self.probe_wire_ids.add(wire_id)
+            enabled = True
+        self._refresh_wire_overlays()
+        return enabled
+
     def apply_simulation_frame(self, frame: SimulationFrame) -> None:
         """Apply telemetry and problem diagnostics from a `SimulationFrame` to canvas items."""
         if frame.state in (SimulationState.STOPPED, SimulationState.ERROR):
             self.latest_node_voltages = {}
+            self._last_branch_currents = {}
             self.is_simulation_running = False
             self._last_sim_frame = None
             for item in self._placed_items:
                 item.reset_live_telemetry()
         else:
             self.latest_node_voltages = dict(frame.node_voltages)
+            self._last_branch_currents = {
+                cname: telem.current for cname, telem in frame.components.items()
+            }
             self.is_simulation_running = True
             self._last_sim_frame = frame
             for item in self._placed_items:
@@ -3452,22 +3479,33 @@ class CircuitScene(QGraphicsScene):
                 )
 
     def _refresh_wire_overlays(self) -> None:
-        if not self.is_simulation_running or self._last_sim_frame is None:
+        self.probe_wire_ids.intersection_update(self._wire_items_by_id.keys())
+        has_live = self.is_simulation_running and bool(
+            self._last_sim_frame is not None or self.latest_node_voltages
+        )
+        if not has_live:
             for wire in self._wire_items:
                 wire.set_overlay_state(
                     voltage_color_enabled=self.voltage_colors_enabled,
                     current_dots_enabled=self.current_dots_enabled,
                     clear_overlay=True,
                 )
+                is_probed = wire.wire_id in self.probe_wire_ids
+                wire.set_probe_badge(is_probed, "V: -- V | I: -- A" if is_probed else "")
             return
 
-        if not self.voltage_colors_enabled and not self.current_dots_enabled:
+        if (
+            not self.voltage_colors_enabled
+            and not self.current_dots_enabled
+            and not self.probe_wire_ids
+        ):
             for wire in self._wire_items:
                 wire.set_overlay_state(
                     voltage_color_enabled=False,
                     current_dots_enabled=False,
                     clear_overlay=True,
                 )
+                wire.set_probe_badge(False, "")
             return
 
         conn = self.extract_connectivity_result()
@@ -3475,19 +3513,26 @@ class CircuitScene(QGraphicsScene):
             it.component.name: tuple(t.name for t in it.metadata.terminals)
             for it in self._placed_items
         }
-        branch_currents = {
-            cname: telem.current
-            for cname, telem in self._last_sim_frame.components.items()
-        }
+        if self._last_sim_frame is not None:
+            branch_currents = {
+                cname: telem.current
+                for cname, telem in self._last_sim_frame.components.items()
+            }
+        else:
+            branch_currents = dict(self._last_branch_currents)
         wire_currents = (
             estimate_wire_currents(self._wire_graph, term_names, branch_currents)
-            if self.current_dots_enabled
+            if (self.current_dots_enabled or self.probe_wire_ids)
             else {}
         )
         for wire in self._wire_items:
             net_name = conn.wire_to_node.get(wire.wire_id)
             rgb = None
-            if self.voltage_colors_enabled and net_name is not None and net_name in self.latest_node_voltages:
+            if (
+                self.voltage_colors_enabled
+                and net_name is not None
+                and net_name in self.latest_node_voltages
+            ):
                 rgb = map_voltage_to_rgb(self.latest_node_voltages[net_name])
             vel = (
                 compute_current_dot_velocity(wire_currents.get(wire.wire_id, 0.0))
@@ -3500,6 +3545,17 @@ class CircuitScene(QGraphicsScene):
                 overlay_rgb=rgb,
                 dot_velocity=vel,
             )
+            if wire.wire_id in self.probe_wire_ids:
+                if net_name is not None and net_name in self.latest_node_voltages:
+                    v_val = float(self.latest_node_voltages[net_name])
+                    i_val = float(wire_currents.get(wire.wire_id, 0.0))
+                    i_str = format_engineering_value(i_val, "A", sig_figs=3)
+                    badge_txt = f"V: {v_val:+.2f} V | I: {i_str}"
+                else:
+                    badge_txt = "V: -- V | I: -- A"
+                wire.set_probe_badge(True, badge_txt)
+            else:
+                wire.set_probe_badge(False, "")
 
     def get_alt_power_probe_text(self, item: ComponentItem) -> str:
         """Compute and format instantaneous `P = V_drop * I_branch` power reading for Alt-hover."""
