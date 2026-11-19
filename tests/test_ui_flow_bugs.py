@@ -484,7 +484,7 @@ def test_e3_vertical_bent_rotated_flipped_and_pass_over_without_drop(
         assert math.isclose(abs(frame_h.components["A2"].current), 0.024, rel_tol=1e-4)
 
         # 3. Single-terminal tap: drop a vertical resistor R_tap at (-100, 160) -> only bottom pin (-100, 200) hits W2!
-        r_tap = scene.place_new_component("resistor", QPointF(-100.0, 280.0), rotation_deg=90)
+        r_tap = scene.place_new_component("resistor", QPointF(-140.0, 280.0), rotation_deg=90)
         qapp.processEvents()
         wires_tap0 = len(scene.wire_graph.wires)
         junc_tap0 = len(scene.wire_graph.junctions)

@@ -119,14 +119,14 @@ def build_stylesheet(palette: ThemePalette) -> str:
         border: 1px solid {palette.selection_accent};
     }}
     QToolButton:checked {{
-        background-color: {'#DBEAFE' if palette.mode == ThemeMode.LIGHT else palette.selection_accent};
-        border: 1px solid {'#1D4ED8' if palette.mode == ThemeMode.LIGHT else palette.selection_accent};
-        color: {'#1D4ED8' if palette.mode == ThemeMode.LIGHT else '#FFFFFF'};
+        background-color: {palette.selection_accent};
+        border: 1px solid {palette.selection_accent};
+        color: #FFFFFF;
     }}
     QToolButton:checked:hover {{
-        background-color: {'#BFDBFE' if palette.mode == ThemeMode.LIGHT else palette.ghost_tint};
-        border: 1px solid {'#1D4ED8' if palette.mode == ThemeMode.LIGHT else palette.selection_accent};
-        color: {'#1D4ED8' if palette.mode == ThemeMode.LIGHT else '#FFFFFF'};
+        background-color: {palette.ghost_tint};
+        border: 1px solid {palette.selection_accent};
+        color: #FFFFFF;
     }}
     QDockWidget {{
         titlebar-close-icon: url(none);
