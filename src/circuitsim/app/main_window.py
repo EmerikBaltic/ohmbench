@@ -1224,7 +1224,10 @@ class MainWindow(QMainWindow):
             comp = dlg.selected_component or dlg.selected_diode
             if comp is not None:
                 center = self.circuit_view.mapToScene(self.circuit_view.viewport().rect().center())
-                item = self.circuit_scene.place_new_component(comp.component_type, center)
+                fx, fy = self.circuit_scene._find_nearest_free_grid_pos(comp.component_type, center.x(), center.y(), 0)
+                item = self.circuit_scene.place_new_component(comp.component_type, QPointF(fx, fy))
+                if item is None:
+                    return
                 for p in comp.get_editable_parameters():
                     try:
                         item.component.set_parameter_value(p.key, comp.get_parameter_value(p.key))
@@ -1480,7 +1483,10 @@ class MainWindow(QMainWindow):
         center_pt = self.circuit_view.mapToScene(
             self.circuit_view.viewport().rect().center()
         )
-        self.circuit_scene.place_new_component(component_id, QPointF(center_pt))
+        fx, fy = self.circuit_scene._find_nearest_free_grid_pos(
+            component_id, center_pt.x(), center_pt.y(), 0
+        )
+        self.circuit_scene.place_new_component(component_id, QPointF(fx, fy))
 
     def _rotate_selected(self) -> None:
         if self.circuit_view.rotate_placement_preview():

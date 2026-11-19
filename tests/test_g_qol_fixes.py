@@ -122,6 +122,7 @@ def test_g4_hotkey_autorepeat_ignored_and_no_overlapping_placement(qapp) -> None
         qapp.processEvents()
         assert view.placing_component_type == "resistor"
 
+        # Repeated clicks on occupied origin are blocked (I1 owner rule: no brick pile!)
         for idx in range(10):
             # Send auto-repeat R presses too to simulate holding the key down
             hold_ev = QKeyEvent(
@@ -136,27 +137,16 @@ def test_g4_hotkey_autorepeat_ignored_and_no_overlapping_placement(qapp) -> None
             click_viewport(view, vp_origin)
         qapp.processEvents()
 
-        assert len(scene.placed_items) == 10
-        rects = [
-            scene._component_body_rect_at(
-                it.component.component_type, it.pos().x(), it.pos().y(), it.rotation_deg
-            )
-            for it in scene.placed_items
-        ]
-        for i in range(len(rects)):
-            for j in range(i + 1, len(rects)):
-                assert not rects[i].intersects(rects[j]), (
-                    f"Components {i} and {j} overlap: {rects[i]} vs {rects[j]}"
-                )
+        assert len(scene.placed_items) == 1
 
-        # Also verify drag-drop onto an existing non-voltmeter body snaps away cleanly
-        r0, r1 = scene.placed_items[0], scene.placed_items[1]
+        # Drag-drop onto an existing non-voltmeter body reverts cleanly back to start position
+        r0 = scene.placed_items[0]
+        r1 = scene.place_new_component("resistor", QPointF(0.0, 120.0))
+        assert r1 is not None
         scene.begin_component_move_tracking()
         r1.setPos(r0.pos())
-        scene.commit_component_move_tracking()
-        rect0 = scene._component_body_rect_at(r0.component.component_type, r0.pos().x(), r0.pos().y(), r0.rotation_deg)
-        rect1 = scene._component_body_rect_at(r1.component.component_type, r1.pos().x(), r1.pos().y(), r1.rotation_deg)
-        assert not rect0.intersects(rect1)
+        assert scene.commit_component_move_tracking() is False
+        assert (r1.pos().x(), r1.pos().y()) == (0.0, 120.0)
     finally:
         view.close()
         scene.shutdown_scene()

@@ -428,8 +428,9 @@ class CircuitView(QGraphicsView):
                     scene_pt,
                     rotation_deg=self._placing_rotation_deg,
                 )
-                self.circuit_scene.clearSelection()
-                placed.setSelected(True)
+                if placed is not None:
+                    self.circuit_scene.clearSelection()
+                    placed.setSelected(True)
                 self.circuit_scene.show_ghost_preview(
                     self._placing_component_type,
                     scene_pt,
@@ -976,7 +977,10 @@ class CircuitView(QGraphicsView):
             comp_id = bytes(event.mimeData().data(MIME_COMPONENT_ID)).decode("utf-8")
             scene_pos = self.mapToScene(event.position().toPoint())
             self.circuit_scene.hide_ghost_preview()
-            self.circuit_scene.place_new_component(comp_id, scene_pos)
+            placed = self.circuit_scene.place_new_component(comp_id, scene_pos)
+            if placed is not None:
+                self.circuit_scene.clearSelection()
+                placed.setSelected(True)
             event.acceptProposedAction()
             self.setFocus()
             return

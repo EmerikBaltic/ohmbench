@@ -2,7 +2,7 @@
 
 ## PHASE I QUEUE (QOL FIXES, LIGHT THEME, 555/POWER/DIGITAL, CURVE TRACER & BOM)
 - [x] `I0` (`done`): Initialized Phase I queue in `PROGRESS.md`, verified clean `wire-redesign` tree at `checkpoint/H-done` (`312f59e`), and created `tests/test_i_advanced_workbench.py` with offscreen Qt scaffolding.
-- [ ] `I1` (`todo`): Permanently fix component stacking & half-overlap (full-span footprint check, block overlapping interactive clicks/drops, revert overlapping drags).
+- [x] `I1` (`done`): Fixed half-overlapping component stacking by replacing the inset body box with `_component_footprint_rect_at` / `_has_component_collision` (2 px tip inset -> 76x36 px collision span on 80x40 parts plus terminal-in-interior check), blocking overlapping interactive/drop placements (except G7 overlaid voltmeters) and reverting colliding drags in `commit_component_move_tracking()`. Updated `main_window.py` & `view.py` callers and added `test_i1_full_span_collision_blocks_overlap_allows_series_and_reverts_drag`. Note: `test_g4: spiral-offset 10 stacked clicks / snap-away drag -> block overlapping placement (count stays 1) & revert overlapping drag to start position (I1 owner rule)`.
 - [ ] `I2` (`todo`): Explain overload / stress `!` badges in Problems panel, Properties/Info panel banner, and live hover tooltips.
 - [ ] `I3` (`todo`): Overhaul Light Theme contrast (`LIGHT_PALETTE`, `QDockWidget::title`) and sync Properties panel shortcut help text with `AppSettings.shortcuts`.
 - [ ] `I4` (`todo`): Add 555 Timer IC (`ne555`) & Voltage Comparator (`comparator`) with MNA stamps, latch/astable oscillation, IEC symbols & palette entries.

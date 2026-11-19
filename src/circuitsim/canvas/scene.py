@@ -677,6 +677,22 @@ class CircuitScene(QGraphicsScene):
             self.removeItem(self._ghost_item)
             self._ghost_item = None
 
+    def _component_footprint_rect_at(
+        self,
+        component_id: str,
+        cx: float,
+        cy: float,
+        rotation_deg: int = 0,
+    ) -> QRectF:
+        """Full terminal-to-terminal collision footprint (inset 2 px at tips, >=36 px thick)."""
+        meta = self.symbol_library.get_metadata(component_id)
+        raw_w, raw_h = meta.pixel_size
+        rw = max(36.0, float(raw_w) - 4.0)
+        rh = max(36.0, float(raw_h) - 4.0)
+        if rotation_deg in (90, 270):
+            rw, rh = rh, rw
+        return QRectF(float(cx) - rw / 2.0, float(cy) - rh / 2.0, rw, rh)
+
     def _component_body_rect_at(
         self,
         component_id: str,
@@ -684,16 +700,55 @@ class CircuitScene(QGraphicsScene):
         cy: float,
         rotation_deg: int = 0,
     ) -> QRectF:
+        return self._component_footprint_rect_at(component_id, cx, cy, rotation_deg)
+
+    def _has_component_collision(
+        self,
+        component_id: str,
+        cx: float,
+        cy: float,
+        rotation_deg: int = 0,
+        flipped_h: bool = False,
+        *,
+        exclude: set[ComponentItem] | None = None,
+    ) -> bool:
+        """Return True if candidate footprint or its terminals overlap any non-excluded component."""
+        cand = self._component_footprint_rect_at(component_id, cx, cy, rotation_deg)
+        excl = exclude or set()
         meta = self.symbol_library.get_metadata(component_id)
-        raw_w, raw_h = meta.pixel_size
-        # Inset terminal lead extensions (>= 80 px axis) so touching pins at corners do not collide
-        inset_x = 22.0 if raw_w >= 80 else 2.0
-        inset_y = 22.0 if raw_h >= 80 else 2.0
-        rw = max(12.0, float(raw_w) - 2.0 * inset_x)
-        rh = max(12.0, float(raw_h) - 2.0 * inset_y)
-        if rotation_deg in (90, 270):
-            rw, rh = rh, rw
-        return QRectF(float(cx) - rw / 2.0, float(cy) - rh / 2.0, rw, rh)
+        cand_terms = [
+            normalize_point_px(
+                transform_terminal_position(
+                    t.grid_pos,
+                    (cx, cy),
+                    rotation_deg=rotation_deg,
+                    flipped_h=flipped_h,
+                    grid_px=GRID_PITCH_PX,
+                ),
+                snap=True,
+            )
+            for t in meta.terminals
+        ]
+
+        def _strictly_inside(r: QRectF, pt: tuple[int, int]) -> bool:
+            return r.left() < float(pt[0]) < r.right() and r.top() < float(pt[1]) < r.bottom()
+
+        for existing in self._placed_items:
+            if existing in excl:
+                continue
+            other = self._component_footprint_rect_at(
+                existing.component.component_type,
+                existing.pos().x(),
+                existing.pos().y(),
+                existing.rotation_deg,
+            )
+            if cand.intersects(other):
+                return True
+            if any(_strictly_inside(other, pt) for pt in cand_terms):
+                return True
+            if any(_strictly_inside(cand, opt) for opt in existing.terminal_scene_positions_px().values()):
+                return True
+        return False
 
     def _overlaps_any_component_body(
         self,
@@ -704,20 +759,9 @@ class CircuitScene(QGraphicsScene):
         *,
         exclude: set[ComponentItem] | None = None,
     ) -> bool:
-        cand = self._component_body_rect_at(component_id, cx, cy, rotation_deg)
-        excl = exclude or set()
-        for existing in self._placed_items:
-            if existing in excl:
-                continue
-            other = self._component_body_rect_at(
-                existing.component.component_type,
-                existing.pos().x(),
-                existing.pos().y(),
-                existing.rotation_deg,
-            )
-            if cand.intersects(other):
-                return True
-        return False
+        return self._has_component_collision(
+            component_id, cx, cy, rotation_deg, False, exclude=exclude
+        )
 
     def _find_nearest_free_grid_pos(
         self,
@@ -729,13 +773,13 @@ class CircuitScene(QGraphicsScene):
         exclude: set[ComponentItem] | None = None,
     ) -> tuple[float, float]:
         sx, sy = snap_to_grid(cx, cy, GRID_PITCH_PX)
-        if component_id == "voltmeter" or not self._overlaps_any_component_body(
-            component_id, sx, sy, rotation_deg, exclude=exclude
+        if not self._has_component_collision(
+            component_id, sx, sy, rotation_deg, False, exclude=exclude
         ):
             return (sx, sy)
         best: tuple[float, float] | None = None
         best_dist2 = float("inf")
-        # Search grid offsets outward (step=20 px) preferring +(60, 0) / +(0, 60) nearest cells
+        # Search grid offsets outward (step=20 px) preferring closest non-colliding slot
         for ring in range(1, 20):
             for dx_g in range(-ring, ring + 1):
                 for dy_g in range(-ring, ring + 1):
@@ -746,8 +790,8 @@ class CircuitScene(QGraphicsScene):
                     d2 = (tx - sx) ** 2 + (ty - sy) ** 2
                     if d2 >= best_dist2:
                         continue
-                    if not self._overlaps_any_component_body(
-                        component_id, tx, ty, rotation_deg, exclude=exclude
+                    if not self._has_component_collision(
+                        component_id, tx, ty, rotation_deg, False, exclude=exclude
                     ):
                         best = (tx, ty)
                         best_dist2 = d2
@@ -762,8 +806,16 @@ class CircuitScene(QGraphicsScene):
         *,
         rotation_deg: int = 0,
         flipped_h: bool = False,
-    ) -> ComponentItem:
-        """Instantiate and place a new component snapped to the grid via `QUndoStack`."""
+    ) -> ComponentItem | None:
+        """Instantiate and place a new component snapped to the grid via `QUndoStack`.
+
+        Blocks overlapping placements (returning `None` and emitting a status notice),
+        except when a `voltmeter` overlays a 2-terminal target for G7 parallel auto-wiring.
+        """
+        px = scene_pos[0] if isinstance(scene_pos, (tuple, list)) else scene_pos.x()
+        py = scene_pos[1] if isinstance(scene_pos, (tuple, list)) else scene_pos.y()
+        sx, sy = snap_to_grid(px, py, GRID_PITCH_PX)
+
         name = self.next_component_name(component_id)
         model = create_default_component_model(component_id, name)
         if component_id in ("voltmeter", "ammeter"):
@@ -780,22 +832,26 @@ class CircuitScene(QGraphicsScene):
             theme=self.theme,
             is_ghost=False,
         )
-        px = scene_pos[0] if isinstance(scene_pos, (tuple, list)) else scene_pos.x()
-        py = scene_pos[1] if isinstance(scene_pos, (tuple, list)) else scene_pos.y()
-        sx, sy = self._find_nearest_free_grid_pos(component_id, px, py, rotation_deg)
         item.setPos(sx, sy)
         if rotation_deg:
             item.set_rotation_deg(rotation_deg)
         if flipped_h:
             item.set_flipped_h(flipped_h)
 
-        self._record_pin_to_pin_bonds_for(item, self._placed_items)
-        old_graph = self._wire_graph
         overlay = (
             self._find_overlaid_2terminal_target(item, (sx, sy), self._placed_items)
             if component_id == "voltmeter"
             else None
         )
+        if overlay is None and self._has_component_collision(
+            component_id, sx, sy, rotation_deg, flipped_h
+        ):
+            self.last_status_notice = "Cannot place component on top of an existing component"
+            self.status_notice.emit(self.last_status_notice)
+            return None
+
+        self._record_pin_to_pin_bonds_for(item, self._placed_items)
+        old_graph = self._wire_graph
         if overlay is not None:
             new_graph = self._connect_voltmeter_parallel_with(
                 item, overlay[0], overlay[1], overlay[2], old_graph
@@ -2693,30 +2749,41 @@ class CircuitScene(QGraphicsScene):
             self.update_label_positions()
             return False
 
-        # G4: Prevent non-voltmeter single/batch drag drops from landing overlapped on another body
+        # I1: Revert colliding drags of non-voltmeter parts (or non-overlaid voltmeters) back to start
         excl_moved = set(moved_new.keys())
-        self._suppress_live_reroute = True
-        try:
-            for item in list(moved_new.keys()):
-                if item.component.component_type == "voltmeter":
+        collided = False
+        for item, (cur_x, cur_y) in moved_new.items():
+            if item.component.component_type == "voltmeter":
+                if (
+                    self._find_overlaid_2terminal_target(
+                        item, (cur_x, cur_y), [c for c in self._placed_items if c not in excl_moved]
+                    )
+                    is not None
+                ):
                     continue
-                cur_x, cur_y = moved_new[item]
-                free_x, free_y = self._find_nearest_free_grid_pos(
-                    item.component.component_type,
-                    cur_x,
-                    cur_y,
-                    item.rotation_deg,
-                    exclude=excl_moved,
-                )
-                if (free_x, free_y) != (cur_x, cur_y):
-                    item.setPos(free_x, free_y)
-                    moved_new[item] = (free_x, free_y)
-            moved_items = [
-                (item, moved_old[item], moved_new[item])
-                for item in moved_new
-            ]
-        finally:
-            self._suppress_live_reroute = False
+            if self._has_component_collision(
+                item.component.component_type,
+                cur_x,
+                cur_y,
+                item.rotation_deg,
+                item.flipped_h,
+                exclude=excl_moved,
+            ):
+                collided = True
+                break
+        if collided:
+            self._suppress_live_reroute = True
+            try:
+                for item, old_pos in moved_old.items():
+                    item.setPos(old_pos[0], old_pos[1])
+                self._wire_graph = self._move_start_graph
+                self._sync_graphics_from_wire_graph(frozen_polylines=pre_drop_polylines)
+                self.update_label_positions()
+            finally:
+                self._suppress_live_reroute = False
+            self.last_status_notice = "Cannot place component on top of an existing component"
+            self.status_notice.emit(self.last_status_notice)
+            return False
 
         target_graph = self._moved_graph_from_drag_start(moved_items)
         if len(moved_items) == 1:
