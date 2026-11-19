@@ -27,7 +27,7 @@ from PySide6.QtWidgets import (
 
 from circuitsim.app.palette_dock import ComponentPaletteWidget
 from circuitsim.app.problems_panel import ProblemsDock
-from circuitsim.app.settings import AppSettings
+from circuitsim.app.settings import AppSettings, DEFAULT_SHORTCUTS
 from circuitsim.app.sim_worker import SimulationWorkerController
 from circuitsim.app.themes import ThemeMode, build_stylesheet, get_theme_palette
 from circuitsim.app_info import (
@@ -73,28 +73,45 @@ from circuitsim.engine.simulation_session import (
     compute_transport_controls_state,
 )
 
-DEFAULT_SHORTCUTS_HELP_TEXT: str = (
-    "No component selected.\n\n"
-    "KEYBOARD & MOUSE SHORTCUTS:\n"
-    "• Place part: Drag from Palette (or double-click)\n"
-    "• Edit values live: Double-click any component\n"
-    "• Toggle switch: Click switch on canvas\n"
-    "• Draw wire: Drag from any terminal (or press W)\n"
-    "• Cancel wire / Deselect: Esc (or Right-click)\n"
-    "• Toggle junction dot: J (at cursor) or Right-click\n"
-    "• Rotate 90° CW: R\n"
-    "• Flip horizontal: F\n"
-    "• Delete selection: Del or Backspace\n"
-    "• Cut / Copy / Paste: Ctrl+X / Ctrl+C / Ctrl+V\n"
-    "• Undo / Redo: Ctrl+Z / Ctrl+Y\n"
-    "• Run / Resume: F5\n"
-    "• Pause: F6\n"
-    "• Stop: Shift+F5\n"
-    "• Zoom to fit: Ctrl+0\n"
-    "• Zoom: Mouse wheel (Ctrl++ / Ctrl+-)\n"
-    "• Pan canvas: Middle-drag or Space + Left-drag\n"
-    "• Toggle Dark/Light theme: Ctrl+T"
-)
+def format_shortcuts_help_text(shortcuts: dict[str, str] | None = None) -> str:
+    """Build the Properties-panel keyboard shortcut guide synced to active settings."""
+    sc = dict(DEFAULT_SHORTCUTS)
+    if shortcuts:
+        sc.update(shortcuts)
+
+    def _key(action_id: str) -> str:
+        val = str(sc.get(action_id, DEFAULT_SHORTCUTS.get(action_id, "")) or "").strip()
+        return val or "None"
+
+    return (
+        "No component selected.\n\n"
+        "KEYBOARD & MOUSE SHORTCUTS:\n"
+        "• Place part: Drag from Palette (or double-click)\n"
+        "• Edit values live: Double-click any component\n"
+        "• Toggle switch: Click switch on canvas\n"
+        f"• Draw wire: Drag from any terminal (or press {_key('wire_mode')})\n"
+        "• Cancel wire / Deselect: Esc (or Right-click)\n"
+        f"• Toggle junction dot: {_key('junction')} (at cursor) or Right-click\n"
+        f"• Rotate 90° CW: {_key('rotate')}\n"
+        f"• Flip horizontal: {_key('flip')}\n"
+        f"• Delete selection: {_key('delete')} or Backspace\n"
+        "• Cut / Copy / Paste: Ctrl+X / Ctrl+C / Ctrl+V\n"
+        "• Undo / Redo: Ctrl+Z / Ctrl+Y\n"
+        "• Run / Resume: F5\n"
+        "• Pause: F6\n"
+        "• Stop: Shift+F5\n"
+        "• Zoom to fit: Ctrl+0\n"
+        "• Zoom: Mouse wheel (Ctrl++ / Ctrl+-)\n"
+        "• Pan canvas: Middle-drag or Space + Left-drag\n"
+        "• Toggle Dark/Light theme: Ctrl+T\n\n"
+        "QUICK PLACEMENT HOTKEYS:\n"
+        f"• Resistor: {_key('place_resistor')}  |  Capacitor: {_key('place_capacitor')}  |  Inductor: {_key('place_inductor')}\n"
+        f"• Diode/LED: {_key('place_diode')}  |  DC V: {_key('place_dc_voltage')}  |  DC I: {_key('place_dc_current')}\n"
+        f"• Ground: {_key('place_ground')}  |  Voltmeter: {_key('place_voltmeter')}  |  Ammeter: {_key('place_ammeter')}"
+    )
+
+
+DEFAULT_SHORTCUTS_HELP_TEXT: str = format_shortcuts_help_text()
 
 
 class _ExamplesActionList(list):
@@ -626,7 +643,7 @@ class MainWindow(QMainWindow):
         info_container = QWidget()
         info_layout = QVBoxLayout(info_container)
         info_layout.setContentsMargins(10, 10, 10, 10)
-        self.info_label = QLabel(DEFAULT_SHORTCUTS_HELP_TEXT)
+        self.info_label = QLabel(self.get_shortcuts_help_text())
         self.info_label.setWordWrap(True)
         self.info_label.setAlignment(
             Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft
@@ -1060,6 +1077,19 @@ class MainWindow(QMainWindow):
                 key_hint = sc.get(act_key, "")
                 act.setIconText(key_hint or cid[0].upper())
                 act.setToolTip(f"Place {cid} (Canvas key: {key_hint or 'None'})")
+        if (
+            hasattr(self, "info_label")
+            and hasattr(self, "circuit_scene")
+            and not any(
+                isinstance(it, ComponentItem)
+                for it in self.circuit_scene.selectedItems()
+            )
+        ):
+            self.info_label.setText(self.get_shortcuts_help_text())
+
+    def get_shortcuts_help_text(self) -> str:
+        """Return empty-selection help text synced to the user's configured shortcuts."""
+        return format_shortcuts_help_text(self.settings.shortcuts)
 
     def _open_preferences_dialog(self) -> None:
         dlg = PreferencesDialog(self.settings, self)
@@ -1590,7 +1620,7 @@ class MainWindow(QMainWindow):
     def _update_info_panel(self, item: ComponentItem | None) -> None:
         self._update_status_counts()
         if item is None:
-            self.info_label.setText(DEFAULT_SHORTCUTS_HELP_TEXT)
+            self.info_label.setText(self.get_shortcuts_help_text())
             return
 
         comp = item.component

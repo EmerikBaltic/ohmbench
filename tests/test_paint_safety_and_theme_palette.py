@@ -307,5 +307,27 @@ def test_paint_safety_guard_on_component_wire_and_junction(qapp) -> None:
         shutil.rmtree(tmp_dir, ignore_errors=True)
 
 
+def test_light_theme_contrast_and_dock_title_styling() -> None:
+    """I3: Light Theme uses distinct matte tones and explicit light QDockWidget::title styling."""
+    from circuitsim.app.themes import LIGHT_PALETTE, build_stylesheet
+
+    assert LIGHT_PALETTE.window_bg.upper() != "#FFFFFF"
+    assert LIGHT_PALETTE.panel_bg.upper() != "#FFFFFF"
+    assert LIGHT_PALETTE.canvas_bg.upper() != "#FFFFFF"
+    assert len(
+        {
+            LIGHT_PALETTE.window_bg.upper(),
+            LIGHT_PALETTE.panel_bg.upper(),
+            LIGHT_PALETTE.canvas_bg.upper(),
+        }
+    ) == 3
+
+    css = build_stylesheet(LIGHT_PALETTE)
+    assert "QDockWidget::title" in css
+    assert "#DCE2EA" in css
+    assert "#FFFFFF" in css  # Crisp light button/input face contrast against matte panel
+
+
+
 
 

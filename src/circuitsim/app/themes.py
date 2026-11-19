@@ -54,20 +54,20 @@ DARK_PALETTE = ThemePalette(
 
 LIGHT_PALETTE = ThemePalette(
     mode=ThemeMode.LIGHT,
-    window_bg="#F6F8FA",
-    panel_bg="#FFFFFF",
-    canvas_bg="#FFFFFF",
-    grid_minor="#EAEEF2",
-    grid_major="#D0D7DE",
-    grid_origin="#0969DA",
-    symbol_stroke="#1F2328",
-    symbol_text="#24292F",
-    symbol_label="#57606A",
-    terminal_dot="#0969DA",
-    terminal_hover="#CF222E",
-    selection_accent="#0969DA",
-    ghost_tint="#0969DA",
-    border_color="#D0D7DE",
+    window_bg="#E8ECF1",
+    panel_bg="#F4F6F9",
+    canvas_bg="#F7F8FA",
+    grid_minor="#E1E6ED",
+    grid_major="#C8D1DC",
+    grid_origin="#2563EB",
+    symbol_stroke="#111827",
+    symbol_text="#1E293B",
+    symbol_label="#475569",
+    terminal_dot="#2563EB",
+    terminal_hover="#DC2626",
+    selection_accent="#2563EB",
+    ghost_tint="#3B82F6",
+    border_color="#B8C2CE",
 )
 
 
@@ -115,38 +115,44 @@ def build_stylesheet(palette: ThemePalette) -> str:
         padding: 3px 6px;
     }}
     QToolButton:hover {{
+        background-color: {'#DCE6F5' if palette.mode == ThemeMode.LIGHT else palette.panel_bg};
         border: 1px solid {palette.selection_accent};
     }}
     QToolButton:checked {{
-        background-color: {palette.selection_accent};
-        border: 1px solid {palette.selection_accent};
-        color: #FFFFFF;
+        background-color: {'#DBEAFE' if palette.mode == ThemeMode.LIGHT else palette.selection_accent};
+        border: 1px solid {'#1D4ED8' if palette.mode == ThemeMode.LIGHT else palette.selection_accent};
+        color: {'#1D4ED8' if palette.mode == ThemeMode.LIGHT else '#FFFFFF'};
     }}
     QToolButton:checked:hover {{
-        background-color: {palette.ghost_tint};
-        border: 1px solid {palette.selection_accent};
-        color: #FFFFFF;
+        background-color: {'#BFDBFE' if palette.mode == ThemeMode.LIGHT else palette.ghost_tint};
+        border: 1px solid {'#1D4ED8' if palette.mode == ThemeMode.LIGHT else palette.selection_accent};
+        color: {'#1D4ED8' if palette.mode == ThemeMode.LIGHT else '#FFFFFF'};
     }}
     QDockWidget {{
         titlebar-close-icon: url(none);
         font-weight: 600;
     }}
     QDockWidget::title {{
-        background-color: {palette.panel_bg};
+        background-color: {'#DCE2EA' if palette.mode == ThemeMode.LIGHT else palette.panel_bg};
+        color: {palette.symbol_text};
         padding: 6px 10px;
         border: 1px solid {palette.border_color};
     }}
     QLineEdit, QTreeWidget, QListWidget, QTextEdit {{
-        background-color: {palette.panel_bg};
+        background-color: {'#FFFFFF' if palette.mode == ThemeMode.LIGHT else palette.panel_bg};
         border: 1px solid {palette.border_color};
         border-radius: 4px;
         padding: 4px;
     }}
     QPushButton {{
-        background-color: {palette.panel_bg};
+        background-color: {'#FFFFFF' if palette.mode == ThemeMode.LIGHT else palette.panel_bg};
         border: 1px solid {palette.border_color};
         border-radius: 4px;
         padding: 4px 10px;
+    }}
+    QPushButton:hover {{
+        background-color: {'#DCE6F5' if palette.mode == ThemeMode.LIGHT else palette.border_color};
+        border: 1px solid {palette.selection_accent};
     }}
     QPushButton:hover {{
         border: 1px solid {palette.selection_accent};

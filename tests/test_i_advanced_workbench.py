@@ -124,3 +124,51 @@ def test_i2_overload_badge_populates_problems_panel_tooltip_and_inspector(qapp, 
         win.circuit_scene.undo_stack.setClean()
         win.close()
         qapp.processEvents()
+
+
+def test_i3_light_theme_contrast_dock_title_and_synced_shortcuts_help(qapp, tmp_path, monkeypatch) -> None:
+    """I3: Balanced matte Light Theme contrast, QDockWidget::title light styling, and dynamic shortcuts help."""
+    from circuitsim.app.main_window import MainWindow
+    from circuitsim.app.themes import LIGHT_PALETTE, ThemeMode, build_stylesheet, get_theme_palette
+
+    monkeypatch.setenv("OHMBENCH_DATA_DIR", str(tmp_path))
+
+    # (a) Distinct non-glaring Light Theme tokens and styled QDockWidget::title
+    assert LIGHT_PALETTE.window_bg.upper() != "#FFFFFF"
+    assert LIGHT_PALETTE.panel_bg.upper() != "#FFFFFF"
+    assert LIGHT_PALETTE.canvas_bg.upper() != "#FFFFFF"
+    assert len(
+        {
+            LIGHT_PALETTE.window_bg.upper(),
+            LIGHT_PALETTE.panel_bg.upper(),
+            LIGHT_PALETTE.canvas_bg.upper(),
+        }
+    ) == 3
+    assert LIGHT_PALETTE.grid_minor.upper() != LIGHT_PALETTE.grid_major.upper()
+
+    light_qss = build_stylesheet(LIGHT_PALETTE)
+    assert "QDockWidget::title" in light_qss
+    assert "#DCE2EA" in light_qss
+    assert "#1E1E1E" not in light_qss
+
+    # (b) Properties / Info panel shortcut text matches AppSettings.shortcuts dynamically
+    win = MainWindow()
+    try:
+        win.apply_theme(ThemeMode.LIGHT)
+        assert win.circuit_scene.theme == ThemeMode.LIGHT
+        assert get_theme_palette(win.circuit_scene.theme) is LIGHT_PALETTE
+        assert "#DCE2EA" in win.styleSheet()
+        default_help = win.info_label.text()
+        assert "Rotate 90° CW: Ctrl+R" in default_help
+        assert "Rotate 90° CW: R\n" not in default_help
+        assert "Resistor: R" in default_help
+
+        win.settings.set_shortcut("rotate", "Alt+R")
+        win.apply_shortcuts()
+        qapp.processEvents()
+        updated_help = win.info_label.text()
+        assert "Rotate 90° CW: Alt+R" in updated_help
+    finally:
+        win.circuit_scene.undo_stack.setClean()
+        win.close()
+        qapp.processEvents()
