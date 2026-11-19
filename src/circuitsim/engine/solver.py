@@ -25,6 +25,7 @@ from circuitsim.components.opamp import OpAmp
 from circuitsim.components.potentiometer import Potentiometer
 from circuitsim.components.power import Fuse, SPDTRelay, Transformer
 from circuitsim.components.resistor import Resistor
+from circuitsim.components.sequential import DigitalSequentialBlock
 from circuitsim.components.sources import (
     ACVoltageSource,
     DCCurrentSource,
@@ -60,6 +61,7 @@ _TAG_NE555 = 20
 _TAG_FUSE = 21
 _TAG_TRANSFORMER = 22
 _TAG_RELAY = 23
+_TAG_SEQUENTIAL = 24
 
 
 class IntegrationMethod(str, Enum):
@@ -207,6 +209,7 @@ class MNASolver:
         self._bucket_fuses: tuple[Fuse, ...] = ()
         self._bucket_transformers: tuple[Transformer, ...] = ()
         self._bucket_relays: tuple[SPDTRelay, ...] = ()
+        self._bucket_sequential: tuple[DigitalSequentialBlock, ...] = ()
 
     def invalidate_cache(self) -> None:
         """Force the solver to rebuild and re-factorize the MNA matrix on next solve."""
@@ -240,6 +243,7 @@ class MNASolver:
         fuses: list[Fuse] = []
         transformers: list[Transformer] = []
         relays: list[SPDTRelay] = []
+        sequential_blocks: list[DigitalSequentialBlock] = []
 
         for comp in raw_comps:
             if isinstance(comp, Ground):
@@ -307,6 +311,10 @@ class MNASolver:
             elif isinstance(comp, SPDTRelay):
                 tagged.append((comp, _TAG_RELAY))
                 relays.append(comp)
+            elif isinstance(comp, DigitalSequentialBlock):
+                tagged.append((comp, _TAG_SEQUENTIAL))
+                rhs_tagged.append((comp, _TAG_SEQUENTIAL))
+                sequential_blocks.append(comp)
             elif isinstance(comp, Potentiometer):
                 tagged.append((comp, _TAG_POTENTIOMETER))
             elif isinstance(comp, DCVoltageSource):
@@ -339,6 +347,7 @@ class MNASolver:
         self._bucket_fuses = tuple(fuses)
         self._bucket_transformers = tuple(transformers)
         self._bucket_relays = tuple(relays)
+        self._bucket_sequential = tuple(sequential_blocks)
         self._buckets_len = len(tagged)
         self._buckets_version = circ_ver
 
@@ -501,7 +510,7 @@ class MNASolver:
                 sig.append(comp.dc_conductance)
             elif isinstance(comp, LogicGate):
                 sig.extend((comp.g_in, comp.g_out))
-            elif isinstance(comp, MCUBlock):
+            elif isinstance(comp, (MCUBlock, DigitalSequentialBlock)):
                 sig.extend(comp.pin_conductance(p) for p in comp.pin_names)
             elif isinstance(comp, NE555):
                 sig.extend(
@@ -552,7 +561,7 @@ class MNASolver:
                 sig.append(comp.operating_vd)
             elif tag == _TAG_LOGIC_GATE:
                 sig.extend((comp.g_in, comp.g_out))
-            elif tag == _TAG_MCU:
+            elif tag in (_TAG_MCU, _TAG_SEQUENTIAL):
                 sig.extend(comp.pin_conductance(p) for p in comp.pin_names)
             elif tag == _TAG_NE555:
                 sig.extend(
@@ -649,7 +658,7 @@ class MNASolver:
                 idx_out = self._node_to_idx.get(comp.output_node)
                 if idx_out is not None:
                     matrix_a[idx_out, idx_out] += comp.g_out
-            elif isinstance(comp, MCUBlock):
+            elif isinstance(comp, (MCUBlock, DigitalSequentialBlock)):
                 for pin, p_node in zip(comp.pin_names, comp.nodes):
                     idx_p = self._node_to_idx.get(p_node)
                     if idx_p is not None:
@@ -831,7 +840,7 @@ class MNASolver:
                 idx_out = self._node_to_idx.get(comp.output_node)
                 if idx_out is not None:
                     rhs_b[idx_out] += comp.g_out * comp.drive_voltage * source_scale
-            elif isinstance(comp, MCUBlock):
+            elif isinstance(comp, (MCUBlock, DigitalSequentialBlock)):
                 for pin, p_node in zip(comp.pin_names, comp.nodes):
                     if comp.is_output_pin(pin):
                         idx_p = self._node_to_idx.get(p_node)
@@ -917,7 +926,7 @@ class MNASolver:
                 idx_out = node_to_idx.get(comp.output_node)
                 if idx_out is not None:
                     rhs_b[idx_out] += comp.g_out * comp.drive_voltage * source_scale
-            elif tag == _TAG_MCU:
+            elif tag in (_TAG_MCU, _TAG_SEQUENTIAL):
                 for pin, p_node in zip(comp.pin_names, comp.nodes):
                     if comp.is_output_pin(pin):
                         idx_p = node_to_idx.get(p_node)
@@ -1364,6 +1373,30 @@ class MNASolver:
         mcu.voltage = node_voltages.get(mcu.nodes[2], 0.0)  # D0 output node voltage
         mcu.current = primary_i
         mcu.power = total_power
+        return primary_i
+
+    @staticmethod
+    def _update_sequential_telemetry(seq: DigitalSequentialBlock, node_voltages: dict[str, float]) -> float:
+        """Update sequential digital / 7-seg telemetry and return primary output current."""
+        total_power = 0.0
+        primary_i = 0.0
+        primary_v = node_voltages.get(seq.nodes[0], 0.0) if seq.nodes else 0.0
+        first_out_seen = False
+        for pin, p_node in zip(seq.pin_names, seq.nodes):
+            v_p = node_voltages.get(p_node, 0.0)
+            g_p = seq.pin_conductance(pin)
+            if seq.is_output_pin(pin):
+                i_out = (seq.drive_voltage(pin) - v_p) * g_p
+                total_power += abs((seq.drive_voltage(pin) - v_p) * i_out)
+                if not first_out_seen:
+                    first_out_seen = True
+                    primary_i = i_out
+                    primary_v = v_p
+            else:
+                total_power += (v_p**2) * g_p
+        seq.voltage = primary_v
+        seq.current = primary_i
+        seq.power = total_power
         return primary_i
 
     @staticmethod
@@ -1902,7 +1935,8 @@ class MNASolver:
         ne555_ics = self._bucket_ne555
         relays = self._bucket_relays
         fuses = self._bucket_fuses
-        has_stateful_ics = bool(ne555_ics or relays or fuses)
+        seq_blocks = self._bucket_sequential
+        has_stateful_ics = bool(ne555_ics or relays or fuses or seq_blocks)
         rebuilt_any = False
         solution_x = np.zeros(0, dtype=np.float64)
         node_voltages: dict[str, float] = {}
@@ -1981,6 +2015,9 @@ class MNASolver:
                     vb_f = node_voltages.get(fuse.nodes[1], 0.0)
                     if fuse.check_blow((va_f - vb_f) * fuse.conductance):
                         state_changed = True
+            for seq in seq_blocks:
+                if seq.step_sequential(node_voltages):
+                    state_changed = True
             if not state_changed:
                 break
 
@@ -2022,6 +2059,10 @@ class MNASolver:
 
             if isinstance(comp, MCUBlock):
                 branch_currents[comp.name] = self._update_mcu_telemetry(comp, node_voltages)
+                continue
+
+            if isinstance(comp, DigitalSequentialBlock):
+                branch_currents[comp.name] = self._update_sequential_telemetry(comp, node_voltages)
                 continue
 
             if isinstance(comp, BJTBase):
@@ -2239,7 +2280,7 @@ class MNASolver:
                 if io is not None:
                     mat[io, io] += comp.g_out
                     rhs[io] += comp.g_out * comp.drive_voltage
-            elif isinstance(comp, MCUBlock):
+            elif isinstance(comp, (MCUBlock, DigitalSequentialBlock)):
                 for pin, p_node in zip(comp.pin_names, comp.nodes):
                     ip = node_to_idx.get(p_node)
                     if ip is not None:
@@ -2592,6 +2633,8 @@ class MNASolver:
                 vb_f = node_voltages.get(fuse.nodes[1], 0.0)
                 if fuse.check_blow((va_f - vb_f) * fuse.conductance):
                     self._be_steps_remaining = max(self._be_steps_remaining, 2)
+        for seq in self._bucket_sequential:
+            seq.step_sequential(node_voltages)
 
         # 4. Update component voltages, currents, companion states, and meter buffers.
         step_warnings = self._collect_gate_runtime_warnings(
@@ -2652,6 +2695,10 @@ class MNASolver:
 
             if tag == _TAG_MCU:
                 branch_currents[comp.name] = self._update_mcu_telemetry(comp, node_voltages)
+                continue
+
+            if tag == _TAG_SEQUENTIAL:
+                branch_currents[comp.name] = self._update_sequential_telemetry(comp, node_voltages)
                 continue
 
             if tag == _TAG_BJT:

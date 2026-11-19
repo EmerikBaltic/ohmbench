@@ -45,12 +45,16 @@ from circuitsim.components import (
     Capacitor,
     Comparator,
     Component,
+    Counter4Bit,
     DCCurrentSource,
     DCVoltageSource,
+    DFlipFlop,
+    DigitalSequentialBlock,
     Diode,
     Fuse,
     Ground,
     Inductor,
+    JKFlipFlop,
     LED,
     Lightbulb,
     MOSFETBase,
@@ -59,6 +63,7 @@ from circuitsim.components import (
     Potentiometer,
     Resistor,
     SPDTRelay,
+    SevenSegDisplay,
     Switch,
     Transformer,
     Voltmeter,
@@ -89,6 +94,10 @@ COMPONENT_PREFIXES: dict[str, str] = {
     "opamp": "U",
     "comparator": "U",
     "ne555": "U",
+    "d_flipflop": "U",
+    "jk_flipflop": "U",
+    "counter_4bit": "U",
+    "seven_seg_display": "DS",
     "gate_not": "U",
     "gate_and": "U",
     "gate_or": "U",
@@ -152,6 +161,8 @@ def format_component_value_summary(comp: Component) -> str:
     if isinstance(comp, OpAmp):
         return f"A={comp.a_ol:.0e}"
     if isinstance(comp, NE555):
+        return comp.display_value
+    if isinstance(comp, DigitalSequentialBlock):
         return comp.display_value
     if isinstance(comp, (Voltmeter, Ammeter)):
         return comp.format_reading()
@@ -885,6 +896,14 @@ class ComponentItem(QGraphicsObject):
             return (ctype.upper(), {"pos": "+", "neg": "-"})
         if ctype == "mcu":
             return ("DIP-MCU", {"A0": "A0", "A1": "A1", "D0": "D0", "D1": "D1", "TX": "TX", "RX": "RX"})
+        if ctype == "d_flipflop":
+            return ("74HC74", {"D": "D", "CLK": "CLK", "RST": "RST", "Q": "Q", "Q_BAR": "Q̄"})
+        if ctype == "jk_flipflop":
+            return ("74LS73", {"J": "J", "K": "K", "CLK": "CLK", "RST": "RST", "Q": "Q", "Q_BAR": "Q̄"})
+        if ctype == "counter_4bit":
+            return ("74HC161", {"CLK": "CLK", "RST": "RST", "Q0": "Q0", "Q1": "Q1", "Q2": "Q2", "Q3": "Q3"})
+        if ctype == "seven_seg_display":
+            return ("7SEG-HEX", {"D0": "D0", "D1": "D1", "D2": "D2", "D3": "D3"})
         if ctype == "switch":
             return ("SPST", {"a": "1", "b": "2"})
         if ctype == "fuse":
@@ -1093,6 +1112,28 @@ class ComponentItem(QGraphicsObject):
         painter.drawEllipse(QPointF(0.0, 0.0), radius, radius)
         painter.restore()
 
+    def _paint_seven_seg_leds(self, painter: QPainter, disp: SevenSegDisplay) -> None:
+        """Render the 7 glowing LED bars (a..g) directly on the 7-segment body."""
+        seg_lines = {
+            "a": ((-7.0, -24.0), (15.0, -24.0)),
+            "b": ((16.0, -22.0), (16.0, -2.0)),
+            "c": ((16.0, 2.0), (16.0, 22.0)),
+            "d": ((-7.0, 24.0), (15.0, 24.0)),
+            "e": ((-8.0, 2.0), (-8.0, 22.0)),
+            "f": ((-8.0, -22.0), (-8.0, -2.0)),
+            "g": ((-7.0, 0.0), (15.0, 0.0)),
+        }
+        active = set(disp.active_segments)
+        painter.save()
+        for seg_name, (p1, p2) in seg_lines.items():
+            is_on = seg_name in active
+            col = QColor("#FF3B30") if is_on else QColor(110, 120, 130, 75)
+            pen = QPen(col, 3.6 if is_on else 2.2)
+            pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+            painter.setPen(pen)
+            painter.drawLine(QPointF(p1[0], p1[1]), QPointF(p2[0], p2[1]))
+        painter.restore()
+
     def paint(
         self,
         painter: QPainter,
@@ -1226,6 +1267,8 @@ class ComponentItem(QGraphicsObject):
             rotation_deg=self.rotation_deg,
             flipped_h=self.flipped_h,
         )
+        if isinstance(self.component, SevenSegDisplay) and not self.is_ghost:
+            self._paint_seven_seg_leds(painter, self.component)
         # Pin-0 / positive-branch-current reference marker (Pin 0 -> Pin 1) inside body bounds
         if not self.is_ghost and self.component.component_type in (
             "resistor",

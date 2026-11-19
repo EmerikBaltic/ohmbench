@@ -24,6 +24,7 @@ from circuitsim.components.opamp import OpAmp
 from circuitsim.components.potentiometer import Potentiometer
 from circuitsim.components.power import Fuse, SPDTRelay, Transformer
 from circuitsim.components.resistor import Resistor
+from circuitsim.components.sequential import Counter4Bit, DFlipFlop, JKFlipFlop, SevenSegDisplay
 from circuitsim.components.sources import (
     ACVoltageSource,
     DCCurrentSource,
@@ -60,6 +61,10 @@ KNOWN_COMPONENT_TYPES: tuple[str, ...] = (
     "voltmeter",
     "ammeter",
     "mcu",
+    "d_flipflop",
+    "jk_flipflop",
+    "counter_4bit",
+    "seven_seg_display",
     *GATE_COMPONENT_TYPES,
 )
 
@@ -128,6 +133,14 @@ def create_default_component_model(component_id: str, name: str) -> Component:
         return Ammeter(name, n0, n1)
     if component_id == "mcu":
         return MCUBlock(name)
+    if component_id == "d_flipflop":
+        return DFlipFlop(name)
+    if component_id == "jk_flipflop":
+        return JKFlipFlop(name)
+    if component_id == "counter_4bit":
+        return Counter4Bit(name)
+    if component_id == "seven_seg_display":
+        return SevenSegDisplay(name)
     if component_id.startswith("gate_"):
         op = component_id.removeprefix("gate_")
         if op in GATE_OPERATIONS:

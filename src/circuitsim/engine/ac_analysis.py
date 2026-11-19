@@ -23,6 +23,7 @@ from circuitsim.components.opamp import OpAmp
 from circuitsim.components.potentiometer import Potentiometer
 from circuitsim.components.power import Fuse, SPDTRelay, Transformer
 from circuitsim.components.resistor import Resistor
+from circuitsim.components.sequential import DigitalSequentialBlock
 from circuitsim.components.sources import (
     ACVoltageSource,
     DCCurrentSource,
@@ -311,7 +312,7 @@ def run_ac_sweep(
                 io = node_to_idx.get(comp.output_node)
                 if io is not None:
                     mat_y[io, io] += comp.g_out
-            elif isinstance(comp, MCUBlock):
+            elif isinstance(comp, (MCUBlock, DigitalSequentialBlock)):
                 for pin, p_node in zip(comp.pin_names, comp.nodes):
                     ip = node_to_idx.get(p_node)
                     if ip is not None:

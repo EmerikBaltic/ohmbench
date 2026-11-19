@@ -29,6 +29,13 @@ from circuitsim.components.opamp import OpAmp
 from circuitsim.components.potentiometer import Potentiometer
 from circuitsim.components.power import Fuse, SPDTRelay, Transformer
 from circuitsim.components.resistor import Resistor
+from circuitsim.components.sequential import (
+    Counter4Bit,
+    DFlipFlop,
+    DigitalSequentialBlock,
+    JKFlipFlop,
+    SevenSegDisplay,
+)
 from circuitsim.components.sources import (
     ACVoltageSource,
     DCCurrentSource,
@@ -46,14 +53,18 @@ __all__ = [
     "Comparator",
     "Component",
     "ComponentParameter",
+    "Counter4Bit",
     "DCCurrentSource",
     "DCVoltageSource",
+    "DFlipFlop",
+    "DigitalSequentialBlock",
     "Diode",
     "Fuse",
     "GATE_COMPONENT_TYPES",
     "GATE_OPERATIONS",
     "Ground",
     "Inductor",
+    "JKFlipFlop",
     "KNOWN_COMPONENT_TYPES",
     "LED",
     "LED_COLOUR_PRESETS",
@@ -72,6 +83,7 @@ __all__ = [
     "Potentiometer",
     "Resistor",
     "SPDTRelay",
+    "SevenSegDisplay",
     "Switch",
     "Transformer",
     "Voltmeter",

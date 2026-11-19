@@ -206,6 +206,22 @@ _LOGIC_GATE_PARAMETERS: tuple[ComponentParameter, ...] = (
 for _gate_op in ("not", "and", "or", "nand", "nor", "xor", "xnor"):
     _DEFAULT_PARAMETERS_BY_TYPE[f"gate_{_gate_op}"] = _LOGIC_GATE_PARAMETERS
 
+_SEQUENTIAL_PARAMETERS: tuple[ComponentParameter, ...] = (
+    ComponentParameter("v_high", "Output High (Voh)", "V", allow_zero=True, allow_negative=True),
+    ComponentParameter("v_low", "Output Low (Vol)", "V", allow_zero=True, allow_negative=True),
+    ComponentParameter("v_threshold", "Logic Threshold (Vth)", "V", allow_zero=True),
+    ComponentParameter("r_in", "Input Resistance", "Ω"),
+    ComponentParameter("r_out", "Output Resistance", "Ω"),
+)
+
+for _seq_t in ("d_flipflop", "jk_flipflop", "counter_4bit"):
+    _DEFAULT_PARAMETERS_BY_TYPE[_seq_t] = _SEQUENTIAL_PARAMETERS
+
+_DEFAULT_PARAMETERS_BY_TYPE["seven_seg_display"] = (
+    ComponentParameter("v_threshold", "Input Threshold (Vth)", "V", allow_zero=True),
+    ComponentParameter("r_in", "Input Resistance", "Ω"),
+)
+
 
 class Component(ABC):
     """Abstract base class for all electrical components in a circuit.

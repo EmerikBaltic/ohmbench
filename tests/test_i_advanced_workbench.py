@@ -355,3 +355,105 @@ def test_i5_transformer_spdt_relay_and_blowable_resettable_fuse() -> None:
     res_rst = f_solver.solve_dc()
     assert f1.is_blown is False
     assert res_rst.branch_currents["R_LOAD"] == pytest.approx(0.12, abs=1e-3)
+
+
+def test_i6_sequential_d_jk_flipflops_4bit_counter_and_seven_seg_display(qapp) -> None:
+    """I6: D/JK Flip-Flops, 4-bit Counter pulsed 5x driving 7-Segment Display ('5' = 0101)."""
+    from PySide6.QtGui import QImage, QPainter
+    from PySide6.QtCore import QRectF
+    from circuitsim.components import (
+        Counter4Bit,
+        DCVoltageSource,
+        DFlipFlop,
+        Ground,
+        JKFlipFlop,
+        SevenSegDisplay,
+        create_default_component_model,
+    )
+    from circuitsim.engine.netlist import Circuit
+    from circuitsim.engine.solver import MNASolver
+
+    for cid in ("d_flipflop", "jk_flipflop", "counter_4bit", "seven_seg_display"):
+        assert create_default_component_model(cid, f"U_{cid}").component_type == cid
+
+    # (a) D Flip-Flop & JK Flip-Flop
+    circ_ff = Circuit()
+    vd = DCVoltageSource("VD", "d", "0", voltage=5.0)
+    vclk = DCVoltageSource("VCLK", "clk", "0", voltage=0.0)
+    vrst = DCVoltageSource("VRST", "rst", "0", voltage=0.0)
+    vj = DCVoltageSource("VJ", "j", "0", voltage=5.0)
+    vk = DCVoltageSource("VK", "k", "0", voltage=5.0)
+    dff = DFlipFlop("U_DFF", "d", "clk", "rst", "q_d", "qb_d")
+    jkff = JKFlipFlop("U_JK", "j", "k", "clk", "rst", "q_jk", "qb_jk")
+    for c in (vd, vclk, vrst, vj, vk, dff, jkff, Ground("G_FF", "0")):
+        circ_ff.add(c)
+
+    s_ff = MNASolver(circ_ff)
+    r0 = s_ff.solve_dc()
+    assert r0.node_voltages["q_d"] == pytest.approx(0.0, abs=0.05)
+
+    # Rising clock edge: D latches 5V, JK toggles 0 -> 1
+    vclk.dc_voltage = 5.0
+    r1 = s_ff.solve_dc()
+    assert r1.node_voltages["q_d"] == pytest.approx(5.0, abs=0.05)
+    assert r1.node_voltages["qb_d"] == pytest.approx(0.0, abs=0.05)
+    assert r1.node_voltages["q_jk"] == pytest.approx(5.0, abs=0.05)
+
+    # Falling clock edge + D lowered to 0V -> D-FF holds 5V
+    vclk.dc_voltage = 0.0
+    vd.dc_voltage = 0.0
+    r2 = s_ff.solve_dc()
+    assert r2.node_voltages["q_d"] == pytest.approx(5.0, abs=0.05)
+
+    # Second rising clock edge -> JK toggles 1 -> 0 while D latches 0V
+    vclk.dc_voltage = 5.0
+    r3 = s_ff.solve_dc()
+    assert r3.node_voltages["q_d"] == pytest.approx(0.0, abs=0.05)
+    assert r3.node_voltages["q_jk"] == pytest.approx(0.0, abs=0.05)
+
+    # Async active-high RST clears Q=0V, Q_BAR=5V
+    vclk.dc_voltage = 0.0
+    vd.dc_voltage = 5.0
+    s_ff.solve_dc()
+    vclk.dc_voltage = 5.0
+    assert s_ff.solve_dc().node_voltages["q_d"] == pytest.approx(5.0, abs=0.05)
+    vrst.dc_voltage = 5.0
+    r_rst = s_ff.solve_dc()
+    assert r_rst.node_voltages["q_d"] == pytest.approx(0.0, abs=0.05)
+    assert r_rst.node_voltages["qb_d"] == pytest.approx(5.0, abs=0.05)
+
+    # (b) 4-Bit Binary Counter pulsed 5x wired to 7-Segment Display -> 0101 ('5')
+    circ_cnt = Circuit()
+    c_clk = DCVoltageSource("V_CK", "clk", "0", voltage=0.0)
+    c_rst = DCVoltageSource("V_RS", "rst", "0", voltage=0.0)
+    cnt = Counter4Bit("U_CNT", "clk", "rst", "q0", "q1", "q2", "q3")
+    disp = SevenSegDisplay("DS1", "q0", "q1", "q2", "q3")
+    for c in (c_clk, c_rst, cnt, disp, Ground("G_CNT", "0")):
+        circ_cnt.add(c)
+
+    s_cnt = MNASolver(circ_cnt)
+    s_cnt.solve_dc()
+    for _ in range(5):
+        c_clk.dc_voltage = 5.0
+        res_pulse = s_cnt.solve_dc()
+        c_clk.dc_voltage = 0.0
+        res_pulse = s_cnt.solve_dc()
+
+    assert cnt.count == 5
+    assert res_pulse.node_voltages["q0"] == pytest.approx(5.0, abs=0.05)
+    assert res_pulse.node_voltages["q1"] == pytest.approx(0.0, abs=0.05)
+    assert res_pulse.node_voltages["q2"] == pytest.approx(5.0, abs=0.05)
+    assert res_pulse.node_voltages["q3"] == pytest.approx(0.0, abs=0.05)
+    assert disp.decoded_hex_char == "5"
+    assert set(disp.active_segments) == {"a", "f", "g", "c", "d"}
+
+    # Render SevenSegDisplay in offscreen scene without error
+    scene = CircuitScene(SymbolLibrary())
+    item = scene.place_new_component("seven_seg_display", QPointF(0.0, 0.0))
+    assert item is not None
+    item.component.step_sequential({"DS1_D0": 5.0, "DS1_D1": 0.0, "DS1_D2": 5.0, "DS1_D3": 0.0})
+    img = QImage(160, 180, QImage.Format.Format_ARGB32)
+    img.fill(0)
+    painter = QPainter(img)
+    scene.render(painter, QRectF(0, 0, 160, 180), QRectF(-80, -90, 160, 180))
+    painter.end()

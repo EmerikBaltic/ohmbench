@@ -700,6 +700,46 @@ class SymbolLibrary:
             else:
                 painter.drawLine(QPointF(-18.0, 0.0), QPointF(18.0, 0.0))
 
+        elif component_id in ("d_flipflop", "jk_flipflop", "counter_4bit"):
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            if component_id == "d_flipflop":
+                painter.drawRect(QRectF(-40.0, -52.0, 80.0, 104.0))
+                for py in (-40.0, 0.0, 40.0):
+                    painter.drawLine(QPointF(-60.0, py), QPointF(-40.0, py))
+                for py in (-20.0, 20.0):
+                    painter.drawLine(QPointF(40.0, py), QPointF(60.0, py))
+                lbl = "D-FF"
+            elif component_id == "jk_flipflop":
+                painter.drawRect(QRectF(-40.0, -72.0, 80.0, 144.0))
+                for py in (-60.0, -20.0, 20.0, 60.0):
+                    painter.drawLine(QPointF(-60.0, py), QPointF(-40.0, py))
+                for py in (-40.0, 40.0):
+                    painter.drawLine(QPointF(40.0, py), QPointF(60.0, py))
+                lbl = "JK-FF"
+            else:
+                painter.drawRect(QRectF(-40.0, -72.0, 80.0, 144.0))
+                for py in (-20.0, 20.0):
+                    painter.drawLine(QPointF(-60.0, py), QPointF(-40.0, py))
+                for py in (-60.0, -20.0, 20.0, 60.0):
+                    painter.drawLine(QPointF(40.0, py), QPointF(60.0, py))
+                lbl = "CNT4"
+            painter.save()
+            if rotation_deg:
+                painter.rotate(-float(rotation_deg))
+            if flipped_h:
+                painter.scale(-1.0, 1.0)
+            painter.setFont(QFont("Segoe UI", 8, QFont.Weight.Bold))
+            painter.drawText(QRectF(-34.0, -14.0, 68.0, 28.0), Qt.AlignmentFlag.AlignCenter, lbl)
+            painter.restore()
+
+        elif component_id == "seven_seg_display":
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            painter.drawRect(QRectF(-36.0, -70.0, 76.0, 140.0))
+            for py in (-60.0, -20.0, 20.0, 60.0):
+                painter.drawLine(QPointF(-60.0, py), QPointF(-36.0, py))
+            # Unpowered bezel outline; live glowing LED bars painted by ComponentItem
+            painter.drawRect(QRectF(-18.0, -34.0, 44.0, 68.0))
+
         else:
             painter.drawRect(QRectF(-20.0, -10.0, 40.0, 20.0))
             painter.setFont(QFont("Segoe UI", 8))

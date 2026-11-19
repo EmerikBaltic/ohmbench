@@ -1,0 +1,19 @@
+{
+  "id": "counter_4bit",
+  "display_name": "4-Bit Counter",
+  "category": "Digital",
+  "style": "iec",
+  "grid_size": [6, 8],
+  "terminals": [
+    {"name": "CLK", "grid_pos": [-3, -1]},
+    {"name": "RST", "grid_pos": [-3, 1]},
+    {"name": "Q0", "grid_pos": [3, -3]},
+    {"name": "Q1", "grid_pos": [3, -1]},
+    {"name": "Q2", "grid_pos": [3, 1]},
+    {"name": "Q3", "grid_pos": [3, 3]}
+  ],
+  "label_offset": [0, -4.2],
+  "value_offset": [0, 4.2],
+  "default_svg": "counter_4bit.svg",
+  "states": {}
+}

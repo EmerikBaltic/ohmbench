@@ -1,0 +1,18 @@
+{
+  "id": "d_flipflop",
+  "display_name": "D Flip-Flop",
+  "category": "Digital",
+  "style": "iec",
+  "grid_size": [6, 6],
+  "terminals": [
+    {"name": "D", "grid_pos": [-3, -2]},
+    {"name": "CLK", "grid_pos": [-3, 0]},
+    {"name": "RST", "grid_pos": [-3, 2]},
+    {"name": "Q", "grid_pos": [3, -1]},
+    {"name": "Q_BAR", "grid_pos": [3, 1]}
+  ],
+  "label_offset": [0, -3.2],
+  "value_offset": [0, 3.2],
+  "default_svg": "d_flipflop.svg",
+  "states": {}
+}

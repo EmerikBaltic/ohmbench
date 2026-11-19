@@ -21,6 +21,7 @@ from circuitsim.components.opamp import OpAmp
 from circuitsim.components.potentiometer import Potentiometer
 from circuitsim.components.power import Fuse, SPDTRelay, Transformer
 from circuitsim.components.resistor import Resistor
+from circuitsim.components.sequential import DigitalSequentialBlock
 from circuitsim.components.sources import ACVoltageSource, DCCurrentSource, DCVoltageSource
 from circuitsim.components.switch import Switch
 from circuitsim.engine.errors import (
@@ -202,7 +203,7 @@ class Circuit:
                     if io is not None:
                         mat[io, io] += comp.g_out
                     continue
-                if isinstance(comp, MCUBlock):
+                if isinstance(comp, (MCUBlock, DigitalSequentialBlock)):
                     for pin, p_node in zip(comp.pin_names, comp.nodes):
                         ip = node_to_idx.get(p_node)
                         if ip is not None:
@@ -360,7 +361,7 @@ class Circuit:
                 adjacency[c_out].add(CANONICAL_GND)
                 adjacency[CANONICAL_GND].add(c_out)
                 continue
-            if isinstance(comp, MCUBlock):
+            if isinstance(comp, (MCUBlock, DigitalSequentialBlock)):
                 for p_node in comp.nodes:
                     c_pin = canonical(p_node)
                     terminal_degree[p_node] += 2
@@ -561,7 +562,7 @@ class Circuit:
             if isinstance(comp, LogicGate):
                 driven_seeds.add(canonical(comp.output_node))
                 continue
-            if isinstance(comp, MCUBlock):
+            if isinstance(comp, (MCUBlock, DigitalSequentialBlock)):
                 for pin, p_node in zip(comp.pin_names, comp.nodes):
                     if comp.is_output_pin(pin):
                         driven_seeds.add(canonical(p_node))
