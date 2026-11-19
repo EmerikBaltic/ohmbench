@@ -653,6 +653,53 @@ class SymbolLibrary:
             painter.drawText(QRectF(-36.0, -14.0, 72.0, 28.0), Qt.AlignmentFlag.AlignCenter, "555")
             painter.restore()
 
+        elif component_id == "transformer":
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            # Primary leads & winding arcs on left (x=-40..-10)
+            painter.drawLine(QPointF(-40.0, -20.0), QPointF(-16.0, -20.0))
+            painter.drawLine(QPointF(-40.0, 20.0), QPointF(-16.0, 20.0))
+            for wy in (-20.0, -7.0, 6.0):
+                painter.drawArc(QRectF(-22.0, wy, 12.0, 13.0), -90 * 16, 180 * 16)
+            # Core bars
+            painter.drawLine(QPointF(-3.0, -24.0), QPointF(-3.0, 24.0))
+            painter.drawLine(QPointF(3.0, -24.0), QPointF(3.0, 24.0))
+            # Secondary leads & winding arcs on right (x=+10..+40)
+            painter.drawLine(QPointF(16.0, -20.0), QPointF(40.0, -20.0))
+            painter.drawLine(QPointF(16.0, 20.0), QPointF(40.0, 20.0))
+            for wy in (-20.0, -7.0, 6.0):
+                painter.drawArc(QRectF(10.0, wy, 12.0, 13.0), 90 * 16, 180 * 16)
+
+        elif component_id == "spdt_relay":
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            painter.drawRect(QRectF(-44.0, -44.0, 88.0, 88.0))
+            # Coil left leads + coil box
+            painter.drawLine(QPointF(-60.0, -20.0), QPointF(-34.0, -20.0))
+            painter.drawLine(QPointF(-60.0, 20.0), QPointF(-34.0, 20.0))
+            painter.drawRect(QRectF(-34.0, -20.0, 18.0, 40.0))
+            painter.drawLine(QPointF(-34.0, 12.0), QPointF(-16.0, -12.0))
+            # Switch right leads: NO (60,-40), COM (60,0), NC (60,40)
+            painter.drawLine(QPointF(26.0, -40.0), QPointF(60.0, -40.0))
+            painter.drawLine(QPointF(26.0, 40.0), QPointF(60.0, 40.0))
+            painter.drawLine(QPointF(6.0, 0.0), QPointF(60.0, 0.0))
+            # Dashed coupling + contact arm
+            target_y = -40.0 if state == "closed" else 40.0
+            painter.drawLine(QPointF(6.0, 0.0), QPointF(26.0, target_y))
+
+        elif component_id == "fuse":
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            painter.drawLine(QPointF(-40.0, 0.0), QPointF(-18.0, 0.0))
+            painter.drawLine(QPointF(18.0, 0.0), QPointF(40.0, 0.0))
+            painter.drawRect(QRectF(-18.0, -8.0, 36.0, 16.0))
+            if state == "blown":
+                painter.drawLine(QPointF(-18.0, 0.0), QPointF(-5.0, 0.0))
+                painter.drawLine(QPointF(5.0, 0.0), QPointF(18.0, 0.0))
+                blown_pen = QPen(QColor("#F85149"), 2.0)
+                painter.setPen(blown_pen)
+                painter.drawLine(QPointF(-4.0, -4.0), QPointF(4.0, 4.0))
+                painter.drawLine(QPointF(-4.0, 4.0), QPointF(4.0, -4.0))
+            else:
+                painter.drawLine(QPointF(-18.0, 0.0), QPointF(18.0, 0.0))
+
         else:
             painter.drawRect(QRectF(-20.0, -10.0, 40.0, 20.0))
             painter.setFont(QFont("Segoe UI", 8))

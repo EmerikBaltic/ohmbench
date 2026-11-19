@@ -269,6 +269,31 @@ def evaluate_component_stress(
             )
             continue
 
+        if ctype == "fuse":
+            is_blown = bool(getattr(comp, "is_blown", False))
+            i_rating = max(float(getattr(comp, "rating_amps", 0.5)), 1e-12)
+            if is_blown:
+                reports[name] = StressReport(
+                    component_name=name,
+                    level=StressLevel.OVERLOAD,
+                    utilization_pct=150.0,
+                    reason=(
+                        f"Fuse BLOWN: current exceeded {i_rating * 1000.0:.0f} mA "
+                        f"rating ({i_rating:.3g} A). Click fuse or use Reset Fuse."
+                    ),
+                    metric_name="current",
+                )
+                continue
+            util = (abs(i_val) / i_rating) * 100.0
+            reports[name] = _classify_utilization(
+                name,
+                util,
+                "current",
+                f"{abs(i_val) * 1000.0:.1f} mA",
+                f"{i_rating * 1000.0:.0f} mA",
+            )
+            continue
+
         # Default normal report for sources / meters / switches / ground
         reports[name] = StressReport(
             component_name=name,

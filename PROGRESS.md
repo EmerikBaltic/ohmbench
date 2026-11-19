@@ -6,7 +6,7 @@
 - [x] `I2` (`done`): Fed `StressLevel.OVERLOAD` / `StressLevel.WARNING` reports into `CircuitScene.latest_stress_diagnostics`, `ProblemsPanel` (`"Overload"` / `"Derating"` rows with part click-to-center navigation), `MainWindow.refresh_diagnostics_display` + status bar count, `MainWindow._update_info_panel` stress banner, and live `ComponentItem.toolTip()` updates (`test_i2_overload_badge_populates_problems_panel_tooltip_and_inspector`, `test_i2_stress_overload_appears_in_problems_panel`).
 - [x] `I3` (`done`): Overhaul Light Theme contrast (`LIGHT_PALETTE`, `QDockWidget::title`) and sync Properties panel shortcut help text with `AppSettings.shortcuts`.
 - [x] `I4` (`done`): Add 555 Timer IC (`ne555`) & Voltage Comparator (`comparator`) with MNA stamps, latch/astable oscillation, IEC symbols & palette entries.
-- [ ] `I5` (`todo`): Add Power & Protection components (`transformer`, `spdt_relay`, blowable/resettable `fuse`) with MNA stamps, hysteresis & stress/reset integration.
+- [x] `I5` (`done`): Add Power & Protection components (`transformer`, `spdt_relay`, blowable/resettable `fuse`) with MNA stamps, hysteresis & stress/reset integration.
 - [ ] `I6` (`todo`): Add Sequential Digital Logic & Displays (`d_flipflop`, `jk_flipflop`, `counter_4bit`, `seven_seg_display`) with live 7-segment rendering.
 - [ ] `I7` (`todo`): Add Qt-free I-V Characteristic Curve Tracer (`circuitsim.engine.curve_tracer`) and `CurveTracerDialog` (`Simulation > I-V Curve Tracer...`) with CSV export.
 - [ ] `I8` (`todo`): Add Benchtop Digital Multimeter (DMM) tab (DC V, AC RMS, DC A, Resistance/Continuity) and Oscilloscope X-Y Lissajous mode.

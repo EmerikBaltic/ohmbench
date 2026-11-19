@@ -22,6 +22,7 @@ from circuitsim.components.mosfet import NMOS, PMOS
 from circuitsim.components.ne555 import NE555
 from circuitsim.components.opamp import OpAmp
 from circuitsim.components.potentiometer import Potentiometer
+from circuitsim.components.power import Fuse, SPDTRelay, Transformer
 from circuitsim.components.resistor import Resistor
 from circuitsim.components.sources import (
     ACVoltageSource,
@@ -42,6 +43,9 @@ KNOWN_COMPONENT_TYPES: tuple[str, ...] = (
     "dc_current",
     "ground",
     "switch",
+    "transformer",
+    "spdt_relay",
+    "fuse",
     "lightbulb",
     "led",
     "diode",
@@ -83,6 +87,19 @@ def create_default_component_model(component_id: str, name: str) -> Component:
         return Ground(name, "0")
     if component_id == "switch":
         return Switch(name, n0, n1, closed=False)
+    if component_id == "transformer":
+        return Transformer(name, f"{name}_p1", f"{name}_p2", f"{name}_s1", f"{name}_s2")
+    if component_id == "spdt_relay":
+        return SPDTRelay(
+            name,
+            f"{name}_coil_pos",
+            f"{name}_coil_neg",
+            f"{name}_com",
+            f"{name}_no",
+            f"{name}_nc",
+        )
+    if component_id == "fuse":
+        return Fuse(name, n0, n1)
     if component_id == "lightbulb":
         return Lightbulb(name, n0, n1, rated_power=60.0, rated_voltage=120.0)
     if component_id == "led":

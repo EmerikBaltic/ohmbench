@@ -23,6 +23,7 @@ from circuitsim.components.mosfet import MOSFETBase
 from circuitsim.components.ne555 import NE555
 from circuitsim.components.opamp import OpAmp
 from circuitsim.components.potentiometer import Potentiometer
+from circuitsim.components.power import Fuse, SPDTRelay, Transformer
 from circuitsim.components.resistor import Resistor
 from circuitsim.components.sources import (
     ACVoltageSource,
@@ -56,6 +57,9 @@ _TAG_BJT = 17
 _TAG_MOSFET = 18
 _TAG_OPAMP = 19
 _TAG_NE555 = 20
+_TAG_FUSE = 21
+_TAG_TRANSFORMER = 22
+_TAG_RELAY = 23
 
 
 class IntegrationMethod(str, Enum):
@@ -200,6 +204,9 @@ class MNASolver:
         self._bucket_logic_gates: tuple[LogicGate, ...] = ()
         self._bucket_mcus: tuple[MCUBlock, ...] = ()
         self._bucket_ne555: tuple[NE555, ...] = ()
+        self._bucket_fuses: tuple[Fuse, ...] = ()
+        self._bucket_transformers: tuple[Transformer, ...] = ()
+        self._bucket_relays: tuple[SPDTRelay, ...] = ()
 
     def invalidate_cache(self) -> None:
         """Force the solver to rebuild and re-factorize the MNA matrix on next solve."""
@@ -230,6 +237,9 @@ class MNASolver:
         logic_gates: list[LogicGate] = []
         mcus: list[MCUBlock] = []
         ne555_ics: list[NE555] = []
+        fuses: list[Fuse] = []
+        transformers: list[Transformer] = []
+        relays: list[SPDTRelay] = []
 
         for comp in raw_comps:
             if isinstance(comp, Ground):
@@ -288,6 +298,15 @@ class MNASolver:
             elif isinstance(comp, NE555):
                 tagged.append((comp, _TAG_NE555))
                 ne555_ics.append(comp)
+            elif isinstance(comp, Fuse):
+                tagged.append((comp, _TAG_FUSE))
+                fuses.append(comp)
+            elif isinstance(comp, Transformer):
+                tagged.append((comp, _TAG_TRANSFORMER))
+                transformers.append(comp)
+            elif isinstance(comp, SPDTRelay):
+                tagged.append((comp, _TAG_RELAY))
+                relays.append(comp)
             elif isinstance(comp, Potentiometer):
                 tagged.append((comp, _TAG_POTENTIOMETER))
             elif isinstance(comp, DCVoltageSource):
@@ -317,6 +336,9 @@ class MNASolver:
         self._bucket_logic_gates = tuple(logic_gates)
         self._bucket_mcus = tuple(mcus)
         self._bucket_ne555 = tuple(ne555_ics)
+        self._bucket_fuses = tuple(fuses)
+        self._bucket_transformers = tuple(transformers)
+        self._bucket_relays = tuple(relays)
         self._buckets_len = len(tagged)
         self._buckets_version = circ_ver
 
@@ -462,7 +484,7 @@ class MNASolver:
     ) -> tuple[float, ...]:
         sig: list[float] = [max(self.gmin, extra_gmin), loop_reg_r]
         for comp in self.circuit.components:
-            if isinstance(comp, (Resistor, Switch, Lightbulb, Voltmeter, Ammeter, LED)):
+            if isinstance(comp, (Resistor, Switch, Fuse, Lightbulb, Voltmeter, Ammeter, LED)):
                 if isinstance(comp, (Voltmeter, Ammeter)) and comp.is_ideal:
                     sig.append(0.0)
                 else:
@@ -490,6 +512,10 @@ class MNASolver:
                         comp.r_dis_on,
                     )
                 )
+            elif isinstance(comp, Transformer):
+                sig.extend((comp.turns_ratio, comp.r_winding_ohm, comp.l_primary_h, comp.coupling_k))
+            elif isinstance(comp, SPDTRelay):
+                sig.extend((1.0 if comp.energized else 0.0, comp.coil_resistance_ohm))
             elif isinstance(comp, Potentiometer):
                 sig.extend((comp.g_aw, comp.g_wb))
             elif isinstance(comp, (DCVoltageSource, ACVoltageSource)):
@@ -537,6 +563,12 @@ class MNASolver:
                         comp.r_dis_on,
                     )
                 )
+            elif tag == _TAG_FUSE:
+                sig.append(comp.conductance)
+            elif tag == _TAG_TRANSFORMER:
+                sig.extend((comp.turns_ratio, comp.r_winding_ohm, comp.l_primary_h, comp.coupling_k))
+            elif tag == _TAG_RELAY:
+                sig.extend((1.0 if comp.energized else 0.0, comp.coil_resistance_ohm))
             elif tag == _TAG_POTENTIOMETER:
                 sig.extend((comp.g_aw, comp.g_wb))
             elif tag <= _TAG_AC_VS:
@@ -573,7 +605,7 @@ class MNASolver:
         for comp in self.circuit.components:
             if isinstance(comp, Ground):
                 continue
-            if isinstance(comp, (Resistor, Lightbulb, Voltmeter, Ammeter)):
+            if isinstance(comp, (Resistor, Fuse, Lightbulb, Voltmeter, Ammeter)):
                 if isinstance(comp, (Voltmeter, Ammeter)) and comp.is_ideal:
                     continue
                 self._stamp_conductance(
@@ -591,7 +623,7 @@ class MNASolver:
                     method_str if mode != "dc" else "dc",
                 )
                 self._stamp_conductance(matrix_a, comp.nodes[0], comp.nodes[1], g_d)
-            elif isinstance(comp, (BJTBase, MOSFETBase, OpAmp, NE555)):
+            elif isinstance(comp, (BJTBase, MOSFETBase, OpAmp, NE555, Transformer, SPDTRelay)):
                 g_mat, _ = comp.companion_stamp()
                 self._stamp_small_matrix(matrix_a, self._node_to_idx, comp.nodes, g_mat)
             elif isinstance(comp, Switch):
@@ -1401,6 +1433,32 @@ class MNASolver:
         ic.power = abs(i_out * (v_target - vout)) + abs(i_dis * (vdis - vgnd)) + p_div
         return i_out
 
+    @staticmethod
+    def _update_transformer_telemetry(xfmr: Transformer, node_voltages: dict[str, float]) -> float:
+        """Update coupled transformer primary/secondary voltages, secondary current, and loss."""
+        vp = node_voltages.get(xfmr.node_p1, 0.0) - node_voltages.get(xfmr.node_p2, 0.0)
+        vs = node_voltages.get(xfmr.node_s1, 0.0) - node_voltages.get(xfmr.node_s2, 0.0)
+        n = xfmr.turns_ratio * xfmr.coupling_k
+        g_w = 1.0 / max(xfmr.r_winding_ohm, 1e-4)
+        i_sec = (n * vp - vs) * g_w
+        xfmr.voltage = vs
+        xfmr.current = i_sec
+        xfmr.power = abs((n * vp - vs) * i_sec)
+        return i_sec
+
+    @staticmethod
+    def _update_relay_telemetry(relay: SPDTRelay, node_voltages: dict[str, float]) -> float:
+        """Update SPDT relay coil voltage, contact current, and coil dissipation."""
+        v_coil = node_voltages.get(relay.node_coil_pos, 0.0) - node_voltages.get(relay.node_coil_neg, 0.0)
+        i_coil = v_coil / relay.coil_resistance_ohm
+        v_com = node_voltages.get(relay.node_com, 0.0)
+        v_active = node_voltages.get(relay.node_no if relay.energized else relay.node_nc, 0.0)
+        i_contact = (v_com - v_active) / relay.r_on
+        relay.voltage = v_coil
+        relay.current = i_contact
+        relay.power = abs(v_coil * i_coil) + abs((v_com - v_active) * i_contact)
+        return i_contact
+
     def _update_led_discrete_states(
         self, node_voltages: dict[str, float]
     ) -> bool:
@@ -1842,12 +1900,15 @@ class MNASolver:
             mcu.reset_state()
 
         ne555_ics = self._bucket_ne555
+        relays = self._bucket_relays
+        fuses = self._bucket_fuses
+        has_stateful_ics = bool(ne555_ics or relays or fuses)
         rebuilt_any = False
         solution_x = np.zeros(0, dtype=np.float64)
         node_voltages: dict[str, float] = {}
         dim = 0
 
-        for _ic_pass in range(6 if ne555_ics else 1):
+        for _ic_pass in range(6 if has_stateful_ics else 1):
             if (
                 not self._bucket_diodes
                 and not self._bucket_leds
@@ -1905,9 +1966,22 @@ class MNASolver:
                 assert self._matrix_a is not None
                 dim = self._matrix_a.shape[0]
 
-            if not ne555_ics:
+            if not has_stateful_ics:
                 break
-            if not any(ic.evaluate_latch(node_voltages) for ic in ne555_ics):
+            state_changed = False
+            for ic in ne555_ics:
+                if ic.evaluate_latch(node_voltages):
+                    state_changed = True
+            for relay in relays:
+                if relay.evaluate_coil(node_voltages):
+                    state_changed = True
+            for fuse in fuses:
+                if not fuse.is_blown:
+                    va_f = node_voltages.get(fuse.nodes[0], 0.0)
+                    vb_f = node_voltages.get(fuse.nodes[1], 0.0)
+                    if fuse.check_blow((va_f - vb_f) * fuse.conductance):
+                        state_changed = True
+            if not state_changed:
                 break
 
         for w in self._auto_regularized_warnings:
@@ -1966,12 +2040,20 @@ class MNASolver:
                 branch_currents[comp.name] = self._update_ne555_telemetry(comp, node_voltages)
                 continue
 
+            if isinstance(comp, Transformer):
+                branch_currents[comp.name] = self._update_transformer_telemetry(comp, node_voltages)
+                continue
+
+            if isinstance(comp, SPDTRelay):
+                branch_currents[comp.name] = self._update_relay_telemetry(comp, node_voltages)
+                continue
+
             v_a = node_voltages.get(comp.nodes[0], 0.0)
             v_b = node_voltages.get(comp.nodes[1], 0.0)
             v_ab = v_a - v_b
             comp.voltage = v_ab
 
-            if isinstance(comp, (Resistor, Switch, Lightbulb, Voltmeter, Ammeter)):
+            if isinstance(comp, (Resistor, Switch, Fuse, Lightbulb, Voltmeter, Ammeter)):
                 if isinstance(comp, Voltmeter):
                     if comp.is_ideal:
                         i_ab = 0.0
@@ -2108,7 +2190,7 @@ class MNASolver:
             mat[idx, idx] += max(self.gmin, 1e-15)
 
         for comp in self.circuit.components:
-            if isinstance(comp, (Resistor, Switch, Lightbulb, Voltmeter, Ammeter)):
+            if isinstance(comp, (Resistor, Switch, Fuse, Lightbulb, Voltmeter, Ammeter)):
                 g = comp.conductance
                 ia = node_to_idx.get(comp.nodes[0])
                 ib = node_to_idx.get(comp.nodes[1])
@@ -2178,7 +2260,7 @@ class MNASolver:
                 if ia is not None and ib is not None:
                     mat[ia, ib] -= g_d
                     mat[ib, ia] -= g_d
-            elif isinstance(comp, (BJTBase, MOSFETBase, OpAmp, NE555)):
+            elif isinstance(comp, (BJTBase, MOSFETBase, OpAmp, NE555, Transformer, SPDTRelay)):
                 g_mat, rhs_3 = comp.companion_stamp()
                 self._stamp_small_matrix(mat, node_to_idx, comp.nodes, g_mat)
                 self._stamp_small_rhs(rhs, node_to_idx, comp.nodes, rhs_3)
@@ -2501,6 +2583,15 @@ class MNASolver:
         for ic in self._bucket_ne555:
             if ic.evaluate_latch(node_voltages):
                 self._be_steps_remaining = max(self._be_steps_remaining, 2)
+        for relay in self._bucket_relays:
+            if relay.evaluate_coil(node_voltages):
+                self._be_steps_remaining = max(self._be_steps_remaining, 2)
+        for fuse in self._bucket_fuses:
+            if not fuse.is_blown:
+                va_f = node_voltages.get(fuse.nodes[0], 0.0)
+                vb_f = node_voltages.get(fuse.nodes[1], 0.0)
+                if fuse.check_blow((va_f - vb_f) * fuse.conductance):
+                    self._be_steps_remaining = max(self._be_steps_remaining, 2)
 
         # 4. Update component voltages, currents, companion states, and meter buffers.
         step_warnings = self._collect_gate_runtime_warnings(
@@ -2579,9 +2670,25 @@ class MNASolver:
                 branch_currents[comp.name] = self._update_ne555_telemetry(comp, node_voltages)
                 continue
 
+            if tag == _TAG_TRANSFORMER:
+                branch_currents[comp.name] = self._update_transformer_telemetry(comp, node_voltages)
+                continue
+
+            if tag == _TAG_RELAY:
+                branch_currents[comp.name] = self._update_relay_telemetry(comp, node_voltages)
+                continue
+
             v_a = node_voltages.get(comp.nodes[0], 0.0)
             v_b = node_voltages.get(comp.nodes[1], 0.0)
             v_ab = v_a - v_b
+
+            if tag == _TAG_FUSE:
+                i_ab = v_ab * comp.conductance
+                comp.voltage = v_ab
+                comp.current = i_ab
+                comp.power = v_ab * i_ab
+                branch_currents[comp.name] = i_ab
+                continue
 
             if tag <= _TAG_AMMETER:
                 if tag == _TAG_VOLTMETER:

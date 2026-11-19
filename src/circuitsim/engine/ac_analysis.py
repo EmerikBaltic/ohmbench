@@ -21,6 +21,7 @@ from circuitsim.components.mosfet import MOSFETBase
 from circuitsim.components.ne555 import NE555
 from circuitsim.components.opamp import OpAmp
 from circuitsim.components.potentiometer import Potentiometer
+from circuitsim.components.power import Fuse, SPDTRelay, Transformer
 from circuitsim.components.resistor import Resistor
 from circuitsim.components.sources import (
     ACVoltageSource,
@@ -261,7 +262,7 @@ def run_ac_sweep(
         for comp in circuit.components:
             if isinstance(comp, Ground) or isinstance(comp, DCCurrentSource):
                 continue
-            if isinstance(comp, (Resistor, Lightbulb, Voltmeter, Ammeter)):
+            if isinstance(comp, (Resistor, Fuse, Lightbulb, Voltmeter, Ammeter)):
                 if isinstance(comp, (Voltmeter, Ammeter)) and comp.is_ideal:
                     continue
                 _stamp_complex_admittance(
@@ -272,7 +273,7 @@ def run_ac_sweep(
                 _stamp_complex_admittance(
                     mat_y, node_to_idx, comp.nodes[0], comp.nodes[1], complex(g_lin)
                 )
-            elif isinstance(comp, (BJTBase, MOSFETBase, OpAmp, NE555)):
+            elif isinstance(comp, (BJTBase, MOSFETBase, OpAmp, NE555, Transformer, SPDTRelay)):
                 g_mat, _ = comp.companion_stamp()
                 idxs = [node_to_idx.get(n) for n in comp.nodes]
                 for r_i, row_idx in enumerate(idxs):

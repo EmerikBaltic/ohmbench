@@ -35,8 +35,8 @@ CATEGORY_ORDER: tuple[str, ...] = (
 # Explicit component ordering within each category (matching Section 3.1 of spec)
 COMPONENT_ORDER_IN_CATEGORY: dict[str, tuple[str, ...]] = {
     "Sources": ("dc_voltage", "ac_voltage", "wav_voltage", "dc_current", "ground"),
-    "Passive": ("resistor", "capacitor", "inductor", "potentiometer"),
-    "Switches": ("switch",),
+    "Passive": ("resistor", "capacitor", "inductor", "potentiometer", "transformer"),
+    "Switches": ("switch", "spdt_relay", "fuse"),
     "Semiconductors": ("diode", "zener_diode", "led", "npn_bjt", "pnp_bjt", "nmos", "pmos", "opamp"),
     "Active": ("opamp", "npn_bjt", "pnp_bjt", "nmos", "pmos"),
     "Logic Gates": (

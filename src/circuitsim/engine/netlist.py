@@ -19,6 +19,7 @@ from circuitsim.components.mosfet import MOSFETBase
 from circuitsim.components.ne555 import NE555
 from circuitsim.components.opamp import OpAmp
 from circuitsim.components.potentiometer import Potentiometer
+from circuitsim.components.power import Fuse, SPDTRelay, Transformer
 from circuitsim.components.resistor import Resistor
 from circuitsim.components.sources import ACVoltageSource, DCCurrentSource, DCVoltageSource
 from circuitsim.components.switch import Switch
@@ -207,7 +208,7 @@ class Circuit:
                         if ip is not None:
                             mat[ip, ip] += comp.pin_conductance(pin)
                     continue
-                if isinstance(comp, NE555):
+                if isinstance(comp, (NE555, Transformer, SPDTRelay)):
                     g_mat, _ = comp.companion_stamp()
                     idxs = [node_to_idx.get(n) for n in comp.nodes]
                     for r_i, ri in enumerate(idxs):
@@ -234,7 +235,7 @@ class Circuit:
                     continue
 
                 g = 0.0
-                if isinstance(comp, (Resistor, Switch, Lightbulb, Voltmeter, Ammeter, LED)):
+                if isinstance(comp, (Resistor, Switch, Fuse, Lightbulb, Voltmeter, Ammeter, LED)):
                     g = comp.conductance
                 elif isinstance(comp, Inductor) and comp.dcr > 0.0:
                     g = 1.0 / comp.dcr
@@ -379,6 +380,25 @@ class Circuit:
                 terminal_degree[comp.node_out] += 1
                 terminal_degree[comp.node_vcc] += 1
                 terminal_degree[comp.node_gnd] += 1
+                continue
+            if isinstance(comp, Transformer):
+                cp1, cp2, cs1, cs2 = (canonical(n) for n in comp.nodes)
+                for n in comp.nodes:
+                    terminal_degree[n] += 1
+                adjacency[cp1].add(cp2)
+                adjacency[cp2].update((cp1, cs2))
+                adjacency[cs1].add(cs2)
+                adjacency[cs2].update((cs1, cp2))
+                continue
+            if isinstance(comp, SPDTRelay):
+                ccp, ccn, ccom, cno, cnc = (canonical(n) for n in comp.nodes)
+                for n in comp.nodes:
+                    terminal_degree[n] += 1
+                adjacency[ccp].add(ccn)
+                adjacency[ccn].add(ccp)
+                adjacency[ccom].update((cno, cnc))
+                adjacency[cno].add(ccom)
+                adjacency[cnc].add(ccom)
                 continue
 
             if isinstance(comp, Potentiometer):
@@ -558,6 +578,23 @@ class Circuit:
                 external_adj[cdis].add(cgnd)
                 external_adj[cgnd].add(cdis)
                 driven_seeds.add(cout)
+                continue
+            if isinstance(comp, Transformer):
+                cp1, cp2, cs1, cs2 = (canonical(n) for n in comp.nodes)
+                external_adj[cp1].add(cp2)
+                external_adj[cp2].add(cp1)
+                external_adj[cs1].add(cs2)
+                external_adj[cs2].add(cs1)
+                external_adj[cp2].add(cs2)
+                external_adj[cs2].add(cp2)
+                continue
+            if isinstance(comp, SPDTRelay):
+                ccp, ccn, ccom, cno, cnc = (canonical(n) for n in comp.nodes)
+                external_adj[ccp].add(ccn)
+                external_adj[ccn].add(ccp)
+                external_adj[ccom].update((cno, cnc))
+                external_adj[cno].add(ccom)
+                external_adj[cnc].add(ccom)
                 continue
 
             if isinstance(comp, (BJTBase, MOSFETBase)):

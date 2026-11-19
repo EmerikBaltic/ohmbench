@@ -139,6 +139,9 @@ _EXTRA_SETTINGS: dict[str, dict[str, str]] = {
     "voltmeter": {"mode": "str", "is_ideal": "bool"},
     "ammeter": {"mode": "str", "is_ideal": "bool"},
     "mcu": {"v_low": "float", "r_dig_in": "float", "update_period": "float", "code": "str"},
+    "transformer": {},
+    "spdt_relay": {"r_on": "float", "r_off": "float", "energized": "bool"},
+    "fuse": {"r_blown_ohm": "float", "is_blown": "bool"},
 }
 
 # Editable parameters that may legitimately be "none" (feature switched off).

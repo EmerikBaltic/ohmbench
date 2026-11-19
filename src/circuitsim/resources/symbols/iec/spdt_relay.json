@@ -1,0 +1,18 @@
+{
+  "id": "spdt_relay",
+  "display_name": "SPDT Relay",
+  "category": "Switches",
+  "style": "iec",
+  "grid_size": [6, 6],
+  "terminals": [
+    {"name": "coil_pos", "grid_pos": [-3, -1]},
+    {"name": "coil_neg", "grid_pos": [-3, 1]},
+    {"name": "com", "grid_pos": [3, 0]},
+    {"name": "no", "grid_pos": [3, -2]},
+    {"name": "nc", "grid_pos": [3, 2]}
+  ],
+  "label_offset": [0, -3.2],
+  "value_offset": [0, 3.2],
+  "default_svg": "spdt_relay.svg",
+  "states": {}
+}

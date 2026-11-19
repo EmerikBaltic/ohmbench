@@ -25,6 +25,7 @@ from circuitsim.canvas.scene import CircuitScene
 from circuitsim.canvas.symbol_geometry import GRID_PITCH_PX, snap_to_grid
 from circuitsim.canvas.wire_item import JunctionItem, WireItem
 from circuitsim.components.mcu import MCUBlock
+from circuitsim.components.power import Fuse
 from circuitsim.components.switch import Switch
 from circuitsim.dialogs.mcu_firmware_dialog import MCUFirmwareDialog
 from circuitsim.dialogs.quick_edit_dialog import QuickValueDialog
@@ -82,6 +83,8 @@ class CircuitView(QGraphicsView):
         self._suppress_next_context_menu: bool = False
         self._pressed_switch_item: ComponentItem | None = None
         self._pressed_switch_pos: QPointF = QPointF()
+        self._pressed_fuse_item: ComponentItem | None = None
+        self._pressed_fuse_pos: QPointF = QPointF()
 
         self.setAcceptDrops(True)
         self.setMouseTracking(True)
@@ -505,6 +508,13 @@ class CircuitView(QGraphicsView):
                 self._pressed_switch_pos = hit_item.pos()
                 if hit_item.component.momentary:
                     self.circuit_scene.set_switch_item_state(hit_item, True)
+            elif (
+                isinstance(hit_item, ComponentItem)
+                and isinstance(hit_item.component, Fuse)
+                and hit_item.component.is_blown
+            ):
+                self._pressed_fuse_item = hit_item
+                self._pressed_fuse_pos = hit_item.pos()
 
             # Prepare for component selection / drag-move
             self.circuit_scene.begin_component_move_tracking()
@@ -654,6 +664,15 @@ class CircuitView(QGraphicsView):
                 ):
                     self.circuit_scene.toggle_switch_item(self._pressed_switch_item)
             self._pressed_switch_item = None
+            if (
+                self._pressed_fuse_item is not None
+                and isinstance(self._pressed_fuse_item.component, Fuse)
+                and self._pressed_fuse_item.component.is_blown
+                and not moved
+                and self._pressed_fuse_item.pos() == self._pressed_fuse_pos
+            ):
+                self.circuit_scene.reset_fuse_item(self._pressed_fuse_item)
+            self._pressed_fuse_item = None
             return
 
         super().mouseReleaseEvent(event)
@@ -719,6 +738,13 @@ class CircuitView(QGraphicsView):
                     lambda: self.circuit_scene.toggle_switch_item(target_comp)
                 )
                 menu.addAction(act_toggle_sw)
+            if isinstance(target_comp.component, Fuse):
+                act_reset_fuse = QAction("Reset Fuse", menu)
+                act_reset_fuse.setEnabled(bool(target_comp.component.is_blown))
+                act_reset_fuse.triggered.connect(
+                    lambda: self.circuit_scene.reset_fuse_item(target_comp)
+                )
+                menu.addAction(act_reset_fuse)
             menu.addSeparator()
 
         selected_wires = [

@@ -266,3 +266,92 @@ def test_i4_ne555_dc_states_astable_oscillation_and_comparator() -> None:
     vp.dc_voltage = 2.0
     r_lo = cmp_solver.solve_dc()
     assert r_lo.node_voltages["out"] == pytest.approx(0.0, abs=0.05)
+
+
+def test_i5_transformer_spdt_relay_and_blowable_resettable_fuse() -> None:
+    """I5: Coupled Transformer (2:1 AC step-down), SPDT Relay hysteresis, and blowable/resettable Fuse."""
+    from circuitsim.components import (
+        ACVoltageSource,
+        DCVoltageSource,
+        Fuse,
+        Ground,
+        Resistor,
+        SPDTRelay,
+        Transformer,
+        create_default_component_model,
+    )
+    from circuitsim.engine.netlist import Circuit
+    from circuitsim.engine.solver import MNASolver
+    from circuitsim.engine.stress import StressLevel, evaluate_component_stress
+
+    assert create_default_component_model("transformer", "T1").component_type == "transformer"
+    assert create_default_component_model("spdt_relay", "K1").component_type == "spdt_relay"
+    assert create_default_component_model("fuse", "F1").component_type == "fuse"
+
+    # (a) 2:1 step-down Transformer: 20 V peak 100 Hz AC -> ~10.0 V peak on 1k secondary load
+    circ_xf = Circuit()
+    circ_xf.add(ACVoltageSource("V_AC", "p1", "0", amplitude=20.0, frequency=100.0))
+    circ_xf.add(Ground("G_XF", "0"))
+    circ_xf.add(Transformer("T1", "p1", "0", "s1", "0", turns_ratio=0.5))
+    circ_xf.add(Resistor("R_SEC", "s1", "0", resistance=1_000.0))
+
+    tr_xf = MNASolver(circ_xf).solve_transient(duration=15e-3, dt=1e-4)
+    v_sec_peak = float(np.max(np.abs(tr_xf.node_voltages["s1"])))
+    assert v_sec_peak == pytest.approx(10.0, rel=0.02)
+
+    # (b) SPDT Relay: coil 0V -> NC energized (12V), NO ~ 0V; coil 6V -> NO energized (12V), NC ~ 0V
+    circ_rel = Circuit()
+    v_coil = DCVoltageSource("V_COIL", "coil_p", "0", voltage=0.0)
+    circ_rel.add(v_coil)
+    circ_rel.add(DCVoltageSource("V_BUS", "com", "0", voltage=12.0))
+    circ_rel.add(Ground("G_REL", "0"))
+    k1 = SPDTRelay("K1", "coil_p", "0", "com", "no", "nc", pull_in_voltage_v=5.0, drop_out_voltage_v=2.5)
+    circ_rel.add(k1)
+    circ_rel.add(Resistor("R_NO", "no", "0", resistance=100.0))
+    circ_rel.add(Resistor("R_NC", "nc", "0", resistance=100.0))
+
+    rel_solver = MNASolver(circ_rel)
+    r_de = rel_solver.solve_dc()
+    assert k1.energized is False
+    assert r_de.node_voltages["nc"] == pytest.approx(12.0, abs=0.05)
+    assert r_de.node_voltages["no"] < 0.05
+
+    v_coil.dc_voltage = 6.0
+    r_en = rel_solver.solve_dc()
+    assert k1.energized is True
+    assert r_en.node_voltages["no"] == pytest.approx(12.0, abs=0.05)
+    assert r_en.node_voltages["nc"] < 0.05
+
+    # Hysteresis: coil 3.5V (> 2.5V drop-out) holds energized state
+    v_coil.dc_voltage = 3.5
+    r_hold = rel_solver.solve_dc()
+    assert k1.energized is True
+    assert r_hold.node_voltages["no"] == pytest.approx(12.0, abs=0.05)
+
+    # (c) 0.5 A Fuse on 12 V: intact with 100 ohm (0.12 A), blows with 10 ohm (1.2 A), reset restores
+    circ_f = Circuit()
+    circ_f.add(DCVoltageSource("V_F", "vin", "0", voltage=12.0))
+    circ_f.add(Ground("G_F", "0"))
+    f1 = Fuse("F1", "vin", "vload", rating_amps=0.5)
+    r_load = Resistor("R_LOAD", "vload", "0", resistance=100.0)
+    circ_f.add(f1)
+    circ_f.add(r_load)
+
+    f_solver = MNASolver(circ_f)
+    res_ok = f_solver.solve_dc()
+    assert f1.is_blown is False
+    assert res_ok.branch_currents["R_LOAD"] == pytest.approx(0.12, abs=1e-3)
+
+    r_load.resistance = 10.0  # Would draw 1.2 A > 0.5 A rating
+    res_blown = f_solver.solve_dc()
+    assert f1.is_blown is True
+    assert abs(res_blown.branch_currents["R_LOAD"]) < 1e-6
+    stress = evaluate_component_stress(circ_f, res_blown)["F1"]
+    assert stress.level == StressLevel.OVERLOAD
+    assert "blown" in stress.reason.lower()
+
+    r_load.resistance = 100.0
+    f1.reset_fuse()
+    res_rst = f_solver.solve_dc()
+    assert f1.is_blown is False
+    assert res_rst.branch_currents["R_LOAD"] == pytest.approx(0.12, abs=1e-3)

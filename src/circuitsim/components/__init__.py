@@ -27,6 +27,7 @@ from circuitsim.components.mosfet import MOSFETBase, NMOS, PMOS
 from circuitsim.components.ne555 import NE555
 from circuitsim.components.opamp import OpAmp
 from circuitsim.components.potentiometer import Potentiometer
+from circuitsim.components.power import Fuse, SPDTRelay, Transformer
 from circuitsim.components.resistor import Resistor
 from circuitsim.components.sources import (
     ACVoltageSource,
@@ -48,6 +49,7 @@ __all__ = [
     "DCCurrentSource",
     "DCVoltageSource",
     "Diode",
+    "Fuse",
     "GATE_COMPONENT_TYPES",
     "GATE_OPERATIONS",
     "Ground",
@@ -69,7 +71,9 @@ __all__ = [
     "PNPBJT",
     "Potentiometer",
     "Resistor",
+    "SPDTRelay",
     "Switch",
+    "Transformer",
     "Voltmeter",
     "WavVoltageSource",
     "WaveformType",

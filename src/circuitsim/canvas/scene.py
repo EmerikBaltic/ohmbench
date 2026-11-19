@@ -16,6 +16,7 @@ from PySide6.QtWidgets import QGraphicsScene, QInputDialog
 
 from circuitsim.app.themes import ThemeMode, get_theme_palette
 from circuitsim.components.logic_gate import LogicGate
+from circuitsim.components.power import Fuse
 from circuitsim.canvas.commands import (
     AddComponentCommand,
     AddWireCommand,
@@ -3381,6 +3382,23 @@ class CircuitScene(QGraphicsScene):
         if not ok:
             return False
         return self.set_net_label(tid, text)
+
+    def reset_fuse_item(self, item: ComponentItem) -> bool:
+        """Reset a blown ``Fuse`` ``ComponentItem`` back to intact conduction."""
+        if not isinstance(item.component, Fuse):
+            return False
+        item.component.reset_fuse()
+        item.set_stress_state(None)
+        item.invalidate_geometry_cache()
+        item.update()
+        self.latest_stress_diagnostics = [
+            d
+            for d in self.latest_stress_diagnostics
+            if item.component.name not in d.part_names
+        ]
+        self.status_message.emit(f"Fuse {item.component.name} reset (intact).")
+        self.update()
+        return True
 
     def build_circuit(self) -> Circuit:
         """Build and return a solver-ready `Circuit` from the schematic's components and wires."""

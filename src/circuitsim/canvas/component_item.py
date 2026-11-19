@@ -48,6 +48,7 @@ from circuitsim.components import (
     DCCurrentSource,
     DCVoltageSource,
     Diode,
+    Fuse,
     Ground,
     Inductor,
     LED,
@@ -57,7 +58,9 @@ from circuitsim.components import (
     OpAmp,
     Potentiometer,
     Resistor,
+    SPDTRelay,
     Switch,
+    Transformer,
     Voltmeter,
     ZenerDiode,
 )
@@ -74,6 +77,9 @@ COMPONENT_PREFIXES: dict[str, str] = {
     "dc_current": "I",
     "ground": "GND",
     "switch": "SW",
+    "spdt_relay": "K",
+    "fuse": "F",
+    "transformer": "T",
     "diode": "D",
     "zener_diode": "DZ",
     "npn_bjt": "Q",
@@ -123,6 +129,12 @@ def format_component_value_summary(comp: Component) -> str:
         if comp.arcing and not comp.closed:
             return "ARC!"
         return "ON" if comp.closed else "OFF"
+    if isinstance(comp, Fuse):
+        return comp.display_value
+    if isinstance(comp, SPDTRelay):
+        return comp.display_value
+    if isinstance(comp, Transformer):
+        return comp.display_value
     if isinstance(comp, Lightbulb):
         if comp.burned_out:
             return "BURNED OUT"
@@ -290,6 +302,10 @@ class ComponentItem(QGraphicsObject):
         """Return active symbol state name (e.g. 'open' or 'closed' for Switch)."""
         if isinstance(self.component, Switch):
             return "closed" if self.component.closed else "open"
+        if isinstance(self.component, Fuse):
+            return "blown" if self.component.is_blown else "intact"
+        if isinstance(self.component, SPDTRelay):
+            return "closed" if self.component.energized else "open"
         if isinstance(self.component, Lightbulb):
             if self.component.burned_out:
                 return "burned_out"
@@ -871,6 +887,12 @@ class ComponentItem(QGraphicsObject):
             return ("DIP-MCU", {"A0": "A0", "A1": "A1", "D0": "D0", "D1": "D1", "TX": "TX", "RX": "RX"})
         if ctype == "switch":
             return ("SPST", {"a": "1", "b": "2"})
+        if ctype == "fuse":
+            return ("FUSE-5x20", {"a": "1", "b": "2"})
+        if ctype == "transformer":
+            return ("XFMR-4P", {"p1": "P1", "p2": "P2", "s1": "S1", "s2": "S2"})
+        if ctype == "spdt_relay":
+            return ("RELAY-5P", {"coil_pos": "+COIL", "coil_neg": "-COIL", "com": "COM", "no": "NO", "nc": "NC"})
         if ctype == "lightbulb":
             return ("LAMP", {"a": "1", "b": "2"})
         if ctype == "ground":
