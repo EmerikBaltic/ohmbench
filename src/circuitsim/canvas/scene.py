@@ -3512,15 +3512,20 @@ class CircuitScene(QGraphicsScene):
         if not isinstance(item.component, Fuse):
             return False
         item.component.reset_fuse()
+        if getattr(item, "_fuse_pop_anim", None) is not None:
+            item._fuse_pop_anim.stop()  # type: ignore[union-attr]
+        if hasattr(item, "_fuse_pop_progress"):
+            item._fuse_pop_progress = 0.0
+        item.live_display_value = None
         item.set_stress_state(None)
         item.invalidate_geometry_cache()
         item.update()
         self.latest_stress_diagnostics = [
             d
             for d in self.latest_stress_diagnostics
-            if item.component.name not in d.part_names
+            if item.component.name not in d.component_names
         ]
-        self.status_message.emit(f"Fuse {item.component.name} reset (intact).")
+        self.status_notice.emit(f"Fuse {item.component.name} reset (intact).")
         self.update()
         return True
 
@@ -4111,6 +4116,14 @@ class CircuitScene(QGraphicsScene):
             self._dot_anim_timer.stop()
         except RuntimeError:
             pass
+        for item in self._placed_items:
+            for anim_attr in ("_lever_anim", "_fuse_pop_anim"):
+                anim = getattr(item, anim_attr, None)
+                if anim is not None:
+                    try:
+                        anim.stop()
+                    except RuntimeError:
+                        pass
         try:
             self.selectionChanged.disconnect(self._on_selection_changed)
         except (RuntimeError, TypeError):

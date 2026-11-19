@@ -239,3 +239,73 @@ def test_k2_seven_seg_display_live_dc_and_session_updates(qapp) -> None:
         scene.shutdown_scene()
         qapp.processEvents()
 
+
+def test_k3_blown_fuse_broken_wire_visual_and_pop_animation(qapp) -> None:
+    """K3: Blown Fuse shows broken open filament stubs, POP! spark starburst animation, and click-to-reset."""
+    from PySide6.QtCore import QRectF
+    from PySide6.QtGui import QColor, QImage, QPainter
+    from circuitsim.components import Fuse
+
+    scene = CircuitScene(SymbolLibrary())
+    try:
+        v1 = scene.place_new_component("dc_voltage", QPointF(-160.0, 0.0), rotation_deg=90)
+        f1 = scene.place_new_component("fuse", QPointF(0.0, -40.0))
+        r1 = scene.place_new_component("resistor", QPointF(160.0, 0.0), rotation_deg=90)
+        gnd = scene.place_new_component("ground", QPointF(0.0, 120.0))
+        assert v1 is not None and f1 is not None and r1 is not None and gnd is not None
+        assert isinstance(f1.component, Fuse)
+
+        r1.component.resistance = 10.0  # 12 V / 10 ohm = 1.2 A > 0.5 A rating
+        scene.set_wire_graph(
+            scene.wire_graph.add_wire(TerminalRef(v1.component.name, "pos"), TerminalRef(f1.component.name, "a"))
+            .add_wire(TerminalRef(f1.component.name, "b"), TerminalRef(r1.component.name, "a"))
+            .add_wire(TerminalRef(r1.component.name, "b"), TerminalRef(gnd.component.name, "gnd"))
+            .add_wire(TerminalRef(v1.component.name, "neg"), TerminalRef(gnd.component.name, "gnd"))
+        )
+
+        # Verify intact rendering draws continuous center wire at y = 0 inside fuse box
+        img_intact = QImage(100, 60, QImage.Format.Format_ARGB32)
+        img_intact.fill(QColor("#0D1117"))
+        p1 = QPainter(img_intact)
+        p1.translate(50.0, 30.0)
+        scene.symbol_library.paint_symbol(p1, "fuse", state="intact", stroke_color="#E6EDF3")
+        p1.end()
+        assert QColor(img_intact.pixel(50, 30)).red() > 150  # Intact filament crosses center x=50, y=30
+
+        # Run SimulationSession -> fuse blows, triggers POP! animation and broken symbol state
+        conn = scene.extract_connectivity_result()
+        sess = SimulationSession(circuit=conn.circuit, connectivity=conn)
+        frame = sess.start()
+        scene.apply_simulation_frame(frame)
+        assert f1.component.is_blown is True
+        assert f1.symbol_state == "blown"
+        assert f1._fuse_pop_progress > 0.0
+        assert f1.live_display_value is not None and "BLOWN" in f1.live_display_value
+
+        # Verify blown symbol leaves open air gap at center (50, 30) and broken stubs away from center
+        img_blown = QImage(100, 60, QImage.Format.Format_ARGB32)
+        img_blown.fill(QColor("#0D1117"))
+        p2 = QPainter(img_blown)
+        p2.translate(50.0, 30.0)
+        scene.symbol_library.paint_symbol(p2, "fuse", state="blown", stroke_color="#E6EDF3")
+        p2.end()
+        center_px = QColor(img_blown.pixel(50, 30))
+        assert center_px.red() < 80  # Open air gap (no bright filament at exact center)
+
+        # Render full scene item while POP! spark progress == 1.0 (offscreen painter safety + spark pixel check)
+        f1._fuse_pop_progress = 1.0
+        img_pop = QImage(120, 100, QImage.Format.Format_ARGB32)
+        img_pop.fill(QColor("#0D1117"))
+        p3 = QPainter(img_pop)
+        scene.render(p3, QRectF(0, 0, 120, 100), QRectF(-60, -90, 120, 100))
+        p3.end()
+
+        # Resetting fuse restores intact state & clears spark animation
+        assert scene.reset_fuse_item(f1) is True
+        assert f1.component.is_blown is False
+        assert f1.symbol_state == "intact"
+        assert f1._fuse_pop_progress == 0.0
+    finally:
+        scene.shutdown_scene()
+        qapp.processEvents()
+

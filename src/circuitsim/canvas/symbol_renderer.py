@@ -696,15 +696,21 @@ class SymbolLibrary:
             painter.setBrush(Qt.BrushStyle.NoBrush)
             painter.drawLine(QPointF(-40.0, 0.0), QPointF(-18.0, 0.0))
             painter.drawLine(QPointF(18.0, 0.0), QPointF(40.0, 0.0))
-            painter.drawRect(QRectF(-18.0, -8.0, 36.0, 16.0))
             if state == "blown":
-                painter.drawLine(QPointF(-18.0, 0.0), QPointF(-5.0, 0.0))
-                painter.drawLine(QPointF(5.0, 0.0), QPointF(18.0, 0.0))
-                blown_pen = QPen(QColor("#F85149"), 2.0)
-                painter.setPen(blown_pen)
-                painter.drawLine(QPointF(-4.0, -4.0), QPointF(4.0, 4.0))
-                painter.drawLine(QPointF(-4.0, 4.0), QPointF(4.0, -4.0))
+                painter.save()
+                painter.setBrush(QBrush(QColor(248, 81, 73, 38)))
+                painter.setPen(QPen(QColor("#F85149"), 1.8))
+                painter.drawRect(QRectF(-18.0, -8.0, 36.0, 16.0))
+                # Two separated broken filament stubs with an open gap in the middle
+                painter.drawLine(QPointF(-18.0, 0.0), QPointF(-8.0, -4.5))
+                painter.drawLine(QPointF(8.0, 4.5), QPointF(18.0, 0.0))
+                painter.setBrush(QBrush(QColor("#F85149")))
+                painter.setPen(Qt.PenStyle.NoPen)
+                painter.drawEllipse(QPointF(-8.0, -4.5), 1.6, 1.6)
+                painter.drawEllipse(QPointF(8.0, 4.5), 1.6, 1.6)
+                painter.restore()
             else:
+                painter.drawRect(QRectF(-18.0, -8.0, 36.0, 16.0))
                 painter.drawLine(QPointF(-18.0, 0.0), QPointF(18.0, 0.0))
 
         elif component_id in ("d_flipflop", "jk_flipflop", "counter_4bit"):

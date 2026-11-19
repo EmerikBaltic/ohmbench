@@ -457,7 +457,7 @@ class Fuse(Component):
     @property
     def display_value(self) -> str:
         if self.is_blown:
-            return f"BLOWN ({self.rating_amps:g}A)"
+            return "BLOWN (click to reset)"
         return f"{self.rating_amps:g}A"
 
     def check_blow(self, current_amps: float) -> bool:

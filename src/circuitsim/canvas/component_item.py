@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import math
+
 from PySide6.QtCore import QPointF, QRectF, Qt, QVariantAnimation
 from PySide6.QtGui import (
     QBrush,
@@ -287,6 +289,10 @@ class ComponentItem(QGraphicsObject):
         )
         self._lever_anim: QVariantAnimation | None = None
 
+        # Blown fuse POP! starburst animation state
+        self._fuse_pop_progress: float = 0.0
+        self._fuse_pop_anim: QVariantAnimation | None = None
+
         self.setToolTip(self.get_live_tooltip(is_running=False))
         self.setAcceptHoverEvents(True)
         self._is_hovered: bool = False
@@ -532,6 +538,10 @@ class ComponentItem(QGraphicsObject):
         self.stress_utilization_pct = float(utilization_pct)
         if warnings_enabled is not None:
             self.stress_warnings_enabled = bool(warnings_enabled)
+        if isinstance(self.component, Fuse):
+            if norm_level == "overload" and "blown" in reason.lower() and not self.component.is_blown:
+                self.component.is_blown = True
+                self.trigger_fuse_pop_animation()
         if changed:
             self.setToolTip(
                 self.get_live_tooltip(
@@ -554,6 +564,9 @@ class ComponentItem(QGraphicsObject):
                 if self.component.closed
                 else self.OPEN_LEVER_ANGLE_DEG
             )
+        if self._fuse_pop_anim is not None:
+            self._fuse_pop_anim.stop()
+        self._fuse_pop_progress = 0.0
         self.setToolTip(self.get_live_tooltip(is_running=False))
         self.setAcceptHoverEvents(True)
         self._is_hovered: bool = False
@@ -588,6 +601,24 @@ class ComponentItem(QGraphicsObject):
     def _on_lever_anim_step(self, value: object) -> None:
         if isinstance(value, (int, float)):
             self._lever_angle_deg = float(value)
+            self.update()
+
+    def trigger_fuse_pop_animation(self, *, duration_ms: int = 400) -> None:
+        """Trigger a ~400 ms expanding starburst flash when a Fuse blows."""
+        self._fuse_pop_progress = 1.0
+        if self._fuse_pop_anim is None:
+            self._fuse_pop_anim = QVariantAnimation(self)
+            self._fuse_pop_anim.valueChanged.connect(self._on_fuse_pop_step)
+        self._fuse_pop_anim.stop()
+        self._fuse_pop_anim.setDuration(max(50, int(duration_ms)))
+        self._fuse_pop_anim.setStartValue(1.0)
+        self._fuse_pop_anim.setEndValue(0.0)
+        self._fuse_pop_anim.start()
+        self.update()
+
+    def _on_fuse_pop_step(self, value: object) -> None:
+        if isinstance(value, (int, float)):
+            self._fuse_pop_progress = max(0.0, min(1.0, float(value)))
             self.update()
 
     def hoverEnterEvent(self, event: QGraphicsSceneHoverEvent) -> None:
@@ -1286,6 +1317,25 @@ class ComponentItem(QGraphicsObject):
         )
         if isinstance(self.component, SevenSegDisplay) and not self.is_ghost:
             self._paint_seven_seg_leds(painter, self.component)
+        if isinstance(self.component, Fuse) and self._fuse_pop_progress > 0.0 and not self.is_ghost:
+            p = self._fuse_pop_progress
+            alpha = int(round(235 * p))
+            radius_outer = 10.0 + (1.0 - p) * 22.0
+            radius_inner = 4.0 + (1.0 - p) * 8.0
+            painter.save()
+            spark_pen = QPen(QColor(255, 214, 0, alpha), 2.0)
+            spark_pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+            painter.setPen(spark_pen)
+            for k in range(8):
+                ang = k * (math.pi / 4.0)
+                painter.drawLine(
+                    QPointF(math.cos(ang) * radius_inner, math.sin(ang) * radius_inner),
+                    QPointF(math.cos(ang) * radius_outer, math.sin(ang) * radius_outer),
+                )
+            painter.setPen(QPen(QColor(248, 81, 73, int(round(200 * p))), 1.6))
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            painter.drawEllipse(QPointF(0.0, 0.0), radius_outer * 0.72, radius_outer * 0.72)
+            painter.restore()
         # Pin-0 / positive-branch-current reference marker (Pin 0 -> Pin 1) inside body bounds
         if not self.is_ghost and self.component.component_type in (
             "resistor",

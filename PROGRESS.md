@@ -684,7 +684,7 @@ When ready to perform Stage 2 (internal/package rename after Stage 1 settles):
 | --- | --- | --- | --- |
 | `K1` | Transformer Overhaul: Primary/Secondary Windings (`Np`/`Ns`), Ideal vs Non-Ideal Mode, coupled-inductor AC/Transient & DC-blocking physics, Properties dialog toggle, polarity dots, and DC info hint | `[x]` | Done |
 | `K2` | Fix 7-Segment Display Live Updates in DC & Transient Simulation (`v_threshold=2.0`, sorted segment table, telemetry sync to canvas `ComponentItem` in `SimulationSession` & `apply_solve_result`) | `[x]` | Done |
-| `K3` | Blown Fuse Visual: Broken Open Wire Gap + Animated "POP!" Spark Effect + Click-to-Reset Label | `[ ]` | pending |
+| `K3` | Blown Fuse Visual: Broken Open Wire Gap + Animated "POP!" Spark Effect + Click-to-Reset Label | `[x]` | Done |
 | `K4` | Always-Visible Pin Labels on All Multi-Pin Components (`ComponentItem.default_pin_labels`, upright edge labels, 7-seg pinout info hint) | `[ ]` | pending |
 | `K5` | Lock Problems Panel to Bottom Dock & Dynamic Palette Resizing (bottom corners owned by bottom dock, single title bar, non-floating) | `[ ]` | pending |
 | `GATE K` | Targeted Gate Verification (`test_k_ui_and_transformer.py`, `test_i_advanced_workbench.py`, `test_problems_panel.py`, `test_g_qol_fixes.py`) & `checkpoint/K-done` tag | `[ ]` | pending |
