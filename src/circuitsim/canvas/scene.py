@@ -120,6 +120,7 @@ class CircuitScene(QGraphicsScene):
     selection_info_changed = Signal(object)  # Emits selected ComponentItem or None
     circuit_modified = Signal()  # Emits whenever components, wires, or junctions change
     switch_toggled_by_user = Signal(str, bool)  # (switch_name, closed)
+    fuse_reset_by_user = Signal(str)  # (fuse_name)
     component_parameters_edited = Signal(str, object)  # (comp_name, dict[str, float])
     status_notice = Signal(str)  # Non-modal status/feedback note for the user
 
@@ -3526,6 +3527,8 @@ class CircuitScene(QGraphicsScene):
             if item.component.name not in d.component_names
         ]
         self.status_notice.emit(f"Fuse {item.component.name} reset (intact).")
+        self.fuse_reset_by_user.emit(item.component.name)
+        self.selection_info_changed.emit(item if item.isSelected() else None)
         self.update()
         return True
 
@@ -3581,6 +3584,8 @@ class CircuitScene(QGraphicsScene):
                 parsed_new["family"] = comp.family
             comp.set_parameters_batch(old_params)  # type: ignore[arg-type]
         else:
+            was_blown = getattr(comp, "is_blown", False) if isinstance(comp, Fuse) else False
+            old_max_i = comp.max_current if isinstance(comp, Fuse) else 0.0
             for k, raw_val in new_params.items():
                 if k in param_keys:
                     old_params[k] = comp.get_parameter_value(k)
@@ -3589,6 +3594,9 @@ class CircuitScene(QGraphicsScene):
                 elif hasattr(comp, k):
                     old_params[k] = getattr(comp, k)
                     parsed_new[k] = raw_val
+            if isinstance(comp, Fuse):
+                comp.is_blown = bool(was_blown)
+                comp.max_current = old_max_i
 
         old_show = comp.show_value
         new_show = old_show if show_value is None else bool(show_value)

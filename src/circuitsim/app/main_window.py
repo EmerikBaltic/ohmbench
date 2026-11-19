@@ -762,6 +762,9 @@ class MainWindow(QMainWindow):
         self.circuit_scene.switch_toggled_by_user.connect(
             self._on_user_switch_toggled
         )
+        self.circuit_scene.fuse_reset_by_user.connect(
+            self._on_user_fuse_reset
+        )
         self.circuit_scene.component_parameters_edited.connect(
             self._on_user_parameters_edited
         )
@@ -1388,6 +1391,14 @@ class MainWindow(QMainWindow):
         if self._sim_state in (SimulationState.RUNNING, SimulationState.PAUSED):
             self.sim_controller.toggle_switch(switch_name)
 
+    def _on_user_fuse_reset(self, fuse_name: str) -> None:
+        selected = [
+            it for it in self.circuit_scene.selectedItems() if isinstance(it, ComponentItem)
+        ]
+        self._update_info_panel(selected[0] if selected else None)
+        if self._sim_state in (SimulationState.RUNNING, SimulationState.PAUSED):
+            self.sim_controller.reset_fuse(fuse_name)
+
     def _on_user_parameters_edited(
         self, comp_name: str, param_map: object
     ) -> None:
@@ -1866,6 +1877,7 @@ class MainWindow(QMainWindow):
             (self.circuit_scene.selection_info_changed, self._update_info_panel),
             (self.circuit_scene.circuit_modified, self._on_circuit_modified),
             (self.circuit_scene.switch_toggled_by_user, self._on_user_switch_toggled),
+            (self.circuit_scene.fuse_reset_by_user, self._on_user_fuse_reset),
             (self.circuit_scene.component_parameters_edited, self._on_user_parameters_edited),
             (self.circuit_scene.status_notice, self._on_scene_status_notice),
             (self.sim_controller.frame_ready, self._on_simulation_frame),

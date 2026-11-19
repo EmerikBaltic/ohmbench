@@ -475,11 +475,24 @@ class EditComponentParametersCommand(QUndoCommand):
                 comp.reset_state()
         else:
             param_keys = {p.key for p in comp.get_editable_parameters()}
-            for k, v in params.items():
+            for k, raw_val in params.items():
                 if k in param_keys:
-                    comp.set_parameter_value(k, v)
+                    comp.set_parameter_value(k, raw_val)  # type: ignore[arg-type]
                 elif hasattr(comp, k):
-                    setattr(comp, k, v)
+                    setattr(comp, k, raw_val)
+            if comp.component_type == "fuse":
+                comp.max_current = float(getattr(comp, "rating_amps", comp.max_current))
+                if not getattr(comp, "is_blown", False):
+                    if getattr(self.item, "_fuse_pop_anim", None) is not None:
+                        self.item._fuse_pop_anim.stop()  # type: ignore[union-attr]
+                    if hasattr(self.item, "_fuse_pop_progress"):
+                        self.item._fuse_pop_progress = 0.0
+                    self.item.set_stress_state(None)
+                    self.scene.latest_stress_diagnostics = [
+                        d
+                        for d in self.scene.latest_stress_diagnostics
+                        if comp.name not in d.component_names
+                    ]
         comp.show_value = show_val
         self.item.live_display_value = None
         self.item.setToolTip(self.item.get_live_tooltip(is_running=False))

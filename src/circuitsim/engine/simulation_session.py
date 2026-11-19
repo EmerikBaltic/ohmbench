@@ -36,6 +36,7 @@ from circuitsim.components.lightbulb import Lightbulb
 from circuitsim.components.logic_gate import LogicGate
 from circuitsim.components.meters import Ammeter, Voltmeter
 from circuitsim.components.potentiometer import Potentiometer
+from circuitsim.components.power import Fuse
 from circuitsim.components.resistor import Resistor
 from circuitsim.components.sources import (
     ACVoltageSource,
@@ -268,6 +269,7 @@ class SimulationFrame:
     components: dict[str, ComponentTelemetry] = field(default_factory=dict)
     diagnostics: tuple[ProblemDiagnostic, ...] = ()
     overflow: bool = False
+    generation: int = 0
 
 
 def format_component_canvas_text(comp: Component) -> str:
@@ -365,6 +367,7 @@ class SimulationSession:
         self._has_scope_sink: bool = False
         self._active_diagnostics: list[ProblemDiagnostic] = []
         self._latched_warnings: dict[tuple[str, tuple[str, ...]], CircuitWarning] = {}
+        self._generation: int = 0
 
     @classmethod
     def from_schematic(
@@ -391,6 +394,7 @@ class SimulationSession:
         from circuitsim.canvas.connectivity import extract_connectivity
 
         was_running = self.state == SimulationState.RUNNING
+        self._generation += 1
         self._connectivity = extract_connectivity(
             placed_components, wires, explicit_junctions
         )
@@ -410,6 +414,7 @@ class SimulationSession:
     ) -> SimulationFrame:
         """Load a pre-extracted `ConnectivityResult` (e.g. built from `WireGraph`)."""
         was_running = self.state == SimulationState.RUNNING
+        self._generation += 1
         self._connectivity = connectivity
         self.circuit = connectivity.circuit
         self.solver = MNASolver(self.circuit)
@@ -966,7 +971,28 @@ class SimulationSession:
             raise TypeError(f"Component {switch_name!r} is not a Switch.")
         comp.toggle()
         self.circuit.mark_modified()
+        self._generation += 1
         self.solver._be_steps_remaining = max(self.solver._be_steps_remaining, 3)
+
+        if self.state == SimulationState.RUNNING:
+            return self.step_chunk(steps=3)
+        if self.state == SimulationState.PAUSED:
+            try:
+                dc_res = self.solver.solve_dc()
+                return self.build_frame(node_voltages=dc_res.node_voltages)
+            except Exception:
+                return self.build_frame()
+        return self.build_frame()
+
+    def reset_fuse(self, fuse_name: str) -> SimulationFrame:
+        """Reset a blown `Fuse` by name and immediately resume live simulation."""
+        comp = self.circuit.get_component(fuse_name)
+        if not isinstance(comp, Fuse):
+            raise TypeError(f"Component {fuse_name!r} is not a Fuse.")
+        comp.reset_fuse()
+        self.circuit.mark_modified()
+        self._generation += 1
+        self.solver._be_steps_remaining = max(self.solver._be_steps_remaining, 2)
 
         if self.state == SimulationState.RUNNING:
             return self.step_chunk(steps=3)
@@ -986,6 +1012,7 @@ class SimulationSession:
     ) -> SimulationFrame:
         """Validate and apply a parameter change (or atomic batch) to `comp_name` live."""
         comp = self.circuit.get_component(comp_name)
+        prev_rating = comp.rating_amps if isinstance(comp, Fuse) else 0.0
         if param_key == "__batch__" and isinstance(raw_value, dict):
             if isinstance(comp, LogicGate):
                 comp.set_parameters_batch(raw_value)  # type: ignore[arg-type]
@@ -1007,7 +1034,13 @@ class SimulationSession:
                 comp.set_parameter_value(param_key, raw_value)  # type: ignore[arg-type]
             except (KeyError, TypeError):
                 setattr(comp, param_key, raw_value)
+        if isinstance(comp, Fuse):
+            comp.max_current = comp.rating_amps
+            if comp.rating_amps > prev_rating:
+                comp.reset_fuse()
+                self.solver._be_steps_remaining = max(self.solver._be_steps_remaining, 2)
         self.circuit.mark_modified()
+        self._generation += 1
         self._dt = self._compute_step_dt()
 
         if self.state == SimulationState.RUNNING:
@@ -1099,4 +1132,5 @@ class SimulationSession:
             components=comp_map,
             diagnostics=tuple(self._active_diagnostics),
             overflow=self._last_overflow,
+            generation=self._generation,
         )

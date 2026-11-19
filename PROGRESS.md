@@ -689,6 +689,22 @@ When ready to perform Stage 2 (internal/package rename after Stage 1 settles):
 | `K5` | Lock Problems Panel to Bottom Dock & Dynamic Palette Resizing (bottom corners owned by bottom dock, single title bar, non-floating) | `[x]` | Done |
 | `GATE K` | Targeted Gate Verification (`test_k_ui_and_transformer.py`, `test_i_advanced_workbench.py`, `test_problems_panel.py`, `test_g_qol_fixes.py`, `test_f7_wav_and_jigs.py`, `test_paint_safety_and_theme_palette.py`: `38 passed in 17.04s`) & `checkpoint/K-done` tag | `[x]` | Done |
 
+---
+
+## PHASE J QUEUE (FUSE/PIN FIXES, DSO-1062D OSCILLOSCOPE ELEMENT, SPICE EXPORT, DOCS & PACKAGING)
+
+| Item | Description | Status | Notes / Commit |
+| --- | --- | --- | --- |
+| `J0a` | Fix live `Fuse` rating edit & click/context-reset while simulation is running (`generation` counter + live worker sync) | `[x]` | Done |
+| `J0b` | Fix multi-pin default label positioning (`default_pin_label_rects`) so `P1`/`P2`/`S1`/`S2` etc. never overlap terminal dots | `[ ]` | pending |
+| `J1` | Initialize Phase J Queue & run targeted Batch 1 + Batch 2 legacy regression suites | `[ ]` | pending |
+| `J2` | Placeable `"oscilloscope"` (`OSC`) canvas component & Qt-free DSO-1062D signal/trigger/math/FFT/cursor engine (`dso_engine.py`) | `[ ]` | pending |
+| `J3` | Voltcraft DSO-1062D benchtop front-panel GUI (`dso_panel.py`), double-click multi-instance launch, live sync & PNG/CSV export | `[ ]` | pending |
+| `J4` | Milestone 3 Properties Dialog polish: live V/I/P banner, Inductor $X_L$/$\tau$ + reverse calculator, Lightbulb $R_{\text{hot}}$ | `[ ]` | pending |
+| `J5` | Standard SPICE Netlist exporter (`spice_export.py`) with `MEG` suffixes & File > Export menu action | `[ ]` | pending |
+| `J6` | Student docs (`LEARNING_NOTES.md`, `SUGGESTIONS.md`) & Windows packaging (`packaging/ohmbench.spec`, `packaging/installer.iss`, `.gitignore`, `README.md`) | `[ ]` | pending |
+| `GATE J` | Targeted Gate Verification (`test_j_dso_and_release.py`, `test_k_ui_and_transformer.py`, `test_g_qol_fixes.py`) & `checkpoint/J-done` tag | `[ ]` | pending |
+
 
 
 

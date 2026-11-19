@@ -45,12 +45,13 @@ class _SessionThreadWorker(QObject):
             self._tick_timer.timeout.connect(self._on_tick)
         return self._tick_timer
 
-    @Slot(object, object, object)
+    @Slot(object, object, object, int)
     def handle_load_schematic(
         self,
         placed_specs: object,
         wire_specs: object,
         junctions: object,
+        min_gen: int = 0,
     ) -> None:
         timer = self._ensure_timer()
         frame = self.session.load_schematic(
@@ -58,16 +59,22 @@ class _SessionThreadWorker(QObject):
             wire_specs,  # type: ignore[arg-type]
             junctions,  # type: ignore[arg-type]
         )
+        self.session._generation = max(self.session._generation, int(min_gen))
+        if frame.generation < self.session._generation:
+            frame = self.session.build_frame(node_voltages=frame.node_voltages)
         if frame.state == SimulationState.RUNNING:
             timer.start()
         else:
             timer.stop()
         self.frame_emitted.emit(frame)
 
-    @Slot(object)
-    def handle_load_connectivity(self, connectivity: object) -> None:
+    @Slot(object, int)
+    def handle_load_connectivity(self, connectivity: object, min_gen: int = 0) -> None:
         timer = self._ensure_timer()
         frame = self.session.load_connectivity(connectivity)  # type: ignore[arg-type]
+        self.session._generation = max(self.session._generation, int(min_gen))
+        if frame.generation < self.session._generation:
+            frame = self.session.build_frame(node_voltages=frame.node_voltages)
         if frame.state == SimulationState.RUNNING:
             timer.start()
         else:
@@ -102,22 +109,39 @@ class _SessionThreadWorker(QObject):
     def handle_set_speed(self, speed_value: str) -> None:
         self.session.speed = SimulationSpeed(speed_value)
 
-    @Slot(str)
-    def handle_toggle_switch(self, switch_name: str) -> None:
+    @Slot(str, int)
+    def handle_toggle_switch(self, switch_name: str, min_gen: int = 0) -> None:
         try:
             frame = self.session.toggle_switch(switch_name)
+            self.session._generation = max(self.session._generation, int(min_gen))
+            if frame.generation < self.session._generation:
+                frame = self.session.build_frame(node_voltages=frame.node_voltages)
             self.frame_emitted.emit(frame)
         except Exception:
             pass
 
-    @Slot(str, str, object)
+    @Slot(str, int)
+    def handle_reset_fuse(self, fuse_name: str, min_gen: int = 0) -> None:
+        try:
+            frame = self.session.reset_fuse(fuse_name)
+            self.session._generation = max(self.session._generation, int(min_gen))
+            if frame.generation < self.session._generation:
+                frame = self.session.build_frame(node_voltages=frame.node_voltages)
+            self.frame_emitted.emit(frame)
+        except Exception:
+            pass
+
+    @Slot(str, str, object, int)
     def handle_update_parameter(
-        self, comp_name: str, param_key: str, raw_value: object
+        self, comp_name: str, param_key: str, raw_value: object, min_gen: int = 0
     ) -> None:
         try:
             frame = self.session.update_component_parameter(
                 comp_name, param_key, raw_value  # type: ignore[arg-type]
             )
+            self.session._generation = max(self.session._generation, int(min_gen))
+            if frame.generation < self.session._generation:
+                frame = self.session.build_frame(node_voltages=frame.node_voltages)
             self.frame_emitted.emit(frame)
         except Exception:
             pass
@@ -161,14 +185,15 @@ class SimulationWorkerController(QObject):
     frame_ready = Signal(object)  # Emits SimulationFrame on the main thread
 
     # Internal queued signals to the worker thread
-    _sig_load = Signal(object, object, object)
-    _sig_load_connectivity = Signal(object)
+    _sig_load = Signal(object, object, object, int)
+    _sig_load_connectivity = Signal(object, int)
     _sig_start = Signal()
     _sig_pause = Signal()
     _sig_stop = Signal()
     _sig_speed = Signal(str)
-    _sig_toggle_switch = Signal(str)
-    _sig_update_param = Signal(str, str, object)
+    _sig_toggle_switch = Signal(str, int)
+    _sig_reset_fuse = Signal(str, int)
+    _sig_update_param = Signal(str, str, object, int)
     _sig_cleanup = Signal()
 
     def __init__(self, parent: QObject | None = None) -> None:
@@ -177,6 +202,7 @@ class SimulationWorkerController(QObject):
         self._worker = _SessionThreadWorker()
         self._worker_moved_to_thread: bool = False
         self._is_shut_down: bool = False
+        self._min_generation: int = 0
 
         self._sig_load.connect(
             self._worker.handle_load_schematic, Qt.ConnectionType.QueuedConnection
@@ -199,6 +225,9 @@ class SimulationWorkerController(QObject):
         self._sig_toggle_switch.connect(
             self._worker.handle_toggle_switch, Qt.ConnectionType.QueuedConnection
         )
+        self._sig_reset_fuse.connect(
+            self._worker.handle_reset_fuse, Qt.ConnectionType.QueuedConnection
+        )
         self._sig_update_param.connect(
             self._worker.handle_update_parameter, Qt.ConnectionType.QueuedConnection
         )
@@ -207,7 +236,7 @@ class SimulationWorkerController(QObject):
             Qt.ConnectionType.BlockingQueuedConnection,
         )
         self._worker.frame_emitted.connect(
-            self.frame_ready, Qt.ConnectionType.QueuedConnection
+            self._on_worker_frame, Qt.ConnectionType.QueuedConnection
         )
         app = QCoreApplication.instance()
         if app is not None:
@@ -222,6 +251,13 @@ class SimulationWorkerController(QObject):
         if not self._thread.isRunning():
             self._thread.start()
 
+    @Slot(object)
+    def _on_worker_frame(self, frame: object) -> None:
+        """Drop stale pre-edit/pre-reset frames using the monotonic generation counter."""
+        if getattr(frame, "generation", 0) < self._min_generation:
+            return
+        self.frame_ready.emit(frame)
+
     def load_schematic(
         self,
         placed_components: Sequence[PlacedComponentSpec],
@@ -230,16 +266,19 @@ class SimulationWorkerController(QObject):
     ) -> None:
         """Send an updated schematic snapshot to the worker thread."""
         self._ensure_thread_running()
+        self._min_generation += 1
         self._sig_load.emit(
             tuple(placed_components),
             tuple(wires),
             tuple(explicit_junctions),
+            self._min_generation,
         )
 
     def load_connectivity(self, connectivity: object) -> None:
         """Send a pre-extracted `ConnectivityResult` (built from `WireGraph`) to the worker."""
         self._ensure_thread_running()
-        self._sig_load_connectivity.emit(connectivity)
+        self._min_generation += 1
+        self._sig_load_connectivity.emit(connectivity, self._min_generation)
 
     def start(self) -> None:
         """Start or resume simulation on the worker thread."""
@@ -264,14 +303,22 @@ class SimulationWorkerController(QObject):
     def toggle_switch(self, switch_name: str) -> None:
         """Toggle a switch live on the worker thread."""
         self._ensure_thread_running()
-        self._sig_toggle_switch.emit(switch_name)
+        self._min_generation += 1
+        self._sig_toggle_switch.emit(switch_name, self._min_generation)
+
+    def reset_fuse(self, fuse_name: str) -> None:
+        """Reset a blown fuse live on the worker thread and ignore stale pre-reset frames."""
+        self._ensure_thread_running()
+        self._min_generation += 1
+        self._sig_reset_fuse.emit(fuse_name, self._min_generation)
 
     def update_component_parameter(
         self, comp_name: str, param_key: str, value: object
     ) -> None:
         """Update a component parameter live on the worker thread."""
         self._ensure_thread_running()
-        self._sig_update_param.emit(comp_name, param_key, value)
+        self._min_generation += 1
+        self._sig_update_param.emit(comp_name, param_key, value, self._min_generation)
 
     def shutdown(self) -> None:
         """Cleanly stop the worker timer and join the background `QThread`."""
@@ -288,7 +335,7 @@ class SimulationWorkerController(QObject):
 
         if self._worker is not None:
             try:
-                self._worker.frame_emitted.disconnect(self.frame_ready)
+                self._worker.frame_emitted.disconnect(self._on_worker_frame)
             except (RuntimeError, TypeError):
                 pass
 

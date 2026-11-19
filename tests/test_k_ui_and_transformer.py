@@ -415,3 +415,79 @@ def test_k5_problems_dock_locked_to_bottom_and_resizes_palette(qapp, tmp_path) -
         win.close()
         qapp.processEvents()
 
+
+def test_j0a_live_fuse_rating_edit_and_reset_without_stop_play(qapp, tmp_path) -> None:
+    """J0a: Raising Fuse rating_amps & resetting while simulation runs keeps F1 intact & conducting without Stop/Play."""
+    from circuitsim.app.sim_worker import SimulationWorkerController
+    from circuitsim.components import Fuse
+
+    # (a) Pure-Python SimulationSession + Scene flow without stopping simulation
+    scene = CircuitScene(SymbolLibrary())
+    try:
+        i1 = scene.place_new_component("dc_current", QPointF(-160.0, 0.0), rotation_deg=90)
+        f1 = scene.place_new_component("fuse", QPointF(0.0, -40.0))
+        r1 = scene.place_new_component("resistor", QPointF(160.0, 0.0), rotation_deg=90)
+        gnd = scene.place_new_component("ground", QPointF(0.0, 120.0))
+        assert i1 is not None and f1 is not None and r1 is not None and gnd is not None
+        assert isinstance(f1.component, Fuse)
+
+        i1.component.dc_current = 1.0  # 1 A current source
+        f1.component.rating_amps = 0.5
+        r1.component.resistance = 10.0
+
+        # Ensure positive node of dc_current drives f1.a (at rotation 90, pos is bottom or top; use TerminalRef explicitly)
+        scene.set_wire_graph(
+            scene.wire_graph.add_wire(TerminalRef(i1.component.name, "pos"), TerminalRef(f1.component.name, "a"))
+            .add_wire(TerminalRef(f1.component.name, "b"), TerminalRef(r1.component.name, "a"))
+            .add_wire(TerminalRef(r1.component.name, "b"), TerminalRef(gnd.component.name, "gnd"))
+            .add_wire(TerminalRef(i1.component.name, "neg"), TerminalRef(gnd.component.name, "gnd"))
+        )
+
+        conn = scene.extract_connectivity_result()
+        sess = SimulationSession(circuit=conn.circuit, connectivity=conn)
+        resets: list[str] = []
+        param_edits: list[tuple[str, object]] = []
+        scene.fuse_reset_by_user.connect(resets.append)
+        scene.component_parameters_edited.connect(lambda n, p: param_edits.append((n, p)))
+
+        # Step until F1 blows on canvas
+        f0 = sess.start()
+        f1_frame = sess.step_chunk(steps=5)
+        stale_frame = f1_frame
+        scene.apply_simulation_frame(f1_frame)
+        assert f1.component.is_blown is True
+        assert abs(f1.component.voltage) > 1e5  # Open-circuit high voltage across blown fuse
+
+        # Edit F1 rating to 2.0 A & reset WITHOUT stopping sess (sync live session + verify generation bump)
+        assert scene.edit_component_parameters(f1, {"rating_amps": 2.0}) is True
+        assert scene.reset_fuse_item(f1) is True
+        assert f1.component.name in resets
+        assert any(n == f1.component.name for n, _ in param_edits)
+
+        # Simulate worker controller generation gate dropping stale pre-reset frames
+        ctrl = SimulationWorkerController()
+        forwarded: list[object] = []
+        ctrl.frame_ready.connect(forwarded.append)
+        try:
+            ctrl._min_generation = stale_frame.generation + 1
+            ctrl._on_worker_frame(stale_frame)
+            assert forwarded == []  # Stale pre-reset frame rejected
+        finally:
+            ctrl.shutdown()
+
+        # Push parameter edit + reset into the still-running SimulationSession
+        f_edit = sess.update_component_parameter(f1.component.name, "rating_amps", 2.0)
+        f_rst = sess.reset_fuse(f1.component.name)
+        assert f_rst.generation > f_edit.generation > stale_frame.generation
+        assert f_rst.components[f1.component.name].is_blown is False
+
+        for _ in range(5):
+            f_next = sess.step_chunk(steps=10)
+            scene.apply_simulation_frame(f_next)
+
+        assert f1.component.is_blown is False
+        assert abs(f1.component.current) == pytest.approx(1.0, abs=0.02)
+    finally:
+        scene.shutdown_scene()
+        qapp.processEvents()
+

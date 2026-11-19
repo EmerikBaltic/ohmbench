@@ -475,6 +475,15 @@ class Fuse(Component):
         super().reset_state()
         self.is_blown = False
 
+    def set_parameter_value(self, key: str, raw_value: float | str) -> float:
+        prev_rating = self.rating_amps
+        parsed = super().set_parameter_value(key, raw_value)
+        if key == "rating_amps":
+            self.max_current = self.rating_amps
+            if self.rating_amps > prev_rating:
+                self.is_blown = False
+        return parsed
+
     def to_dict(self) -> dict[str, Any]:
         return {
             "rating_amps": self.rating_amps,
