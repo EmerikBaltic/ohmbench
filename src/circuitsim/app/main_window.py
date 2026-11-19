@@ -1215,8 +1215,10 @@ class MainWindow(QMainWindow):
         self.open_path(p)
 
     def _build_examples_menu(self) -> None:
+        from circuitsim.canvas.symbol_geometry import get_resource_path
+
         self.examples_menu.clear()
-        ex_dir = Path(__file__).resolve().parent.parent / "resources" / "examples"
+        ex_dir = get_resource_path("resources", "examples")
         index_file = ex_dir / "index.json"
         if not index_file.exists():
             return

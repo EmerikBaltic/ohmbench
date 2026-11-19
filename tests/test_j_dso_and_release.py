@@ -502,3 +502,66 @@ def test_j5_spice_netlist_exporter(qapp) -> None:
     finally:
         scene.shutdown_scene()
         qapp.processEvents()
+
+
+def test_j6_packaging_assets_resource_helper_and_docs(monkeypatch, tmp_path: Path) -> None:
+    """J6: Verify packaging specs, frozen resource resolution, docs, and .gitignore rules."""
+    import sys
+
+    from circuitsim.canvas.symbol_geometry import get_resource_path
+
+    repo_root = Path(__file__).resolve().parent.parent
+
+    spec_path = repo_root / "packaging" / "ohmbench.spec"
+    iss_path = repo_root / "packaging" / "installer.iss"
+    assert spec_path.is_file()
+    assert iss_path.is_file()
+
+    spec_txt = spec_path.read_text(encoding="utf-8")
+    assert "exclude_binaries=True" in spec_txt
+    assert "COLLECT(" in spec_txt
+    assert "console=False" in spec_txt
+    assert 'name="Ohmbench"' in spec_txt or "name='Ohmbench'" in spec_txt
+    assert (repo_root / "src" / "circuitsim" / "main.py").is_file()
+    assert (repo_root / "src" / "circuitsim" / "resources").is_dir()
+    assert (repo_root / "src" / "circuitsim" / "templates").is_dir()
+    assert "resources" in spec_txt and "templates" in spec_txt
+
+    iss_txt = iss_path.read_text(encoding="utf-8")
+    assert r"..\dist\Ohmbench\*" in iss_txt
+    assert "{group}" in iss_txt
+    assert "desktopicon" in iss_txt
+    assert r"..\LICENSE" in iss_txt
+    assert (repo_root / "LICENSE").is_file()
+
+    # Non-frozen & monkeypatched PyInstaller _MEIPASS resolution
+    iec_dir = get_resource_path("resources", "symbols", "iec")
+    assert iec_dir.is_dir() and (iec_dir / "oscilloscope.json").is_file()
+
+    fake_iec = tmp_path / "circuitsim" / "resources" / "symbols" / "iec"
+    fake_iec.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(sys, "frozen", True, raising=False)
+    monkeypatch.setattr(sys, "_MEIPASS", str(tmp_path), raising=False)
+    assert get_resource_path("resources", "symbols", "iec") == fake_iec
+
+    readme_txt = (repo_root / "README.md").read_text(encoding="utf-8")
+    assert "Building and Packaging (Windows)" in readme_txt
+    assert "--onedir" in readme_txt
+    assert "PySide6" in readme_txt
+    assert "LGPL" in readme_txt
+    assert "BSD 3-Clause" in readme_txt or "BSD-3-Clause" in readme_txt
+
+    gitignore_txt = (repo_root / ".gitignore").read_text(encoding="utf-8")
+    assert "dist/" in gitignore_txt
+    assert "build/" in gitignore_txt
+    assert "Output/" in gitignore_txt
+    assert "!packaging/ohmbench.spec" in gitignore_txt
+
+    learn_txt = (repo_root / "LEARNING_NOTES.md").read_text(encoding="utf-8")
+    assert "DSO-1062D" in learn_txt
+    assert "WireGraph" in learn_txt
+    assert "Three Hands-On Student Exercises" in learn_txt
+
+    sugg_txt = (repo_root / "SUGGESTIONS.md").read_text(encoding="utf-8")
+    assert "Post-v1.0 Prioritized Roadmap" in sugg_txt
+    assert sugg_txt.count("*(Effort:") >= 5

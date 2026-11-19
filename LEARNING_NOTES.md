@@ -1,3 +1,51 @@
+# Learning Notes — Ohmbench (2nd-Year EE Architecture Guide)
+
+Welcome to **Ohmbench**! This guide gives second-year electrical engineering students a plain-language tour of how the simulator works under the hood, what order to read the source files in, and three hands-on bench experiments you can run in minutes.
+
+---
+
+### Recommended File Reading Order
+
+1. **`src/circuitsim/components/`** (`base.py`, `resistor.py`, `capacitor.py`, `inductor.py`, `diode.py`, `bjt.py`, `mosfet.py`, `power.py`, `oscilloscope.py`) — Pure component physics equations and terminal sign conventions, zero Qt.
+2. **`src/circuitsim/wiring/`** (`model.py`, `netlist.py`, `serializer.py`) — Immutable `WireGraph` geometry, `TerminalRef` / `JunctionRef` / `FreeEnd` attachments, Union-Find electrical node numbering, and `.circ` persistence.
+3. **`src/circuitsim/engine/`** (`netlist.py`, `solver.py`, `ac_analysis.py`) — Topological validation, cached SciPy LU factorization (`lu_factor` / `lu_solve`), Trapezoidal/Backward-Euler integration, Newton-Raphson nonlinear solving, and small-signal AC sweeps.
+4. **`src/circuitsim/engine/simulation_session.py`** — Background simulation state machine generating immutable `SimulationFrame` telemetry snapshots.
+5. **`src/circuitsim/scope/dso_engine.py`** — Pure-Python DSO-1062D math engine (AC/DC/GND coupling, edge triggers, FFT, measurements, cursors, Auto Set).
+6. **`src/circuitsim/io/spice_export.py`** — Standard `.cir` netlist formatter (`1MEG`, `.MODEL`, `K` coupled coils) without any GUI dependencies.
+7. **`src/circuitsim/canvas/` & `src/circuitsim/app/`** (`component_item.py`, `scene.py`, `view.py`, `dso_panel.py`, `main_window.py`) — PySide6 (Qt 6) schematic editor and Voltcraft DSO-1062D front-panel window.
+
+---
+
+### Key Concepts in Plain Language
+
+1. **Modified Nodal Analysis (MNA) & Companion Models (`engine/solver.py`)**:
+   - Standard KCL writes $\mathbf{G}\mathbf{v} = \mathbf{i}$ using node conductances $G = 1/R$. Ideal voltage sources and capacitors at $t = 0+$ add extra current rows, forming the enlarged MNA matrix $\mathbf{A}\mathbf{x} = \mathbf{b}$.
+   - During transient simulation, each capacitor or inductor is replaced at each step $\Delta t$ by a Norton **companion model**: an equivalent conductance $G_{\text{eq}}$ in parallel with a history current source $I_{\text{eq}}$ computed from the previous step. **Trapezoidal** integration conserves energy accurately on undamped $LC$ tanks, while **Backward Euler** damps sudden switching steps (`Switch`) so currents do not ring numerically.
+   - Real **Voltmeters** and the 4-pin **Oscilloscope (`OSC1`)** stamp genuine $10\text{ M}\Omega$ conductances between probe and reference ground, so loading errors on high-impedance dividers show up naturally just like on a physical lab bench.
+2. **Coupled Transformers ($N_p : N_s$, Ideal vs. Non-Ideal — `components/power.py`)**:
+   - A real transformer transfers energy through a changing magnetic flux ($\Phi \propto dI/dt$), never steady DC! Ohmbench models the primary and secondary windings using self and mutual inductance ($M = k\sqrt{L_p L_s}$), winding resistances $R_p, R_s$, and turns ratio $N_p : N_s$ in both transient and AC sweeps. Feed DC through a transformer and steady secondary voltage drops to $0\text{ V}$; feed AC sine and you see the exact turns ratio!
+3. **Newton-Raphson Damping (`diode.py`, `bjt.py`, `mosfet.py`)**:
+   - Diode current grows exponentially ($I_s e^{V / n V_T}$). Because stepping voltage too far in one linear iteration causes exponential overflow, `MNASolver` linearizes the junction tangent conductance at each guess and limits step size (`p-n` junction damping) so LEDs, BJTs, and MOSFET amplifiers converge smoothly.
+4. **DSO-1062D Signal Processing, Triggers & FFT (`scope/dso_engine.py`)**:
+   - **Coupling**: `DC` shows raw probe voltage; `AC` measures integer-period DC offset between rising crossings and subtracts it cleanly; `GND` flattens to $0\text{ V}$ baseline.
+   - **Triggers**: Linearly interpolates exact sub-sample edge crossings (`RISING`, `FALLING`, `EITHER`) with holdoff. `NORMAL` waits when nothing crosses the trigger level, `AUTO` free-runs, and `SINGLE` freezes on the first valid trigger event.
+   - **FFT**: Removes DC bias, applies a Hann/Hamming/Blackman window, runs NumPy `rfft`, and interpolates around the spectral bin peak so a $1\text{ kHz}$ sine reads right at $1000\text{ Hz}$.
+5. **Immutable `WireGraph` Attachments (`wiring/model.py`)**:
+   - Every wire stores immutable `Attachment` endpoints (`TerminalRef(component, pin)`, `JunctionRef(id)`, or `FreeEnd(x, y)`). Dragging or rotating a resistor updates only that terminal's coordinates and cleanly re-routes the attached wires — neighboring nets never accidentally short together.
+
+---
+
+### Three Hands-On Student Exercises
+
+1. **Observe Real DC Blocking & AC Step-Up on a Transformer**:
+   Drop an `AC Voltage Source` (`10 V`, `1 kHz`), a `Transformer` ($N_p = 100, N_s = 200$), a $10\text{ k}\Omega$ secondary load to `GND`, and an `Oscilloscope` (`OSC1`) with `CH1` on the primary and `CH2` on the secondary. Double-click `OSC1` and click **AUTO SET**: verify `CH2` measures $\approx 2\times$ `CH1`. Then replace the AC source with a `10 V` `DC Voltage Source` and verify steady secondary voltage stays near `0 V`.
+2. **Use AC Coupling & FFT on a DC-Biased Tone**:
+   Wire `OSC1` `CH1` to an `AC Voltage Source` set to `amplitude = 1 V`, `frequency = 1 kHz`, `dc_offset = 5 V`. Double-click `OSC1`, click **CH1 MENU -> F1 Coupling (AC)** to strip away the `5 V` DC offset cleanly, then click **MATH MENU -> F0 Math ON -> F1 FFT** to verify the spectral peak at `1.00 kHz`.
+3. **Export & Inspect a Standard SPICE `.cir` Netlist**:
+   Build a small BJT or Diode + Resistor (`1 MΩ` and `15 mΩ`) circuit on the canvas, choose **File > Export as SPICE Netlist (.cir)...**, and inspect the generated text file. Notice how $1\text{ M}\Omega$ becomes `1MEG` (never `1M`!) and $15\text{ m}\Omega$ becomes `15m`.
+
+---
+
 # Learning Notes — CircuitSim
 
 ## Milestone 3 — Step 3A: How Saving and Loading Work

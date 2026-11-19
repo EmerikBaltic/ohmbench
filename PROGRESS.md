@@ -702,7 +702,7 @@ When ready to perform Stage 2 (internal/package rename after Stage 1 settles):
 | `J3` | Voltcraft DSO-1062D benchtop front-panel GUI (`dso_panel.py`), double-click multi-instance launch, live sync & PNG/CSV export | `[x]` | Done |
 | `J4` | Milestone 3 Properties Dialog polish: live V/I/P banner, Inductor $X_L$/$\tau$ + reverse calculator, Lightbulb $R_{\text{hot}}$ | `[x]` | Done |
 | `J5` | Standard SPICE Netlist exporter (`spice_export.py`) with `MEG` suffixes & File > Export menu action | `[x]` | Done |
-| `J6` | Student docs (`LEARNING_NOTES.md`, `SUGGESTIONS.md`) & Windows packaging (`packaging/ohmbench.spec`, `packaging/installer.iss`, `.gitignore`, `README.md`) | `[ ]` | pending |
+| `J6` | Student docs (`LEARNING_NOTES.md`, `SUGGESTIONS.md`) & Windows packaging (`packaging/ohmbench.spec`, `packaging/installer.iss`, `.gitignore`, `README.md`) | `[x]` | Done |
 | `GATE J` | Targeted Gate Verification (`test_j_dso_and_release.py`, `test_k_ui_and_transformer.py`, `test_g_qol_fixes.py`) & `checkpoint/J-done` tag | `[ ]` | pending |
 
 

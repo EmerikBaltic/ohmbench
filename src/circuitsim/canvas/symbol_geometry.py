@@ -12,14 +12,26 @@ import json
 import math
 from pathlib import Path
 import re
+import sys
 import xml.etree.ElementTree as ET
 
 GRID_PITCH_PX: int = 20
 
+
+def get_resource_path(*parts: str) -> Path:
+    """Resolve a bundled resource path cleanly both from source and PyInstaller `sys._MEIPASS`."""
+    if getattr(sys, "frozen", False) and hasattr(sys, "_MEIPASS"):
+        base = Path(str(getattr(sys, "_MEIPASS")))
+        pkg_candidate = base / "circuitsim"
+        if (pkg_candidate.joinpath(*parts)).exists() or pkg_candidate.exists():
+            return pkg_candidate.joinpath(*parts)
+        return base.joinpath(*parts)
+    pkg_root = Path(__file__).resolve().parent.parent
+    return pkg_root.joinpath(*parts)
+
+
 # Default path to the built-in IEC symbols directory
-DEFAULT_IEC_SYMBOLS_DIR: Path = (
-    Path(__file__).resolve().parent.parent / "resources" / "symbols" / "iec"
-)
+DEFAULT_IEC_SYMBOLS_DIR: Path = get_resource_path("resources", "symbols", "iec")
 
 
 @dataclass(frozen=True)

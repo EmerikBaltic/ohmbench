@@ -12,8 +12,11 @@ __pycache__/
 # Packaging and build outputs
 build/
 dist/
+Output/
+packaging/Output/
 *.egg-info/
 *.spec
+!packaging/ohmbench.spec
 *.zip
 *.exe
 installer_output/
