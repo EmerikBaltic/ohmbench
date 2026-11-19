@@ -10,20 +10,20 @@ from circuitsim.dialogs.value_parser import parse_engineering_value
 _SEVEN_SEG_TABLE: dict[int, tuple[str, ...]] = {
     0x0: ("a", "b", "c", "d", "e", "f"),
     0x1: ("b", "c"),
-    0x2: ("a", "b", "g", "e", "d"),
-    0x3: ("a", "b", "g", "c", "d"),
-    0x4: ("f", "g", "b", "c"),
-    0x5: ("a", "f", "g", "c", "d"),
-    0x6: ("a", "f", "g", "e", "d", "c"),
+    0x2: ("a", "b", "d", "e", "g"),
+    0x3: ("a", "b", "c", "d", "g"),
+    0x4: ("b", "c", "f", "g"),
+    0x5: ("a", "c", "d", "f", "g"),
+    0x6: ("a", "c", "d", "e", "f", "g"),
     0x7: ("a", "b", "c"),
     0x8: ("a", "b", "c", "d", "e", "f", "g"),
     0x9: ("a", "b", "c", "d", "f", "g"),
     0xA: ("a", "b", "c", "e", "f", "g"),
-    0xB: ("f", "e", "d", "c", "g"),
-    0xC: ("a", "f", "e", "d"),
+    0xB: ("c", "d", "e", "f", "g"),
+    0xC: ("a", "d", "e", "f"),
     0xD: ("b", "c", "d", "e", "g"),
-    0xE: ("a", "f", "g", "e", "d"),
-    0xF: ("a", "f", "g", "e"),
+    0xE: ("a", "d", "e", "f", "g"),
+    0xF: ("a", "e", "f", "g"),
 }
 
 
@@ -339,6 +339,7 @@ class SevenSegDisplay(DigitalSequentialBlock):
             node_d2 or f"{name}_D2",
             node_d3 or f"{name}_D3",
         )
+        kwargs.setdefault("v_threshold", 2.0)
         super().__init__(name, nodes, **kwargs)
         self.value_nibble: int = 0
         self.decoded_hex_char: str = "0"
@@ -359,6 +360,7 @@ class SevenSegDisplay(DigitalSequentialBlock):
         self.active_segments = _SEVEN_SEG_TABLE[0]
 
     def step_sequential(self, node_voltages: Mapping[str, float]) -> bool:
+        prev_nibble = self.value_nibble
         nibble = 0
         for bit_idx, pin in enumerate(self.PIN_NAMES):
             if self._read_bit(node_voltages, pin):
@@ -366,7 +368,7 @@ class SevenSegDisplay(DigitalSequentialBlock):
         self.value_nibble = nibble
         self.decoded_hex_char = f"{nibble:X}"
         self.active_segments = _SEVEN_SEG_TABLE[nibble]
-        return False
+        return nibble != prev_nibble
 
     def to_dict(self) -> dict[str, Any]:
         return {

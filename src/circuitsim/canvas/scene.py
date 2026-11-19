@@ -3621,6 +3621,8 @@ class CircuitScene(QGraphicsScene):
                 comp = item.component
                 cname = comp.name
                 node_map = conn.component_nodes.get(cname, {})
+                if node_map:
+                    comp.nodes = tuple(node_map.get(t.name, "") for t in item.metadata.terminals)
                 if len(comp.nodes) >= 2 and node_map:
                     t0, t1 = item.metadata.terminals[0].name, item.metadata.terminals[1].name
                     va = self.latest_node_voltages.get(node_map.get(t0, ""), 0.0)
@@ -3629,6 +3631,18 @@ class CircuitScene(QGraphicsScene):
                 if cname in self._last_branch_currents:
                     comp.current = float(self._last_branch_currents[cname])
                     comp.power = float(comp.voltage * comp.current)
+                if hasattr(comp, "step_sequential"):
+                    comp.step_sequential(self.latest_node_voltages)
+                elif hasattr(comp, "evaluate_latch"):
+                    comp.evaluate_latch(self.latest_node_voltages)
+                elif hasattr(comp, "evaluate_coil"):
+                    comp.evaluate_coil(self.latest_node_voltages)
+                elif isinstance(comp, Fuse):
+                    was_blown = comp.is_blown
+                    comp.check_blow(comp.current)
+                    if not was_blown and comp.is_blown and hasattr(item, "trigger_fuse_pop_animation"):
+                        item.trigger_fuse_pop_animation()
+                item.update()
         self._refresh_wire_overlays()
         self._refresh_stress_badges(solve_proxy=result)
 

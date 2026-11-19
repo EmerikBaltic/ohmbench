@@ -220,6 +220,14 @@ class ComponentTelemetry:
     led_color: str = ""
     loading_error_message: str | None = None
     logic_level: str = ""
+    decoded_hex_char: str = "0"
+    active_segments: tuple[str, ...] = ()
+    value_nibble: int = 0
+    state_q: bool = False
+    count: int = 0
+    is_blown: bool = False
+    energized: bool = False
+    output_high: bool = False
 
 
 class DiagnosticMessage(str):
@@ -293,6 +301,13 @@ def format_component_canvas_text(comp: Component) -> str:
         return format_engineering_value(float(getattr(comp, "capacitance")), "F")
     if hasattr(comp, "inductance"):
         return format_engineering_value(float(getattr(comp, "inductance")), "H")
+    if hasattr(comp, "decoded_hex_char"):
+        return f"0x{getattr(comp, 'decoded_hex_char', '0')}"
+    if hasattr(comp, "is_blown") and getattr(comp, "is_blown", False):
+        return "BLOWN (click to reset)"
+    disp = getattr(comp, "display_value", "")
+    if isinstance(disp, str) and disp:
+        return disp
     return ""
 
 
@@ -1065,6 +1080,14 @@ class SimulationSession:
                 led_color=led_col,
                 loading_error_message=loading_err,
                 logic_level=gate_lvl,
+                decoded_hex_char=str(getattr(comp, "decoded_hex_char", "0")),
+                active_segments=tuple(getattr(comp, "active_segments", ())),
+                value_nibble=int(getattr(comp, "value_nibble", 0)),
+                state_q=bool(getattr(comp, "state_q", False)),
+                count=int(getattr(comp, "count", 0)),
+                is_blown=bool(getattr(comp, "is_blown", False)),
+                energized=bool(getattr(comp, "energized", False)),
+                output_high=bool(getattr(comp, "output_high", False)),
             )
 
         return SimulationFrame(

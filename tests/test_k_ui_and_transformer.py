@@ -174,3 +174,68 @@ def test_k1_transformer_blocks_dc_and_scales_ac_ideal_and_non_ideal(qapp, tmp_pa
         win.circuit_scene.undo_stack.setClean()
         win.close()
         qapp.processEvents()
+
+
+def test_k2_seven_seg_display_live_dc_and_session_updates(qapp) -> None:
+    """K2: 7-Segment Display decodes live DC & SimulationSession frames even with unwired input pins."""
+    from circuitsim.components import SevenSegDisplay
+
+    scene = CircuitScene(SymbolLibrary())
+    try:
+        v1 = scene.place_new_component("dc_voltage", QPointF(-160.0, 0.0), rotation_deg=90)
+        gnd = scene.place_new_component("ground", QPointF(-160.0, 120.0))
+        ds1 = scene.place_new_component("seven_seg_display", QPointF(80.0, 0.0))
+        assert v1 is not None and gnd is not None and ds1 is not None
+        assert isinstance(ds1.component, SevenSegDisplay)
+        assert ds1.component.v_threshold == pytest.approx(2.0)
+
+        # Connect 12 V DC to D0 (bit 0 = 1) and D2 (bit 2 = 4) -> 5; leave D1 and D3 unwired
+        v_pos = TerminalRef(v1.component.name, "pos")
+        v_neg = TerminalRef(v1.component.name, "neg")
+        g_pin = TerminalRef(gnd.component.name, "gnd")
+        d0 = TerminalRef(ds1.component.name, "D0")
+        d2 = TerminalRef(ds1.component.name, "D2")
+
+        scene.set_wire_graph(
+            scene.wire_graph.add_wire(v_neg, g_pin)
+            .add_wire(v_pos, d0)
+            .add_wire(v_pos, d2)
+        )
+
+        # (a) Direct DC solve + apply_solve_result syncs live canvas display
+        dc_res = MNASolver(scene.build_circuit()).solve_dc()
+        scene.apply_solve_result(dc_res)
+        assert ds1.component.value_nibble == 5
+        assert ds1.component.decoded_hex_char == "5"
+        assert ds1.component.active_segments == ("a", "c", "d", "f", "g")
+
+        # (b) Interactive SimulationSession start -> SimulationFrame -> apply_simulation_frame
+        ds1.component.reset_state()
+        assert ds1.component.decoded_hex_char == "0"
+
+        conn = scene.extract_connectivity_result()
+        sess = SimulationSession(circuit=conn.circuit, connectivity=conn)
+        frame = sess.start()
+        scene.apply_simulation_frame(frame)
+        assert ds1.component.value_nibble == 5
+        assert ds1.component.decoded_hex_char == "5"
+        assert ds1.component.active_segments == ("a", "c", "d", "f", "g")
+        assert ds1.live_display_value == "0x5"
+
+        # (c) Wire remaining pins D1 and D3 high -> 0xF
+        scene.set_wire_graph(
+            scene.wire_graph.add_wire(v_pos, TerminalRef(ds1.component.name, "D1"))
+            .add_wire(v_pos, TerminalRef(ds1.component.name, "D3"))
+        )
+        conn2 = scene.extract_connectivity_result()
+        sess2 = SimulationSession(circuit=conn2.circuit, connectivity=conn2)
+        frame2 = sess2.start()
+        scene.apply_simulation_frame(frame2)
+        assert ds1.component.value_nibble == 0xF
+        assert ds1.component.decoded_hex_char == "F"
+        assert ds1.component.active_segments == ("a", "e", "f", "g")
+        assert ds1.live_display_value == "0xF"
+    finally:
+        scene.shutdown_scene()
+        qapp.processEvents()
+

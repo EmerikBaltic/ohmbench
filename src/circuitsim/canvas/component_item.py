@@ -490,6 +490,23 @@ class ComponentItem(QGraphicsObject):
             self.logic_level = telemetry.logic_level
             if telemetry.logic_level in ("H", "L"):
                 self.component._output_level = telemetry.logic_level == "H"
+        elif isinstance(self.component, SevenSegDisplay):
+            self.component.decoded_hex_char = telemetry.decoded_hex_char
+            self.component.active_segments = telemetry.active_segments
+            self.component.value_nibble = telemetry.value_nibble
+        elif isinstance(self.component, (DFlipFlop, JKFlipFlop)):
+            self.component.state_q = telemetry.state_q
+        elif isinstance(self.component, Counter4Bit):
+            self.component.count = telemetry.count
+        elif isinstance(self.component, Fuse):
+            was_blown = self.component.is_blown
+            self.component.is_blown = telemetry.is_blown
+            if not was_blown and telemetry.is_blown and hasattr(self, "trigger_fuse_pop_animation"):
+                self.trigger_fuse_pop_animation()
+        elif isinstance(self.component, SPDTRelay):
+            self.component.energized = telemetry.energized
+        elif isinstance(self.component, NE555):
+            self.component.output_high = telemetry.output_high
 
         self.setToolTip(self.get_live_tooltip(is_running=True))
         self.update()
