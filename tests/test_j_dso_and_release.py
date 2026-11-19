@@ -28,3 +28,215 @@ def test_j1_phase_j_scaffolding(qapp) -> None:
     finally:
         scene.shutdown_scene()
         qapp.processEvents()
+
+
+def _circle_intersects_rect(cx: float, cy: float, r: float, rect) -> bool:
+    closest_x = max(rect.left(), min(cx, rect.right()))
+    closest_y = max(rect.top(), min(cy, rect.bottom()))
+    dx = cx - closest_x
+    dy = cy - closest_y
+    return (dx * dx + dy * dy) < (r * r - 1e-6)
+
+
+def test_j2_oscilloscope_component_and_dso_engine(qapp, tmp_path: Path) -> None:
+    """J2: Verify Oscilloscope component, unwired-GND handling, DSO-1062D math/trigger/autoset, and .circ I/O."""
+    from conftest import assert_module_has_no_qt_imports
+
+    assert_module_has_no_qt_imports(
+        "circuitsim.components.oscilloscope",
+        "circuitsim.scope.dso_engine",
+    )
+
+    from circuitsim.components import ACVoltageSource, DCVoltageSource, Ground, Oscilloscope, Resistor
+    from circuitsim.canvas.symbol_geometry import GRID_PITCH_PX, transform_terminal_position
+    from circuitsim.io.share_codec import decode_circuit_share_url, encode_circuit_share_url
+    from circuitsim.wiring.serializer import load_document_v2, save_document_v2
+    from circuitsim.scope.dso_engine import (
+        DSOState,
+        compute_auto_set,
+        compute_set_to_50_percent,
+        process_dso_capture,
+        recall_setup_json,
+        reset_default_setup,
+        save_setup_json,
+    )
+
+    # 1. Pure unwired-GND MNA probe check: must not trigger FloatingNodeError and reads exact 10 MOhm to GND
+    c_unwired = Circuit()
+    c_unwired.add(ACVoltageSource("V1", "n_sig", "0", amplitude=1.0, frequency=1000.0, dc_offset=5.0))
+    c_unwired.add(Resistor("R1", "n_sig", "n_sig2", resistance=100.0))
+    c_unwired.add(Resistor("R2", "n_sig2", "0", resistance=1000.0))
+    osc_pure = Oscilloscope("OSC1", node_ch1="n_sig", node_ch2="n_sig2")
+    c_unwired.add(osc_pure)
+    c_unwired.add(Ground("G1", "0"))
+    c_unwired.validate_topology()
+    dc_res = MNASolver(c_unwired).solve_dc()
+    assert dc_res.node_voltages[osc_pure.node_gnd] == pytest.approx(0.0, abs=1e-9)
+    assert osc_pure.v_ch1 == pytest.approx(5.0, abs=1e-3)
+
+    # 2. Place OSC1 on CircuitScene, wire CH1 (5V DC + 1V peak 1000Hz AC), CH2 (2V DC), GND
+    scene = CircuitScene(SymbolLibrary())
+    try:
+        v_ac_item = scene.place_new_component("ac_voltage", QPointF(-200.0, -160.0))
+        v_dc_item = scene.place_new_component("dc_voltage", QPointF(-200.0, 120.0))
+        gnd_item = scene.place_new_component("ground", QPointF(-100.0, 240.0))
+        osc_item = scene.place_new_component("oscilloscope", QPointF(160.0, 0.0))
+        assert v_ac_item is not None and v_dc_item is not None
+        assert gnd_item is not None and osc_item is not None
+
+        v_ac_item.component.amplitude = 1.0
+        v_ac_item.component.frequency = 1000.0
+        v_ac_item.component.dc_offset = 5.0
+        v_dc_item.component.dc_voltage = 2.0
+
+        assert osc_item.component.component_type == "oscilloscope"
+        assert osc_item.component.name == "OSC1"
+        assert "Double-click to open DSO" in osc_item.get_live_tooltip()
+
+        # Verify default_pin_label_rects clear of 5 px terminal dots across rotations 0, 90, 180, 270
+        for rot in (0, 90, 180, 270):
+            osc_item.set_rotation_deg(rot)
+            dots = [
+                transform_terminal_position(
+                    t.grid_pos, (0.0, 0.0), rotation_deg=rot, flipped_h=False, grid_px=GRID_PITCH_PX
+                )
+                for t in osc_item.metadata.terminals
+            ]
+            label_rects = osc_item.default_pin_label_rects()
+            assert len(label_rects) == 4
+            for tname, tag, r in label_rects:
+                for tx, ty in dots:
+                    assert not _circle_intersects_rect(tx, ty, 5.0, r), (
+                        f"OSC pin {tname}/{tag} overlaps terminal dot at rot={rot}"
+                    )
+        osc_item.set_rotation_deg(0)
+
+        # Wire terminals cleanly
+        vac_terms = v_ac_item.terminal_scene_positions_px()
+        vdc_terms = v_dc_item.terminal_scene_positions_px()
+        gnd_terms = gnd_item.terminal_scene_positions_px()
+        osc_terms = osc_item.terminal_scene_positions_px()
+        scene.add_routed_wire(vac_terms["pos"], osc_terms["CH1"], prefer_horizontal_first=False)
+        scene.add_routed_wire(vdc_terms["pos"], osc_terms["CH2"], prefer_horizontal_first=False)
+        scene.add_routed_wire(vac_terms["neg"], gnd_terms["gnd"], prefer_horizontal_first=True)
+        scene.add_routed_wire(vdc_terms["neg"], gnd_terms["gnd"], prefer_horizontal_first=True)
+        scene.add_routed_wire(osc_terms["GND"], gnd_terms["gnd"], prefer_horizontal_first=False)
+
+        conn = scene.extract_connectivity_result()
+        conn.circuit.validate_topology()
+        solver = MNASolver(conn.circuit)
+        tr = solver.solve_transient(duration=0.012, dt=1e-5)
+
+        ch1_node = conn.component_nodes["OSC1"]["CH1"]
+        ch2_node = conn.component_nodes["OSC1"]["CH2"]
+        gnd_node = conn.component_nodes["OSC1"]["GND"]
+        ch1_raw = tr.node_voltages[ch1_node] - tr.node_voltages[gnd_node]
+        ch2_raw = tr.node_voltages[ch2_node] - tr.node_voltages[gnd_node]
+        ext_raw = np.zeros_like(ch1_raw)
+
+        # 2a. DC / AC / GND coupling
+        state = DSOState()
+        state.horizontal.sec_per_div = 1e-3  # 12 ms full view
+        state.trigger.level_v = 5.0
+        f_dc = process_dso_capture(tr.times, ch1_raw, ch2_raw, ext_raw, state)
+        assert float(np.mean(f_dc.ch1_v)) == pytest.approx(5.0, abs=0.03)
+        assert float(np.ptp(f_dc.ch1_v)) == pytest.approx(2.0, abs=0.05)
+
+        state.ch1.coupling = "AC"
+        f_ac = process_dso_capture(tr.times, ch1_raw, ch2_raw, ext_raw, state)
+        assert float(np.mean(f_ac.ch1_v)) == pytest.approx(0.0, abs=0.03)
+        assert float(np.ptp(f_ac.ch1_v)) == pytest.approx(2.0, abs=0.05)
+
+        state.ch1.coupling = "GND"
+        f_gnd = process_dso_capture(tr.times, ch1_raw, ch2_raw, ext_raw, state)
+        assert np.allclose(f_gnd.ch1_v, 0.0, atol=1e-9)
+
+        # 2b. MATH: CH1 - CH2 and FFT peak
+        state.ch1.coupling = "DC"
+        state.math.enabled = True
+        state.math.operation = "CH1-CH2"
+        state.math.fft_source = "CH1"
+        f_math = process_dso_capture(tr.times, ch1_raw, ch2_raw, ext_raw, state)
+        assert float(np.mean(f_math.math_v)) == pytest.approx(3.0, abs=0.03)
+        assert f_math.fft_peak_hz is not None
+        assert f_math.fft_peak_hz == pytest.approx(1000.0, abs=30.0)
+
+        # 2c. SET TO 50%
+        lvl_50 = compute_set_to_50_percent(ch1_raw)
+        assert lvl_50 == pytest.approx(5.0, abs=0.05)
+        state.trigger.level_v = lvl_50
+
+        # 2d. AUTO SET centers trace inside 8 vertical divisions & shows ~2-4 cycles
+        state_auto = compute_auto_set(tr.times, ch1_raw, ch2_raw, state)
+        assert state_auto.trigger.level_v == pytest.approx(5.0, abs=0.05)
+        assert state_auto.horizontal.sec_per_div in (200e-6, 500e-6)
+        f_auto = process_dso_capture(tr.times, ch1_raw, ch2_raw, ext_raw, state_auto)
+        div_vals = f_auto.ch1_v / state_auto.ch1.volts_per_div + state_auto.ch1.position_div
+        assert abs(float(np.mean(div_vals))) <= 1.0
+        assert float(np.max(np.abs(div_vals))) <= 4.0
+
+        # 2e. CURSOR TIME & VOLTAGE
+        state.cursors.cursor_mode = "TIME"
+        state.cursors.t1 = 0.001
+        state.cursors.t2 = 0.002
+        state.cursors.v1 = 4.0
+        state.cursors.v2 = 6.0
+        f_cur = process_dso_capture(tr.times, ch1_raw, ch2_raw, ext_raw, state)
+        assert f_cur.cursor_readout.delta_v == pytest.approx(2.0, abs=1e-9)
+        assert f_cur.cursor_readout.delta_t == pytest.approx(0.001, abs=1e-9)
+        assert f_cur.cursor_readout.inv_delta_t_hz == pytest.approx(1000.0, abs=1e-6)
+
+        # 2f. NORMAL (wait), AUTO (free-run), SINGLE (one-shot & hold), FORCE TRIG
+        state_trig = reset_default_setup()
+        state_trig.trigger.mode = "NORMAL"
+        state_trig.trigger.level_v = 10.0  # signal is 4..6 V -> no crossing
+        f_wait = process_dso_capture(tr.times, ch1_raw, ch2_raw, ext_raw, state_trig)
+        assert f_wait.triggered is False
+        assert f_wait.trigger_status == "Wait"
+
+        state_trig.trigger.mode = "AUTO"
+        f_auto_free = process_dso_capture(tr.times, ch1_raw, ch2_raw, ext_raw, state_trig)
+        assert f_auto_free.triggered is False
+        assert f_auto_free.trigger_status == "Auto"
+
+        state_trig.trigger.mode = "SINGLE"
+        state_trig.trigger.level_v = 5.0
+        state_trig.trigger.single_armed = True
+        state_trig.running = True
+        f_single1 = process_dso_capture(tr.times, ch1_raw, ch2_raw, ext_raw, state_trig)
+        assert f_single1.triggered is True
+        assert f_single1.captured_single is True
+        assert state_trig.trigger.single_armed is False
+        assert state_trig.running is False
+        # Subsequent call holds cleanly without recapturing
+        f_single2 = process_dso_capture(tr.times, ch1_raw, ch2_raw, ext_raw, state_trig, prev_frame=f_single1)
+        assert f_single2.captured_single is False
+        assert f_single2.trigger_status == "Stop"
+
+        # FORCE TRIG forces capture even at 10V level
+        state_trig.trigger.level_v = 10.0
+        state_trig.trigger.forced = True
+        f_forced = process_dso_capture(tr.times, ch1_raw, ch2_raw, ext_raw, state_trig, prev_frame=f_single2)
+        assert f_forced.triggered is True
+        assert f_forced.trigger_status == "Trig'd"
+
+        # 2g. Save/Recall setup JSON, .circ v2 save/load, and share URL persistence
+        setup_txt = save_setup_json(state_auto)
+        osc_item.component.dso_state_json = setup_txt
+        recalled = recall_setup_json(setup_txt)
+        assert recalled.trigger.level_v == pytest.approx(state_auto.trigger.level_v, abs=1e-6)
+        doc_v2 = scene.to_document_v2()
+        circ_path = tmp_path / "osc_test.circ"
+        save_document_v2(circ_path, doc_v2)
+        loaded_doc = load_document_v2(circ_path)
+        osc_specs = [p for p in loaded_doc.placed if p.component.component_type == "oscilloscope"]
+        assert len(osc_specs) == 1
+        assert recall_setup_json(osc_specs[0].component.dso_state_json).horizontal.sec_per_div == pytest.approx(
+            state_auto.horizontal.sec_per_div
+        )
+        shared_url = encode_circuit_share_url(doc_v2)
+        shared_doc = decode_circuit_share_url(shared_url)
+        assert any(p.component.component_type == "oscilloscope" for p in shared_doc.placed)
+    finally:
+        scene.shutdown_scene()
+        qapp.processEvents()

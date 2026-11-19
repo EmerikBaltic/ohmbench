@@ -31,6 +31,7 @@ from circuitsim.components.meters import Ammeter, MeterMode, Voltmeter
 from circuitsim.components.mosfet import MOSFETBase, NMOS, PMOS
 from circuitsim.components.ne555 import NE555
 from circuitsim.components.opamp import OpAmp
+from circuitsim.components.oscilloscope import Oscilloscope
 from circuitsim.components.potentiometer import Potentiometer
 from circuitsim.components.power import Fuse, SPDTRelay, Transformer
 from circuitsim.components.resistor import Resistor
@@ -84,6 +85,7 @@ __all__ = [
     "NMOS",
     "NPNBJT",
     "OpAmp",
+    "Oscilloscope",
     "PMOS",
     "PNPBJT",
     "Potentiometer",

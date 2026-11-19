@@ -21,6 +21,7 @@ from circuitsim.components.meters import Ammeter, Voltmeter
 from circuitsim.components.mosfet import NMOS, PMOS
 from circuitsim.components.ne555 import NE555
 from circuitsim.components.opamp import OpAmp
+from circuitsim.components.oscilloscope import Oscilloscope
 from circuitsim.components.potentiometer import Potentiometer
 from circuitsim.components.power import Fuse, SPDTRelay, Transformer
 from circuitsim.components.resistor import Resistor
@@ -65,6 +66,7 @@ KNOWN_COMPONENT_TYPES: tuple[str, ...] = (
     "jk_flipflop",
     "counter_4bit",
     "seven_seg_display",
+    "oscilloscope",
     *GATE_COMPONENT_TYPES,
 )
 
@@ -141,6 +143,8 @@ def create_default_component_model(component_id: str, name: str) -> Component:
         return Counter4Bit(name)
     if component_id == "seven_seg_display":
         return SevenSegDisplay(name)
+    if component_id == "oscilloscope":
+        return Oscilloscope(name)
     if component_id.startswith("gate_"):
         op = component_id.removeprefix("gate_")
         if op in GATE_OPERATIONS:

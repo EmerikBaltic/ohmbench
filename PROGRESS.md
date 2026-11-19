@@ -698,7 +698,7 @@ When ready to perform Stage 2 (internal/package rename after Stage 1 settles):
 | `J0a` | Fix live `Fuse` rating edit & click/context-reset while simulation is running (`generation` counter + live worker sync) | `[x]` | Done |
 | `J0b` | Fix multi-pin default label positioning (`default_pin_label_rects`) so `P1`/`P2`/`S1`/`S2` etc. never overlap terminal dots | `[x]` | Done |
 | `J1` | Initialize Phase J Queue & run targeted Batch 1 (`48 passed`) + Batch 2 (`66 passed`) regression suites; fixed `themes.py` light checked `ghost_tint` CSS & `test_e3` non-overlapping staging pos | `[x]` | Done |
-| `J2` | Placeable `"oscilloscope"` (`OSC`) canvas component & Qt-free DSO-1062D signal/trigger/math/FFT/cursor engine (`dso_engine.py`) | `[ ]` | pending |
+| `J2` | Placeable `"oscilloscope"` (`OSC`) canvas component & Qt-free DSO-1062D signal/trigger/math/FFT/cursor engine (`dso_engine.py`) | `[x]` | Done |
 | `J3` | Voltcraft DSO-1062D benchtop front-panel GUI (`dso_panel.py`), double-click multi-instance launch, live sync & PNG/CSV export | `[ ]` | pending |
 | `J4` | Milestone 3 Properties Dialog polish: live V/I/P banner, Inductor $X_L$/$\tau$ + reverse calculator, Lightbulb $R_{\text{hot}}$ | `[ ]` | pending |
 | `J5` | Standard SPICE Netlist exporter (`spice_export.py`) with `MEG` suffixes & File > Export menu action | `[ ]` | pending |

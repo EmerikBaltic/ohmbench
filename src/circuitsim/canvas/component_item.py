@@ -13,6 +13,7 @@ from PySide6.QtGui import (
     QPainter,
     QPainterPath,
     QPen,
+    QPolygonF,
     QRadialGradient,
     QTransform,
 )
@@ -62,6 +63,7 @@ from circuitsim.components import (
     MOSFETBase,
     NE555,
     OpAmp,
+    Oscilloscope,
     Potentiometer,
     Resistor,
     SPDTRelay,
@@ -111,6 +113,7 @@ COMPONENT_PREFIXES: dict[str, str] = {
     "voltmeter": "VM",
     "ammeter": "A",
     "mcu": "U",
+    "oscilloscope": "OSC",
 }
 
 
@@ -165,6 +168,8 @@ def format_component_value_summary(comp: Component) -> str:
     if isinstance(comp, NE555):
         return comp.display_value
     if isinstance(comp, DigitalSequentialBlock):
+        return comp.display_value
+    if isinstance(comp, Oscilloscope):
         return comp.display_value
     if isinstance(comp, (Voltmeter, Ammeter)):
         return comp.format_reading()
@@ -361,6 +366,17 @@ class ComponentItem(QGraphicsObject):
 
     def get_live_tooltip(self, is_running: bool = False) -> str:
         """Return formatted live tooltip text for this component."""
+        if isinstance(self.component, Oscilloscope):
+            osc = self.component
+            lines = [
+                f"{osc.name} (DSO-1062D)",
+                "Double-click to open DSO",
+            ]
+            if is_running:
+                lines.append(
+                    f"CH1: {format_engineering_value(osc.v_ch1, 'V')} | CH2: {format_engineering_value(osc.v_ch2, 'V')}"
+                )
+            return "\n".join(lines)
         if isinstance(self.component, LED):
             led = self.component
             lines: list[str] = []
@@ -936,6 +952,8 @@ class ComponentItem(QGraphicsObject):
             return {"a": "A", "w": "W", "b": "B"}
         if ctype == "transformer":
             return {"p1": "P1", "p2": "P2", "s1": "S1", "s2": "S2"}
+        if ctype == "oscilloscope":
+            return {"CH1": "CH1", "CH2": "CH2", "EXT_TRIG": "EXT_TRIG", "GND": "GND"}
         if ctype.startswith("gate_") and ctype != "gate_not":
             return {"a": "A", "b": "B", "out": "Y", "in0": "A", "in1": "B"}
         return {}
@@ -1123,6 +1141,8 @@ class ComponentItem(QGraphicsObject):
             return ("XFMR-4P", {"p1": "P1", "p2": "P2", "s1": "S1", "s2": "S2"})
         if ctype == "spdt_relay":
             return ("RELAY-5P", {"coil_pos": "+COIL", "coil_neg": "-COIL", "com": "COM", "no": "NO", "nc": "NC"})
+        if ctype == "oscilloscope":
+            return ("DSO-1062D", {"CH1": "CH1", "CH2": "CH2", "EXT_TRIG": "TRIG", "GND": "GND"})
         if ctype == "lightbulb":
             return ("LAMP", {"a": "1", "b": "2"})
         if ctype == "ground":
@@ -1349,6 +1369,31 @@ class ComponentItem(QGraphicsObject):
             painter.drawLine(QPointF(p1[0], p1[1]), QPointF(p2[0], p2[1]))
         painter.restore()
 
+    def _paint_oscilloscope_preview(self, painter: QPainter, osc: Oscilloscope) -> None:
+        """Render miniature yellow/cyan waveforms inside the canvas DSO LCD."""
+        lcd = QRectF(-14.0, -34.0, 54.0, 68.0)
+        painter.save()
+        painter.setClipRect(lcd)
+        for samples, hex_col, y_center, amp in (
+            (osc.mini_preview_ch1, "#FACC15", lcd.top() + lcd.height() * 0.35, 16.0),
+            (osc.mini_preview_ch2, "#22D3EE", lcd.top() + lcd.height() * 0.70, 14.0),
+        ):
+            pts: list[QPointF] = []
+            if len(samples) >= 2:
+                n = len(samples)
+                for idx, val in enumerate(samples):
+                    x = lcd.left() + 2.0 + (idx / (n - 1)) * (lcd.width() - 4.0)
+                    clamped = max(-1.0, min(1.0, float(val)))
+                    y = y_center - clamped * amp
+                    pts.append(QPointF(x, y))
+            else:
+                # Idle flat trace indicator on miniature LCD
+                pts.append(QPointF(lcd.left() + 2.0, y_center))
+                pts.append(QPointF(lcd.right() - 2.0, y_center))
+            painter.setPen(QPen(QColor(hex_col), 1.4))
+            painter.drawPolyline(QPolygonF(pts))
+        painter.restore()
+
     def paint(
         self,
         painter: QPainter,
@@ -1484,6 +1529,8 @@ class ComponentItem(QGraphicsObject):
         )
         if isinstance(self.component, SevenSegDisplay) and not self.is_ghost:
             self._paint_seven_seg_leds(painter, self.component)
+        if isinstance(self.component, Oscilloscope) and not self.is_ghost:
+            self._paint_oscilloscope_preview(painter, self.component)
         if isinstance(self.component, Fuse) and self._fuse_pop_progress > 0.0 and not self.is_ghost:
             p = self._fuse_pop_progress
             alpha = int(round(235 * p))

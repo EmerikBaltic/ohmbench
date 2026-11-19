@@ -19,6 +19,7 @@ from circuitsim.components.meters import Ammeter, Voltmeter
 from circuitsim.components.mosfet import MOSFETBase
 from circuitsim.components.ne555 import NE555
 from circuitsim.components.opamp import OpAmp
+from circuitsim.components.oscilloscope import Oscilloscope
 from circuitsim.components.potentiometer import Potentiometer
 from circuitsim.components.power import Fuse, SPDTRelay, Transformer
 from circuitsim.components.resistor import Resistor
@@ -231,6 +232,17 @@ class Circuit:
                         if ip is not None:
                             mat[ip, ip] += comp.pin_conductance(pin)
                     continue
+                if isinstance(comp, Oscilloscope):
+                    g_mat, _ = comp.companion_stamp(
+                        gnd_wired=self.is_oscilloscope_gnd_wired(comp)
+                    )
+                    idxs = [node_to_idx.get(n) for n in comp.nodes]
+                    for r_i, ri in enumerate(idxs):
+                        if ri is not None:
+                            for c_j, cj in enumerate(idxs):
+                                if cj is not None and g_mat[r_i][c_j] != 0.0:
+                                    mat[ri, cj] += g_mat[r_i][c_j]
+                    continue
                 if isinstance(comp, (NE555, Transformer, SPDTRelay)):
                     g_mat, _ = comp.companion_stamp()
                     idxs = [node_to_idx.get(n) for n in comp.nodes]
@@ -305,6 +317,18 @@ class Circuit:
         va = float(sol[idx_a]) if idx_a is not None else 0.0
         vb = float(sol[idx_b]) if idx_b is not None else 0.0
         return max(0.0, va - vb)
+
+    def is_oscilloscope_gnd_wired(self, osc: Oscilloscope) -> bool:
+        """Return True if the oscilloscope's `GND` terminal connects to any circuit node/part."""
+        g_node = osc.node_gnd
+        if g_node in self.grounded_nodes():
+            return True
+        if osc.nodes.count(g_node) > 1:
+            return True
+        for other in self.flat_components():
+            if other is not osc and g_node in other.nodes:
+                return True
+        return False
 
     def is_ammeter_in_parallel(self, comp: Ammeter) -> bool:
         """Return True if comp is connected in parallel across a voltage source or short."""
@@ -384,6 +408,13 @@ class Circuit:
                 adjacency[CANONICAL_GND].add(c_out)
                 continue
             if isinstance(comp, (MCUBlock, DigitalSequentialBlock)):
+                for p_node in comp.nodes:
+                    c_pin = canonical(p_node)
+                    terminal_degree[p_node] += 2
+                    adjacency[c_pin].add(CANONICAL_GND)
+                    adjacency[CANONICAL_GND].add(c_pin)
+                continue
+            if isinstance(comp, Oscilloscope):
                 for p_node in comp.nodes:
                     c_pin = canonical(p_node)
                     terminal_degree[p_node] += 2
@@ -588,6 +619,8 @@ class Circuit:
                 for pin, p_node in zip(comp.pin_names, comp.nodes):
                     if comp.is_output_pin(pin):
                         driven_seeds.add(canonical(p_node))
+                continue
+            if isinstance(comp, Oscilloscope):
                 continue
             if isinstance(comp, NE555):
                 cgnd = canonical(comp.node_gnd)

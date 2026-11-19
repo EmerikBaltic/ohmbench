@@ -48,6 +48,7 @@ _LIB_MAP: dict[str, tuple[str, str]] = {
     "jk_flipflop": ("74xx:74LS73", "U"),
     "counter_4bit": ("74xx:74HC161", "U"),
     "seven_seg_display": ("Display_Character:7SEGMENT_COMMON_CATHODE", "DS"),
+    "oscilloscope": ("Device:Oscilloscope", "OSC"),
 }
 
 

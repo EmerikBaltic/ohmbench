@@ -22,6 +22,7 @@ from circuitsim.components.meters import Ammeter, Voltmeter
 from circuitsim.components.mosfet import MOSFETBase
 from circuitsim.components.ne555 import NE555
 from circuitsim.components.opamp import OpAmp
+from circuitsim.components.oscilloscope import Oscilloscope
 from circuitsim.components.potentiometer import Potentiometer
 from circuitsim.components.power import Fuse, SPDTRelay, Transformer
 from circuitsim.components.resistor import Resistor
@@ -62,6 +63,7 @@ _TAG_FUSE = 21
 _TAG_TRANSFORMER = 22
 _TAG_RELAY = 23
 _TAG_SEQUENTIAL = 24
+_TAG_OSCILLOSCOPE = 25
 
 
 class IntegrationMethod(str, Enum):
@@ -210,6 +212,7 @@ class MNASolver:
         self._bucket_transformers: tuple[Transformer, ...] = ()
         self._bucket_relays: tuple[SPDTRelay, ...] = ()
         self._bucket_sequential: tuple[DigitalSequentialBlock, ...] = ()
+        self._bucket_oscilloscopes: tuple[Oscilloscope, ...] = ()
 
     def invalidate_cache(self) -> None:
         """Force the solver to rebuild and re-factorize the MNA matrix on next solve."""
@@ -244,6 +247,7 @@ class MNASolver:
         transformers: list[Transformer] = []
         relays: list[SPDTRelay] = []
         sequential_blocks: list[DigitalSequentialBlock] = []
+        oscilloscopes: list[Oscilloscope] = []
 
         for comp in raw_comps:
             if isinstance(comp, Ground):
@@ -316,6 +320,9 @@ class MNASolver:
                 tagged.append((comp, _TAG_SEQUENTIAL))
                 rhs_tagged.append((comp, _TAG_SEQUENTIAL))
                 sequential_blocks.append(comp)
+            elif isinstance(comp, Oscilloscope):
+                tagged.append((comp, _TAG_OSCILLOSCOPE))
+                oscilloscopes.append(comp)
             elif isinstance(comp, Potentiometer):
                 tagged.append((comp, _TAG_POTENTIOMETER))
             elif isinstance(comp, DCVoltageSource):
@@ -349,6 +356,7 @@ class MNASolver:
         self._bucket_transformers = tuple(transformers)
         self._bucket_relays = tuple(relays)
         self._bucket_sequential = tuple(sequential_blocks)
+        self._bucket_oscilloscopes = tuple(oscilloscopes)
         self._buckets_len = len(tagged)
         self._buckets_version = circ_ver
 
@@ -536,6 +544,8 @@ class MNASolver:
                 )
             elif isinstance(comp, SPDTRelay):
                 sig.extend((1.0 if comp.energized else 0.0, comp.coil_resistance_ohm))
+            elif isinstance(comp, Oscilloscope):
+                sig.extend((comp.r_in, 1.0 if self.circuit.is_oscilloscope_gnd_wired(comp) else 0.0))
             elif isinstance(comp, Potentiometer):
                 sig.extend((comp.g_aw, comp.g_wb))
             elif isinstance(comp, (DCVoltageSource, ACVoltageSource)):
@@ -599,6 +609,8 @@ class MNASolver:
                 )
             elif tag == _TAG_RELAY:
                 sig.extend((1.0 if comp.energized else 0.0, comp.coil_resistance_ohm))
+            elif tag == _TAG_OSCILLOSCOPE:
+                sig.extend((comp.r_in, 1.0 if self.circuit.is_oscilloscope_gnd_wired(comp) else 0.0))
             elif tag == _TAG_POTENTIOMETER:
                 sig.extend((comp.g_aw, comp.g_wb))
             elif tag <= _TAG_AC_VS:
@@ -658,6 +670,11 @@ class MNASolver:
                 self._stamp_small_matrix(matrix_a, self._node_to_idx, comp.nodes, g_mat)
             elif isinstance(comp, (BJTBase, MOSFETBase, OpAmp, NE555, SPDTRelay)):
                 g_mat, _ = comp.companion_stamp()
+                self._stamp_small_matrix(matrix_a, self._node_to_idx, comp.nodes, g_mat)
+            elif isinstance(comp, Oscilloscope):
+                g_mat, _ = comp.companion_stamp(
+                    gnd_wired=self.circuit.is_oscilloscope_gnd_wired(comp)
+                )
                 self._stamp_small_matrix(matrix_a, self._node_to_idx, comp.nodes, g_mat)
             elif isinstance(comp, Switch):
                 if mode == "dc":
@@ -1230,6 +1247,11 @@ class MNASolver:
                     ip = node_to_idx.get(p_node)
                     if ip is not None:
                         mat[ip, ip] += comp.pin_conductance(pin)
+            elif isinstance(comp, Oscilloscope):
+                g_mat, _ = comp.companion_stamp(
+                    gnd_wired=self.circuit.is_oscilloscope_gnd_wired(comp)
+                )
+                self._stamp_small_matrix(mat, node_to_idx, comp.nodes, g_mat)
             elif isinstance(comp, DCCurrentSource):
                 ia = node_to_idx.get(comp.nodes[0])
                 ib = node_to_idx.get(comp.nodes[1])
@@ -2119,6 +2141,13 @@ class MNASolver:
                 branch_currents[comp.name] = self._update_relay_telemetry(comp, node_voltages)
                 continue
 
+            if isinstance(comp, Oscilloscope):
+                branch_currents[comp.name] = comp.update_telemetry(
+                    node_voltages,
+                    gnd_wired=self.circuit.is_oscilloscope_gnd_wired(comp),
+                )
+                continue
+
             v_a = node_voltages.get(comp.nodes[0], 0.0)
             v_b = node_voltages.get(comp.nodes[1], 0.0)
             v_ab = v_a - v_b
@@ -2335,6 +2364,11 @@ class MNASolver:
                 g_mat, rhs_3 = comp.companion_stamp()
                 self._stamp_small_matrix(mat, node_to_idx, comp.nodes, g_mat)
                 self._stamp_small_rhs(rhs, node_to_idx, comp.nodes, rhs_3)
+            elif isinstance(comp, Oscilloscope):
+                g_mat, _ = comp.companion_stamp(
+                    gnd_wired=self.circuit.is_oscilloscope_gnd_wired(comp)
+                )
+                self._stamp_small_matrix(mat, node_to_idx, comp.nodes, g_mat)
 
         for k, vs in enumerate(voltage_sources):
             row_k = n_nodes + k
@@ -2389,6 +2423,8 @@ class MNASolver:
         node_v: dict[str, float] = {g: 0.0 for g in self.circuit.grounded_nodes()}
         for node, idx in node_to_idx.items():
             node_v[node] = float(sol_x[idx])
+        if not self._t0_node_voltages:
+            self._t0_node_voltages = dict(node_v)
 
         for k, cap in enumerate(capacitors):
             row_k = n_nodes + n_vs + k
@@ -2757,6 +2793,13 @@ class MNASolver:
                 branch_currents[comp.name] = self._update_relay_telemetry(comp, node_voltages)
                 continue
 
+            if tag == _TAG_OSCILLOSCOPE:
+                branch_currents[comp.name] = comp.update_telemetry(
+                    node_voltages,
+                    gnd_wired=self.circuit.is_oscilloscope_gnd_wired(comp),
+                )
+                continue
+
             v_a = node_voltages.get(comp.nodes[0], 0.0)
             v_b = node_voltages.get(comp.nodes[1], 0.0)
             v_ab = v_a - v_b
@@ -2925,6 +2968,20 @@ class MNASolver:
         self._maybe_apply_startup_perturbation()
         self._initialize_logic_gates_t0(step_dt)
         self._initialize_t0_derivatives()
+        if (
+            self.sim_time == 0.0
+            and not self._t0_node_voltages
+            and not any(
+                isinstance(c, (Capacitor, Inductor, Transformer, Fuse, Switch))
+                for c in self.circuit.flat_components()
+            )
+        ):
+            try:
+                dc0 = self.solve_dc()
+                self._t0_node_voltages = dict(dc0.node_voltages)
+                self.invalidate_cache()
+            except Exception:
+                pass
         if use_be_on_first_step:
             self._be_steps_remaining = 1
         else:

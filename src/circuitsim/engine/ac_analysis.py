@@ -20,6 +20,7 @@ from circuitsim.components.meters import Ammeter, Voltmeter
 from circuitsim.components.mosfet import MOSFETBase
 from circuitsim.components.ne555 import NE555
 from circuitsim.components.opamp import OpAmp
+from circuitsim.components.oscilloscope import Oscilloscope
 from circuitsim.components.potentiometer import Potentiometer
 from circuitsim.components.power import Fuse, SPDTRelay, Transformer
 from circuitsim.components.resistor import Resistor
@@ -326,6 +327,17 @@ def run_ac_sweep(
                     ip = node_to_idx.get(p_node)
                     if ip is not None:
                         mat_y[ip, ip] += comp.pin_conductance(pin)
+            elif isinstance(comp, Oscilloscope):
+                g_mat, _ = comp.companion_stamp(
+                    gnd_wired=circuit.is_oscilloscope_gnd_wired(comp)
+                )
+                idxs = [node_to_idx.get(n) for n in comp.nodes]
+                for r_i, row_idx in enumerate(idxs):
+                    if row_idx is None:
+                        continue
+                    for c_j, col_idx in enumerate(idxs):
+                        if col_idx is not None and g_mat[r_i][c_j] != 0.0:
+                            mat_y[row_idx, col_idx] += complex(g_mat[r_i][c_j])
 
         for comp in vs_list:
             row_k = vs_to_idx[comp.name]

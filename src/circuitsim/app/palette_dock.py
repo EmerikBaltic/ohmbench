@@ -52,7 +52,7 @@ COMPONENT_ORDER_IN_CATEGORY: dict[str, tuple[str, ...]] = {
     "Digital": ("d_flipflop", "jk_flipflop", "counter_4bit", "seven_seg_display"),
     "Mixed-Signal": ("ne555", "comparator", "mcu"),
     "Loads": ("lightbulb",),
-    "Instruments": ("voltmeter", "ammeter"),
+    "Instruments": ("voltmeter", "ammeter", "oscilloscope"),
 }
 
 

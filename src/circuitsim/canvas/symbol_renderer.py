@@ -175,10 +175,22 @@ class SymbolLibrary:
         if show_terminals:
             painter.save()
             painter.setPen(Qt.PenStyle.NoPen)
-            painter.setBrush(QColor(terminal_color))
+            osc_term_colors = {
+                "CH1": "#FACC15",
+                "CH2": "#22D3EE",
+                "EXT_TRIG": "#94A3B8",
+                "GND": "#475569",
+            }
+            dot_r = 3.5 if component_id == "oscilloscope" else 3.0
             for term in meta.terminals:
+                dot_col = (
+                    osc_term_colors.get(term.name, terminal_color)
+                    if component_id == "oscilloscope"
+                    else terminal_color
+                )
+                painter.setBrush(QColor(dot_col))
                 tx, ty = term.local_px
-                painter.drawEllipse(QPointF(tx, ty), 3.0, 3.0)
+                painter.drawEllipse(QPointF(tx, ty), dot_r, dot_r)
             painter.restore()
 
         return used_svg
@@ -752,6 +764,42 @@ class SymbolLibrary:
                 painter.drawLine(QPointF(-60.0, py), QPointF(-36.0, py))
             # Unpowered bezel outline; live glowing LED bars painted by ComponentItem
             painter.drawRect(QRectF(-18.0, -34.0, 44.0, 68.0))
+
+        elif component_id == "oscilloscope":
+            bnc_colors = {
+                -40.0: "#FACC15",
+                -20.0: "#22D3EE",
+                20.0: "#94A3B8",
+                40.0: "#475569",
+            }
+            for py, hex_col in bnc_colors.items():
+                painter.drawLine(QPointF(-80.0, py), QPointF(-68.0, py))
+                painter.save()
+                painter.setPen(QPen(QColor(hex_col), 2.0))
+                painter.setBrush(Qt.BrushStyle.NoBrush)
+                painter.drawEllipse(QPointF(-70.0, py), 3.0, 3.0)
+                painter.restore()
+            # Outer transparent frame keeps left [-68, -18] pin labels high-contrast in both themes
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            painter.drawRoundedRect(QRectF(-68.0, -52.0, 142.0, 104.0), 5.0, 5.0)
+            # Dark miniature LCD & right front-panel knob bay
+            painter.save()
+            painter.setPen(QPen(QColor("#334155"), 1.2))
+            painter.setBrush(QColor("#0F172A"))
+            lcd_rect = QRectF(-16.0, -38.0, 58.0, 76.0)
+            painter.drawRoundedRect(lcd_rect, 3.0, 3.0)
+            painter.setPen(QPen(QColor(71, 85, 105, 130), 0.7))
+            for gx in range(1, 4):
+                x_g = lcd_rect.left() + gx * lcd_rect.width() / 4.0
+                painter.drawLine(QPointF(x_g, lcd_rect.top()), QPointF(x_g, lcd_rect.bottom()))
+            for gy in range(1, 3):
+                y_g = lcd_rect.top() + gy * lcd_rect.height() / 3.0
+                painter.drawLine(QPointF(lcd_rect.left(), y_g), QPointF(lcd_rect.right(), y_g))
+            painter.setPen(QPen(QColor("#94A3B8"), 1.2))
+            painter.setBrush(QColor("#334155"))
+            for ky in (-24.0, -4.0, 16.0, 34.0):
+                painter.drawEllipse(QPointF(58.0, ky), 5.0, 5.0)
+            painter.restore()
 
         else:
             painter.drawRect(QRectF(-20.0, -10.0, 40.0, 20.0))

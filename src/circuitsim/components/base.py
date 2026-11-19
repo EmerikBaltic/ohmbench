@@ -191,6 +191,9 @@ _DEFAULT_PARAMETERS_BY_TYPE: dict[str, tuple[ComponentParameter, ...]] = {
     "ammeter": (
         ComponentParameter("r_internal", "Series Resistance", "Ω"),
     ),
+    "oscilloscope": (
+        ComponentParameter("r_in", "Input Impedance", "Ω"),
+    ),
     "ground": (),
 }
 

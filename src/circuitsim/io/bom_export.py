@@ -46,6 +46,7 @@ _PACKAGE_BY_TYPE: dict[str, str] = {
     "fuse": "FUSE-5x20",
     "switch": "SPST",
     "lightbulb": "LAMP",
+    "oscilloscope": "DSO-1062D",
 }
 
 _SOURCE_TYPES: tuple[type[Component], ...] = (
