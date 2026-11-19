@@ -43,6 +43,7 @@ from circuitsim.components import (
     Ammeter,
     BJTBase,
     Capacitor,
+    Comparator,
     Component,
     DCCurrentSource,
     DCVoltageSource,
@@ -52,6 +53,7 @@ from circuitsim.components import (
     LED,
     Lightbulb,
     MOSFETBase,
+    NE555,
     OpAmp,
     Potentiometer,
     Resistor,
@@ -79,6 +81,8 @@ COMPONENT_PREFIXES: dict[str, str] = {
     "nmos": "M",
     "pmos": "M",
     "opamp": "U",
+    "comparator": "U",
+    "ne555": "U",
     "gate_not": "U",
     "gate_and": "U",
     "gate_or": "U",
@@ -131,8 +135,12 @@ def format_component_value_summary(comp: Component) -> str:
         return f"β={comp.beta_f:g}"
     if isinstance(comp, MOSFETBase):
         return f"Vth={comp.v_th:g}V"
+    if isinstance(comp, Comparator):
+        return comp.display_value
     if isinstance(comp, OpAmp):
         return f"A={comp.a_ol:.0e}"
+    if isinstance(comp, NE555):
+        return comp.display_value
     if isinstance(comp, (Voltmeter, Ammeter)):
         return comp.format_reading()
     if isinstance(comp, LogicGate):
@@ -830,6 +838,21 @@ class ComponentItem(QGraphicsObject):
             return ("TO-92: 1-S, 2-G, 3-D", {"G": "2:G", "D": "3:D", "S": "1:S"})
         if ctype == "opamp":
             return ("DIP-8", {"in_pos": "3:+IN", "in_neg": "2:-IN", "out": "1:OUT"})
+        if ctype == "comparator":
+            return ("DIP-8", {"in_pos": "3:+IN", "in_neg": "2:-IN", "out": "1:OUT"})
+        if ctype == "ne555":
+            return (
+                "DIP-8",
+                {
+                    "vcc": "8:VCC",
+                    "gnd": "1:GND",
+                    "trig": "2:TRIG",
+                    "thr": "6:THR",
+                    "dis": "7:DIS",
+                    "out": "3:OUT",
+                    "reset": "4:RST",
+                },
+            )
         if ctype == "led":
             return ("LED-5mm", {"anode": "A(+)", "cathode": "K(-)"})
         if ctype == "capacitor":

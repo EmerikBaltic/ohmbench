@@ -501,7 +501,7 @@ class SymbolLibrary:
                 painter.drawLine(QPointF(10.0, 0.0), QPointF(4.0, -3.5))
                 painter.drawLine(QPointF(10.0, 0.0), QPointF(4.0, 3.5))
 
-        elif component_id == "opamp":
+        elif component_id in ("opamp", "comparator"):
             painter.drawLine(QPointF(-40.0, -20.0), QPointF(-20.0, -20.0))
             painter.drawLine(QPointF(-40.0, 20.0), QPointF(-20.0, 20.0))
             painter.drawLine(QPointF(22.0, 0.0), QPointF(40.0, 0.0))
@@ -511,6 +511,11 @@ class SymbolLibrary:
             painter.drawLine(QPointF(-15.0, -14.0), QPointF(-9.0, -14.0))
             painter.drawLine(QPointF(-12.0, -17.0), QPointF(-12.0, -11.0))
             painter.drawLine(QPointF(-15.0, 14.0), QPointF(-9.0, 14.0))
+            if component_id == "comparator":
+                # Step glyph inside comparator triangle
+                painter.drawLine(QPointF(-6.0, 5.0), QPointF(0.0, 5.0))
+                painter.drawLine(QPointF(0.0, 5.0), QPointF(0.0, -5.0))
+                painter.drawLine(QPointF(0.0, -5.0), QPointF(6.0, -5.0))
 
         elif component_id in ("voltmeter", "ammeter"):
             # Circle (r = 15) and leads
@@ -625,6 +630,27 @@ class SymbolLibrary:
                 painter.scale(-1.0, 1.0)
             painter.setFont(QFont("Segoe UI", 8, QFont.Weight.Bold))
             painter.drawText(QRectF(-34.0, -14.0, 68.0, 28.0), Qt.AlignmentFlag.AlignCenter, "MCU")
+            painter.restore()
+
+        elif component_id == "ne555":
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            painter.drawRect(QRectF(-40.0, -44.0, 80.0, 88.0))
+            # Left leads: trig (-40), thr (0), reset (+40)
+            for py in (-40.0, 0.0, 40.0):
+                painter.drawLine(QPointF(-60.0, py), QPointF(-40.0, py))
+            # Right leads: out (-20), dis (+20)
+            for py in (-20.0, 20.0):
+                painter.drawLine(QPointF(40.0, py), QPointF(60.0, py))
+            # Top/bottom leads: vcc (0, -60), gnd (0, 60)
+            painter.drawLine(QPointF(0.0, -60.0), QPointF(0.0, -44.0))
+            painter.drawLine(QPointF(0.0, 44.0), QPointF(0.0, 60.0))
+            painter.save()
+            if rotation_deg:
+                painter.rotate(-float(rotation_deg))
+            if flipped_h:
+                painter.scale(-1.0, 1.0)
+            painter.setFont(QFont("Segoe UI", 8, QFont.Weight.Bold))
+            painter.drawText(QRectF(-36.0, -14.0, 72.0, 28.0), Qt.AlignmentFlag.AlignCenter, "555")
             painter.restore()
 
         else:

@@ -1,0 +1,20 @@
+{
+  "id": "ne555",
+  "display_name": "555 Timer IC",
+  "category": "Mixed-Signal",
+  "style": "iec",
+  "grid_size": [6, 6],
+  "terminals": [
+    {"name": "vcc", "grid_pos": [0, -3]},
+    {"name": "gnd", "grid_pos": [0, 3]},
+    {"name": "trig", "grid_pos": [-3, -2]},
+    {"name": "thr", "grid_pos": [-3, 0]},
+    {"name": "dis", "grid_pos": [3, 1]},
+    {"name": "out", "grid_pos": [3, -1]},
+    {"name": "reset", "grid_pos": [-3, 2]}
+  ],
+  "label_offset": [-2.2, -3.2],
+  "value_offset": [2.2, 3.2],
+  "default_svg": "ne555.svg",
+  "states": {}
+}

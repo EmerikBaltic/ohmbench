@@ -145,6 +145,20 @@ _DEFAULT_PARAMETERS_BY_TYPE: dict[str, tuple[ComponentParameter, ...]] = {
         ComponentParameter("v_rail_pos", "Positive Rail (+Vcc)", "V", allow_zero=True, allow_negative=True),
         ComponentParameter("v_rail_neg", "Negative Rail (-Vee)", "V", allow_zero=True, allow_negative=True),
     ),
+    "comparator": (
+        ComponentParameter("v_high", "Output High (Voh)", "V", allow_zero=True, allow_negative=True),
+        ComponentParameter("v_low", "Output Low (Vol)", "V", allow_zero=True, allow_negative=True),
+        ComponentParameter("v_offset", "Input Offset (Vos)", "V", allow_zero=True, allow_negative=True),
+        ComponentParameter("a_ol", "Voltage Gain (Aol)", ""),
+        ComponentParameter("r_in", "Input Resistance", "Ω"),
+        ComponentParameter("r_out", "Output Resistance", "Ω"),
+    ),
+    "ne555": (
+        ComponentParameter("r_div", "Divider Ladder R (5k)", "Ω"),
+        ComponentParameter("r_out", "Output Resistance", "Ω"),
+        ComponentParameter("r_dis_on", "Discharge ON Resistance", "Ω"),
+        ComponentParameter("v_reset_th", "Reset Threshold", "V"),
+    ),
     "switch": (
         ComponentParameter("r_on", "ON Resistance", "Ω"),
         ComponentParameter("v_breakdown", "Breakdown Voltage", "V"),

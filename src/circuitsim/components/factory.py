@@ -9,6 +9,7 @@ from __future__ import annotations
 from circuitsim.components.base import Component
 from circuitsim.components.bjt import NPNBJT, PNPBJT
 from circuitsim.components.capacitor import Capacitor
+from circuitsim.components.comparator import Comparator
 from circuitsim.components.ground import Ground
 from circuitsim.components.inductor import Inductor
 from circuitsim.components.diode import Diode, ZenerDiode
@@ -18,6 +19,7 @@ from circuitsim.components.logic_gate import GATE_COMPONENT_TYPES, GATE_OPERATIO
 from circuitsim.components.mcu import MCUBlock
 from circuitsim.components.meters import Ammeter, Voltmeter
 from circuitsim.components.mosfet import NMOS, PMOS
+from circuitsim.components.ne555 import NE555
 from circuitsim.components.opamp import OpAmp
 from circuitsim.components.potentiometer import Potentiometer
 from circuitsim.components.resistor import Resistor
@@ -49,6 +51,8 @@ KNOWN_COMPONENT_TYPES: tuple[str, ...] = (
     "nmos",
     "pmos",
     "opamp",
+    "comparator",
+    "ne555",
     "voltmeter",
     "ammeter",
     "mcu",
@@ -97,6 +101,10 @@ def create_default_component_model(component_id: str, name: str) -> Component:
         return PMOS(name, f"{name}_G", f"{name}_D", f"{name}_S")
     if component_id == "opamp":
         return OpAmp(name, f"{name}_in_pos", f"{name}_in_neg", f"{name}_out")
+    if component_id == "comparator":
+        return Comparator(name, f"{name}_in_pos", f"{name}_in_neg", f"{name}_out")
+    if component_id == "ne555":
+        return NE555(name)
     if component_id == "voltmeter":
         return Voltmeter(name, n0, n1)
     if component_id == "ammeter":

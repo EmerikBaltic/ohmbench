@@ -16,6 +16,7 @@ from circuitsim.components.logic_gate import LogicGate
 from circuitsim.components.mcu import MCUBlock
 from circuitsim.components.meters import Ammeter, Voltmeter
 from circuitsim.components.mosfet import MOSFETBase
+from circuitsim.components.ne555 import NE555
 from circuitsim.components.opamp import OpAmp
 from circuitsim.components.potentiometer import Potentiometer
 from circuitsim.components.resistor import Resistor
@@ -206,6 +207,15 @@ class Circuit:
                         if ip is not None:
                             mat[ip, ip] += comp.pin_conductance(pin)
                     continue
+                if isinstance(comp, NE555):
+                    g_mat, _ = comp.companion_stamp()
+                    idxs = [node_to_idx.get(n) for n in comp.nodes]
+                    for r_i, ri in enumerate(idxs):
+                        if ri is not None:
+                            for c_j, cj in enumerate(idxs):
+                                if cj is not None:
+                                    mat[ri, cj] += g_mat[r_i][c_j]
+                    continue
 
                 if isinstance(comp, Potentiometer):
                     for na, nb, g in (
@@ -355,6 +365,20 @@ class Circuit:
                     terminal_degree[p_node] += 2
                     adjacency[c_pin].add(CANONICAL_GND)
                     adjacency[CANONICAL_GND].add(c_pin)
+                continue
+            if isinstance(comp, NE555):
+                cgnd = canonical(comp.node_gnd)
+                cvcc = canonical(comp.node_vcc)
+                adjacency[cgnd].add(cvcc)
+                adjacency[cvcc].add(cgnd)
+                for p_node in comp.nodes:
+                    c_pin = canonical(p_node)
+                    terminal_degree[p_node] += 1
+                    adjacency[c_pin].add(cgnd)
+                    adjacency[cgnd].add(c_pin)
+                terminal_degree[comp.node_out] += 1
+                terminal_degree[comp.node_vcc] += 1
+                terminal_degree[comp.node_gnd] += 1
                 continue
 
             if isinstance(comp, Potentiometer):
@@ -521,6 +545,19 @@ class Circuit:
                 for pin, p_node in zip(comp.pin_names, comp.nodes):
                     if comp.is_output_pin(pin):
                         driven_seeds.add(canonical(p_node))
+                continue
+            if isinstance(comp, NE555):
+                cgnd = canonical(comp.node_gnd)
+                cvcc = canonical(comp.node_vcc)
+                cout = canonical(comp.node_out)
+                cdis = canonical(comp.node_dis)
+                external_adj[cvcc].add(cgnd)
+                external_adj[cgnd].add(cvcc)
+                external_adj[cout].add(cvcc if comp.output_high else cgnd)
+                external_adj[cvcc if comp.output_high else cgnd].add(cout)
+                external_adj[cdis].add(cgnd)
+                external_adj[cgnd].add(cdis)
+                driven_seeds.add(cout)
                 continue
 
             if isinstance(comp, (BJTBase, MOSFETBase)):

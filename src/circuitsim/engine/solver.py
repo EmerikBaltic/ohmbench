@@ -20,6 +20,7 @@ from circuitsim.components.logic_gate import LogicGate
 from circuitsim.components.mcu import MCUBlock
 from circuitsim.components.meters import Ammeter, Voltmeter
 from circuitsim.components.mosfet import MOSFETBase
+from circuitsim.components.ne555 import NE555
 from circuitsim.components.opamp import OpAmp
 from circuitsim.components.potentiometer import Potentiometer
 from circuitsim.components.resistor import Resistor
@@ -54,6 +55,7 @@ _TAG_MCU = 16
 _TAG_BJT = 17
 _TAG_MOSFET = 18
 _TAG_OPAMP = 19
+_TAG_NE555 = 20
 
 
 class IntegrationMethod(str, Enum):
@@ -197,6 +199,7 @@ class MNASolver:
         self._bucket_inductors: tuple[Inductor, ...] = ()
         self._bucket_logic_gates: tuple[LogicGate, ...] = ()
         self._bucket_mcus: tuple[MCUBlock, ...] = ()
+        self._bucket_ne555: tuple[NE555, ...] = ()
 
     def invalidate_cache(self) -> None:
         """Force the solver to rebuild and re-factorize the MNA matrix on next solve."""
@@ -226,6 +229,7 @@ class MNASolver:
         inductors: list[Inductor] = []
         logic_gates: list[LogicGate] = []
         mcus: list[MCUBlock] = []
+        ne555_ics: list[NE555] = []
 
         for comp in raw_comps:
             if isinstance(comp, Ground):
@@ -281,6 +285,9 @@ class MNASolver:
                 tagged.append((comp, _TAG_MCU))
                 rhs_tagged.append((comp, _TAG_MCU))
                 mcus.append(comp)
+            elif isinstance(comp, NE555):
+                tagged.append((comp, _TAG_NE555))
+                ne555_ics.append(comp)
             elif isinstance(comp, Potentiometer):
                 tagged.append((comp, _TAG_POTENTIOMETER))
             elif isinstance(comp, DCVoltageSource):
@@ -309,6 +316,7 @@ class MNASolver:
         self._bucket_inductors = tuple(inductors)
         self._bucket_logic_gates = tuple(logic_gates)
         self._bucket_mcus = tuple(mcus)
+        self._bucket_ne555 = tuple(ne555_ics)
         self._buckets_len = len(tagged)
         self._buckets_version = circ_ver
 
@@ -473,6 +481,15 @@ class MNASolver:
                 sig.extend((comp.g_in, comp.g_out))
             elif isinstance(comp, MCUBlock):
                 sig.extend(comp.pin_conductance(p) for p in comp.pin_names)
+            elif isinstance(comp, NE555):
+                sig.extend(
+                    (
+                        1.0 if comp.output_high else 0.0,
+                        comp.r_div,
+                        comp.r_out,
+                        comp.r_dis_on,
+                    )
+                )
             elif isinstance(comp, Potentiometer):
                 sig.extend((comp.g_aw, comp.g_wb))
             elif isinstance(comp, (DCVoltageSource, ACVoltageSource)):
@@ -511,6 +528,15 @@ class MNASolver:
                 sig.extend((comp.g_in, comp.g_out))
             elif tag == _TAG_MCU:
                 sig.extend(comp.pin_conductance(p) for p in comp.pin_names)
+            elif tag == _TAG_NE555:
+                sig.extend(
+                    (
+                        1.0 if comp.output_high else 0.0,
+                        comp.r_div,
+                        comp.r_out,
+                        comp.r_dis_on,
+                    )
+                )
             elif tag == _TAG_POTENTIOMETER:
                 sig.extend((comp.g_aw, comp.g_wb))
             elif tag <= _TAG_AC_VS:
@@ -565,7 +591,7 @@ class MNASolver:
                     method_str if mode != "dc" else "dc",
                 )
                 self._stamp_conductance(matrix_a, comp.nodes[0], comp.nodes[1], g_d)
-            elif isinstance(comp, (BJTBase, MOSFETBase, OpAmp)):
+            elif isinstance(comp, (BJTBase, MOSFETBase, OpAmp, NE555)):
                 g_mat, _ = comp.companion_stamp()
                 self._stamp_small_matrix(matrix_a, self._node_to_idx, comp.nodes, g_mat)
             elif isinstance(comp, Switch):
@@ -1358,6 +1384,23 @@ class MNASolver:
         opamp.power = abs((v_target - vo) * i_out) + abs(vd * i_in)
         return i_out
 
+    @staticmethod
+    def _update_ne555_telemetry(ic: NE555, node_voltages: dict[str, float]) -> float:
+        """Update NE555 timer terminal telemetry and return output pin current."""
+        vcc = node_voltages.get(ic.node_vcc, 0.0)
+        vgnd = node_voltages.get(ic.node_gnd, 0.0)
+        vout = node_voltages.get(ic.node_out, 0.0)
+        vdis = node_voltages.get(ic.node_dis, 0.0)
+        v_target = vcc if ic.output_high else vgnd
+        i_out = (v_target - vout) / ic.r_out
+        r_dis = ic.r_dis_off if ic.output_high else ic.r_dis_on
+        i_dis = (vdis - vgnd) / r_dis
+        p_div = ((vcc - vgnd) ** 2) / (3.0 * ic.r_div)
+        ic.voltage = vout - vgnd
+        ic.current = i_out
+        ic.power = abs(i_out * (v_target - vout)) + abs(i_dis * (vdis - vgnd)) + p_div
+        return i_out
+
     def _update_led_discrete_states(
         self, node_voltages: dict[str, float]
     ) -> bool:
@@ -1798,62 +1841,74 @@ class MNASolver:
         for mcu in self._bucket_mcus:
             mcu.reset_state()
 
-        if (
-            not self._bucket_diodes
-            and not self._bucket_leds
-            and not self._bucket_bjts
-            and not self._bucket_mosfets
-            and not self._bucket_opamps
-            and recovery_mode == "auto"
-        ):
-            self._auto_regularized_warnings = []
-            current_sig = self._dc_conductance_signature(
-                extra_gmin=0.0,
-                loop_reg_r=(1e-6 if self.regularize_ideal_loops else 0.0),
-            )
-            needs_rebuild = (
-                self._lu_piv is None
-                or self._cached_mode != "dc"
-                or self._cached_circuit_version != self.circuit.version
-                or self._cached_conductance_signature != current_sig
-            )
-            rebuilt_any = False
-            if needs_rebuild:
-                self._assemble_and_factorize(mode="dc")
-                rebuilt_any = True
-            assert self._lu_piv is not None
-            assert self._matrix_a is not None
-            dim = self._matrix_a.shape[0]
-            if gates or self._bucket_mcus:
-                solution_x, node_voltages = self._relax_logic_gates_dc()
-            else:
-                if dim > 0:
-                    rhs_b = self._build_rhs_dc()
-                    solution_x = lu_solve(self._lu_piv, rhs_b, check_finite=True)
-                    if not np.all(np.isfinite(solution_x)):
-                        raise SingularMatrixError("MNA solve produced non-finite values.")
+        ne555_ics = self._bucket_ne555
+        rebuilt_any = False
+        solution_x = np.zeros(0, dtype=np.float64)
+        node_voltages: dict[str, float] = {}
+        dim = 0
+
+        for _ic_pass in range(6 if ne555_ics else 1):
+            if (
+                not self._bucket_diodes
+                and not self._bucket_leds
+                and not self._bucket_bjts
+                and not self._bucket_mosfets
+                and not self._bucket_opamps
+                and recovery_mode == "auto"
+            ):
+                self._auto_regularized_warnings = []
+                current_sig = self._dc_conductance_signature(
+                    extra_gmin=0.0,
+                    loop_reg_r=(1e-6 if self.regularize_ideal_loops else 0.0),
+                )
+                needs_rebuild = (
+                    self._lu_piv is None
+                    or self._cached_mode != "dc"
+                    or self._cached_circuit_version != self.circuit.version
+                    or self._cached_conductance_signature != current_sig
+                )
+                if needs_rebuild:
+                    self._assemble_and_factorize(mode="dc")
+                    rebuilt_any = True
+                assert self._lu_piv is not None
+                assert self._matrix_a is not None
+                dim = self._matrix_a.shape[0]
+                if gates or self._bucket_mcus:
+                    solution_x, node_voltages = self._relax_logic_gates_dc()
                 else:
-                    solution_x = np.zeros(0, dtype=np.float64)
-                node_voltages = {g: 0.0 for g in self.circuit.grounded_nodes()}
-                for node, idx in self._node_to_idx.items():
-                    node_voltages[node] = float(solution_x[idx])
-            self.last_convergence_method = (
-                "regularized"
-                if (self._auto_regularized_warnings or self.regularize_ideal_loops)
-                else "direct"
-            )
-        else:
-            solution_x, node_voltages, rebuilt_any = self._solve_step_with_recovery(
-                mode="dc",
-                sim_time=0.0,
-                dt=0.0,
-                method_str="dc",
-                direct_max_iters=direct_max_iters,
-                recovery_mode=recovery_mode,
-                relax_gates=True,
-            )
-            assert self._matrix_a is not None
-            dim = self._matrix_a.shape[0]
+                    if dim > 0:
+                        rhs_b = self._build_rhs_dc()
+                        solution_x = lu_solve(self._lu_piv, rhs_b, check_finite=True)
+                        if not np.all(np.isfinite(solution_x)):
+                            raise SingularMatrixError("MNA solve produced non-finite values.")
+                    else:
+                        solution_x = np.zeros(0, dtype=np.float64)
+                    node_voltages = {g: 0.0 for g in self.circuit.grounded_nodes()}
+                    for node, idx in self._node_to_idx.items():
+                        node_voltages[node] = float(solution_x[idx])
+                self.last_convergence_method = (
+                    "regularized"
+                    if (self._auto_regularized_warnings or self.regularize_ideal_loops)
+                    else "direct"
+                )
+            else:
+                solution_x, node_voltages, pass_rebuilt = self._solve_step_with_recovery(
+                    mode="dc",
+                    sim_time=0.0,
+                    dt=0.0,
+                    method_str="dc",
+                    direct_max_iters=direct_max_iters,
+                    recovery_mode=recovery_mode,
+                    relax_gates=True,
+                )
+                rebuilt_any = rebuilt_any or pass_rebuilt
+                assert self._matrix_a is not None
+                dim = self._matrix_a.shape[0]
+
+            if not ne555_ics:
+                break
+            if not any(ic.evaluate_latch(node_voltages) for ic in ne555_ics):
+                break
 
         for w in self._auto_regularized_warnings:
             if w.code not in {ew.code for ew in warnings}:
@@ -1905,6 +1960,10 @@ class MNASolver:
 
             if isinstance(comp, OpAmp):
                 branch_currents[comp.name] = self._update_opamp_telemetry(comp, node_voltages)
+                continue
+
+            if isinstance(comp, NE555):
+                branch_currents[comp.name] = self._update_ne555_telemetry(comp, node_voltages)
                 continue
 
             v_a = node_voltages.get(comp.nodes[0], 0.0)
@@ -2119,7 +2178,7 @@ class MNASolver:
                 if ia is not None and ib is not None:
                     mat[ia, ib] -= g_d
                     mat[ib, ia] -= g_d
-            elif isinstance(comp, (BJTBase, MOSFETBase, OpAmp)):
+            elif isinstance(comp, (BJTBase, MOSFETBase, OpAmp, NE555)):
                 g_mat, rhs_3 = comp.companion_stamp()
                 self._stamp_small_matrix(mat, node_to_idx, comp.nodes, g_mat)
                 self._stamp_small_rhs(rhs, node_to_idx, comp.nodes, rhs_3)
@@ -2439,6 +2498,9 @@ class MNASolver:
             comp.sample_inputs_and_schedule(node_voltages, t_next, dt)
         for mcu in self._bucket_mcus:
             mcu.evaluate_firmware(node_voltages, t_next, dt)
+        for ic in self._bucket_ne555:
+            if ic.evaluate_latch(node_voltages):
+                self._be_steps_remaining = max(self._be_steps_remaining, 2)
 
         # 4. Update component voltages, currents, companion states, and meter buffers.
         step_warnings = self._collect_gate_runtime_warnings(
@@ -2511,6 +2573,10 @@ class MNASolver:
 
             if tag == _TAG_OPAMP:
                 branch_currents[comp.name] = self._update_opamp_telemetry(comp, node_voltages)
+                continue
+
+            if tag == _TAG_NE555:
+                branch_currents[comp.name] = self._update_ne555_telemetry(comp, node_voltages)
                 continue
 
             v_a = node_voltages.get(comp.nodes[0], 0.0)

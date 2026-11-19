@@ -29,6 +29,8 @@ _LIB_MAP: dict[str, tuple[str, str]] = {
     "nmos": ("Device:Q_NMOS_GDS", "M"),
     "pmos": ("Device:Q_PMOS_GDS", "M"),
     "opamp": ("Amplifier_Operational:LM358", "U"),
+    "comparator": ("Comparator:LM393", "U"),
+    "ne555": ("Timer:NE555P", "U"),
     "potentiometer": ("Device:R_Potentiometer", "RV"),
     "lightbulb": ("Device:Lamp", "LA"),
     "switch": ("Switch:SW_SPST", "SW"),

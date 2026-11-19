@@ -48,7 +48,7 @@ COMPONENT_ORDER_IN_CATEGORY: dict[str, tuple[str, ...]] = {
         "gate_xor",
         "gate_xnor",
     ),
-    "Mixed-Signal": ("mcu",),
+    "Mixed-Signal": ("ne555", "comparator", "mcu"),
     "Loads": ("lightbulb",),
     "Instruments": ("voltmeter", "ammeter"),
 }

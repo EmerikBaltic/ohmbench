@@ -93,6 +93,14 @@ _EXTRA_SETTINGS: dict[str, dict[str, str]] = {
     "opamp": {
         "model_name": "str",
     },
+    "comparator": {
+        "model_name": "str",
+    },
+    "ne555": {
+        "r_dis_off": "float",
+        "r_in": "float",
+        "initial_q": "bool",
+    },
     "gate_not": {
         "family": "str",
         "initial_state": "bool",

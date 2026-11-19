@@ -7,6 +7,7 @@ import math
 import os
 from pathlib import Path
 import numpy as np
+import pytest
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
@@ -172,3 +173,96 @@ def test_i3_light_theme_contrast_dock_title_and_synced_shortcuts_help(qapp, tmp_
         win.circuit_scene.undo_stack.setClean()
         win.close()
         qapp.processEvents()
+
+
+def test_i4_ne555_dc_states_astable_oscillation_and_comparator() -> None:
+    """I4: NE555 DC latch/discharge states, astable RC oscillation (3V..6V), and Comparator switching."""
+    from circuitsim.components import (
+        Capacitor,
+        Comparator,
+        DCVoltageSource,
+        Ground,
+        NE555,
+        Resistor,
+        create_default_component_model,
+    )
+    from circuitsim.engine.netlist import Circuit
+    from circuitsim.engine.solver import MNASolver
+
+    # Factory round-trip & G1 parameter validation
+    assert create_default_component_model("ne555", "U1").component_type == "ne555"
+    assert create_default_component_model("comparator", "U2").component_type == "comparator"
+
+    # (a) 555 Timer DC latch & open-collector discharge test
+    circ_dc = Circuit()
+    vcc = DCVoltageSource("V_CC", "vcc", "0", voltage=9.0)
+    vtrig = DCVoltageSource("V_TRIG", "trig", "0", voltage=2.0)
+    vthr = DCVoltageSource("V_THR", "thr", "0", voltage=2.0)
+    vrst = DCVoltageSource("V_RST", "rst", "0", voltage=9.0)
+    r_pull = Resistor("R_PULL", "vcc", "dis", resistance=10_000.0)
+    u555 = NE555("U1", "vcc", "0", "trig", "thr", "dis", "out", "rst")
+    gnd = Ground("GND1", "0")
+    for c in (vcc, vtrig, vthr, vrst, r_pull, u555, gnd):
+        circ_dc.add(c)
+
+    solver_dc = MNASolver(circ_dc)
+    res1 = solver_dc.solve_dc()
+    assert res1.node_voltages["out"] == pytest.approx(9.0, abs=0.2)
+    assert res1.node_voltages["dis"] > 8.9  # DIS high-Z -> pulled to 9V
+
+    # Hold inside [1/3 Vcc, 2/3 Vcc] = [3V, 6V]
+    vtrig.dc_voltage = 4.5
+    vthr.dc_voltage = 4.5
+    res2 = solver_dc.solve_dc()
+    assert res2.node_voltages["out"] == pytest.approx(9.0, abs=0.2)
+
+    # Threshold > 6V -> OUT ~ 0V, DIS pulls 10k pull-up near 0V
+    vthr.dc_voltage = 7.0
+    res3 = solver_dc.solve_dc()
+    assert res3.node_voltages["out"] < 0.1
+    assert res3.node_voltages["dis"] < 0.05
+
+    # Low RESET (< 0.7V) overrides TRIG (< 3V) and forces OUT low
+    vtrig.dc_voltage = 2.0
+    vrst.dc_voltage = 0.2
+    res4 = solver_dc.solve_dc()
+    assert res4.node_voltages["out"] < 0.1
+
+    # (b) 555 Astable oscillator transient: VCC=9V, RA=1k, RB=2k, C=1uF -> oscillates across [3V, 6V]
+    circ_ast = Circuit()
+    circ_ast.add(DCVoltageSource("V1", "vcc", "0", voltage=9.0))
+    circ_ast.add(Ground("G1", "0"))
+    circ_ast.add(Resistor("R_A", "vcc", "dis", resistance=1_000.0))
+    circ_ast.add(Resistor("R_B", "dis", "cap", resistance=2_000.0))
+    circ_ast.add(Capacitor("C1", "cap", "0", capacitance=1e-6))
+    circ_ast.add(NE555("U1", "vcc", "0", "cap", "cap", "dis", "out", "vcc"))
+
+    tr = MNASolver(circ_ast).solve_transient(duration=6.5e-3, dt=1e-5)
+    v_cap = tr.node_voltages["cap"]
+    v_out = tr.node_voltages["out"]
+    assert float(v_out.max()) > 8.8
+    assert float(v_out.min()) < 0.2
+    assert float(v_cap.max()) >= 5.95
+    # Verify cap climbed to ~6V then discharged back down toward 3V
+    idx_peak = int(v_cap.argmax())
+    assert idx_peak < len(v_cap) - 10
+    assert float(v_cap[idx_peak:].min()) <= 3.1
+
+    # (c) Voltage Comparator switching between v_low=0V and v_high=5V
+    circ_cmp = Circuit()
+    vp = DCVoltageSource("VP", "np", "0", voltage=3.0)
+    vn = DCVoltageSource("VN", "nn", "0", voltage=2.5)
+    cmp_ic = Comparator("U_CMP", "np", "nn", "out", v_high=5.0, v_low=0.0)
+    circ_cmp.add(vp)
+    circ_cmp.add(vn)
+    circ_cmp.add(cmp_ic)
+    circ_cmp.add(Resistor("R_LOAD", "out", "0", resistance=10_000.0))
+    circ_cmp.add(Ground("G_CMP", "0"))
+
+    cmp_solver = MNASolver(circ_cmp)
+    r_hi = cmp_solver.solve_dc()
+    assert r_hi.node_voltages["out"] == pytest.approx(5.0, abs=0.05)
+
+    vp.dc_voltage = 2.0
+    r_lo = cmp_solver.solve_dc()
+    assert r_lo.node_voltages["out"] == pytest.approx(0.0, abs=0.05)
