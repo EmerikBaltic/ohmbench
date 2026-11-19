@@ -545,6 +545,15 @@ class MainWindow(QMainWindow):
         self.act_sweep_analysis.triggered.connect(self.show_sweep_panel)
         sim_menu.addAction(self.act_sweep_analysis)
 
+        self.act_curve_tracer = QAction(
+            "&I-V Curve Tracer...", self
+        )
+        self.act_curve_tracer.setToolTip(
+            "Trace multi-curve I-V characteristic families for diodes, Zeners, BJTs, and MOSFETs"
+        )
+        self.act_curve_tracer.triggered.connect(self.show_curve_tracer_panel)
+        sim_menu.addAction(self.act_curve_tracer)
+
         # Help menu
         help_menu = menu_bar.addMenu("&Help")
         act_reload_svg = QAction("&Reload Custom SVGs", self)
@@ -1453,6 +1462,27 @@ class MainWindow(QMainWindow):
             )
         dlg: SweepAnalysisDialog = self.sweep_dialog  # type: ignore[assignment]
         dlg.refresh_circuit()
+        dlg.show()
+        dlg.raise_()
+        dlg.activateWindow()
+        return dlg
+
+    def show_curve_tracer_panel(self):
+        """Open (or focus) the interactive I-V Characteristic Curve Tracer dialog."""
+        from circuitsim.app.curve_tracer_panel import CurveTracerDialog
+
+        def _selected_comp():
+            sel = [
+                it.component
+                for it in self.circuit_scene.selectedItems()
+                if isinstance(it, ComponentItem)
+            ]
+            return sel[0] if len(sel) == 1 else None
+
+        dlg = getattr(self, "curve_tracer_dialog", None)
+        if dlg is None:
+            dlg = CurveTracerDialog(selected_component_provider=_selected_comp, parent=self)
+            self.curve_tracer_dialog = dlg
         dlg.show()
         dlg.raise_()
         dlg.activateWindow()

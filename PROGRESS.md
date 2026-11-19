@@ -8,7 +8,7 @@
 - [x] `I4` (`done`): Add 555 Timer IC (`ne555`) & Voltage Comparator (`comparator`) with MNA stamps, latch/astable oscillation, IEC symbols & palette entries.
 - [x] `I5` (`done`): Add Power & Protection components (`transformer`, `spdt_relay`, blowable/resettable `fuse`) with MNA stamps, hysteresis & stress/reset integration.
 - [x] `I6` (`done`): Add Sequential Digital Logic & Displays (`d_flipflop`, `jk_flipflop`, `counter_4bit`, `seven_seg_display`) with live 7-segment rendering.
-- [ ] `I7` (`todo`): Add Qt-free I-V Characteristic Curve Tracer (`circuitsim.engine.curve_tracer`) and `CurveTracerDialog` (`Simulation > I-V Curve Tracer...`) with CSV export.
+- [x] `I7` (`done`): Add Qt-free I-V Characteristic Curve Tracer (`circuitsim.engine.curve_tracer`) and `CurveTracerDialog` (`Simulation > I-V Curve Tracer...`) with CSV export.
 - [ ] `I8` (`todo`): Add Benchtop Digital Multimeter (DMM) tab (DC V, AC RMS, DC A, Resistance/Continuity) and Oscilloscope X-Y Lissajous mode.
 - [ ] `I9` (`todo`): Add automated Bill of Materials & Thermal Power Budget (`circuitsim.io.bom_export` + UI dialog) and Custom Subcircuit Macro packaging (`CustomMacroBlock`).
 - [ ] `I10` (`todo`): Add undoable Alignment & Distribution tools, toggleable corner Minimap, expand `BUILTIN_TEST_JIGS` to 18 circuits, and update docs.

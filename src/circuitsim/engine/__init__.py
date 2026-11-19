@@ -43,6 +43,13 @@ from circuitsim.engine.ac_analysis import (
     ACFrequencySample,
     run_ac_sweep,
 )
+from circuitsim.engine.curve_tracer import (
+    CurveFamilyResult,
+    IVCurve,
+    export_curve_family_csv,
+    trace_transistor_family,
+    trace_two_terminal_iv,
+)
 from circuitsim.engine.fft_analysis import (
     FFTSpectrumResult,
     compute_fft_spectrum,
@@ -62,8 +69,10 @@ __all__ = [
     "CircuitError",
     "CircuitWarning",
     "ComponentTelemetry",
+    "CurveFamilyResult",
     "FFTSpectrumResult",
     "FloatingNodeError",
+    "IVCurve",
     "IntegrationMethod",
     "MNASolver",
     "MonteCarloResult",
@@ -88,10 +97,13 @@ __all__ = [
     "compute_current_dot_velocity",
     "compute_transport_controls_state",
     "evaluate_component_stress",
+    "export_curve_family_csv",
     "format_power_probe_text",
     "format_watts_si",
     "map_voltage_to_rgb",
     "run_ac_sweep",
     "run_monte_carlo",
     "run_parameter_sweep",
+    "trace_transistor_family",
+    "trace_two_terminal_iv",
 ]

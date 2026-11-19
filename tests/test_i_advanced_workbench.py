@@ -457,3 +457,60 @@ def test_i6_sequential_d_jk_flipflops_4bit_counter_and_seven_seg_display(qapp) -
     painter = QPainter(img)
     scene.render(painter, QRectF(0, 0, 160, 180), QRectF(-80, -90, 160, 180))
     painter.end()
+
+
+def test_i7_curve_tracer_zener_npn_nmos_and_qt_free_check(qapp, tmp_path: Path) -> None:
+    """I7: Qt-free I-V Curve Tracer for Zener diode, NPN BJT family, NMOS family, and CSV/dialog UI."""
+    from circuitsim.app.curve_tracer_panel import CurveTracerDialog
+    from circuitsim.components import NMOS, NPNBJT, ZenerDiode
+    from circuitsim.engine.curve_tracer import (
+        export_curve_family_csv,
+        trace_transistor_family,
+        trace_two_terminal_iv,
+    )
+
+    # AST Qt-free boundary check
+    src_path = Path("src/circuitsim/engine/curve_tracer.py")
+    tree = ast.parse(src_path.read_text(encoding="utf-8"))
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                assert not alias.name.startswith(("PySide", "PyQt", "qtpy"))
+        elif isinstance(node, ast.ImportFrom):
+            mod = node.module or ""
+            assert not mod.startswith(("PySide", "PyQt", "qtpy"))
+
+    # (a) 5.1 V Zener Diode swept -6.0 V to +1.0 V (step = 0.05 V)
+    zener = ZenerDiode("DZ1", "a", "b", v_z=5.1)
+    z_curve = trace_two_terminal_iv(zener, -6.0, 1.0, points=141)
+    assert z_curve.voltages[0] == pytest.approx(-6.0)
+    assert z_curve.currents_ma[0] < -10.0  # Sharp reverse breakdown
+    i_neg2 = float(np.interp(-2.0, z_curve.voltages, z_curve.currents_ma))
+    assert abs(i_neg2) < 0.01  # Blocked in reverse region before V_z
+    i_fwd = float(np.interp(0.75, z_curve.voltages, z_curve.currents_ma))
+    assert i_fwd > 5.0  # Forward conduction
+
+    # (b) NPN BJT (BF=100) at I_B = [10u, 20u, 30u] @ V_CE = 5.0 V -> ~[1.0, 2.0, 3.0] mA
+    npn = NPNBJT("Q1", "b", "c", "e", beta_f=100.0)
+    bjt_fam = trace_transistor_family(npn, 0.0, 5.0, [10e-6, 20e-6, 30e-6], points=21)
+    assert len(bjt_fam.curves) == 3
+    for curve, expected_ma in zip(bjt_fam.curves, (1.0, 2.0, 3.0)):
+        assert curve.currents_ma[-1] == pytest.approx(expected_ma, rel=0.15)
+
+    # (c) NMOS (Vth=1.5 V, KP=0.02) at V_GS = [2.5, 3.5] V @ V_DS = 5.0 V -> ~[10.0, 40.0] mA
+    nmos = NMOS("M1", "g", "d", "s", v_th=1.5, k_p=0.02)
+    mos_fam = trace_transistor_family(nmos, 0.0, 5.0, [2.5, 3.5], points=21)
+    assert len(mos_fam.curves) == 2
+    for curve, expected_ma in zip(mos_fam.curves, (10.0, 40.0)):
+        assert curve.currents_ma[-1] == pytest.approx(expected_ma, rel=0.15)
+
+    # CSV export & CurveTracerDialog offscreen smoke test
+    csv_out = tmp_path / "bjt_curves.csv"
+    csv_text = export_curve_family_csv(bjt_fam, csv_out)
+    assert csv_out.exists()
+    assert "I_B = 10 uA" in csv_text and "V_CE (V)" in csv_text
+
+    dlg = CurveTracerDialog()
+    res_dlg = dlg.run_trace()
+    assert len(res_dlg.curves) >= 1
+    dlg.close()
