@@ -1788,6 +1788,8 @@ class MainWindow(QMainWindow):
             extra_live = f"\n  • Brightness: {comp.brightness_percent:.1f}%"
             if comp.is_over_bright:
                 extra_live += " (OVER-BRIGHT!)"
+        elif comp.component_type == "transformer":
+            extra_live = "\n  • Info: Transformers block steady DC; use an AC Voltage Source to transform voltage."
         if item.diagnostic_message:
             extra_live += f"\n  • Diagnostic: {item.diagnostic_message}"
 

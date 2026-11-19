@@ -668,6 +668,13 @@ class SymbolLibrary:
             painter.drawLine(QPointF(16.0, 20.0), QPointF(40.0, 20.0))
             for wy in (-20.0, -7.0, 6.0):
                 painter.drawArc(QRectF(10.0, wy, 12.0, 13.0), 90 * 16, 180 * 16)
+            # Phase polarity dots near P1 and S1 terminals
+            painter.save()
+            painter.setBrush(QColor(stroke_color))
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.drawEllipse(QPointF(-24.0, -14.0), 2.3, 2.3)
+            painter.drawEllipse(QPointF(24.0, -14.0), 2.3, 2.3)
+            painter.restore()
 
         elif component_id == "spdt_relay":
             painter.setBrush(Qt.BrushStyle.NoBrush)

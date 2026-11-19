@@ -274,7 +274,16 @@ def run_ac_sweep(
                 _stamp_complex_admittance(
                     mat_y, node_to_idx, comp.nodes[0], comp.nodes[1], complex(g_lin)
                 )
-            elif isinstance(comp, (BJTBase, MOSFETBase, OpAmp, NE555, Transformer, SPDTRelay)):
+            elif isinstance(comp, Transformer):
+                y_mat = comp.ac_admittance_matrix(omega)
+                idxs = [node_to_idx.get(n) for n in comp.nodes]
+                for r_i, row_idx in enumerate(idxs):
+                    if row_idx is None:
+                        continue
+                    for c_j, col_idx in enumerate(idxs):
+                        if col_idx is not None:
+                            mat_y[row_idx, col_idx] += y_mat[r_i][c_j]
+            elif isinstance(comp, (BJTBase, MOSFETBase, OpAmp, NE555, SPDTRelay)):
                 g_mat, _ = comp.companion_stamp()
                 idxs = [node_to_idx.get(n) for n in comp.nodes]
                 for r_i, row_idx in enumerate(idxs):

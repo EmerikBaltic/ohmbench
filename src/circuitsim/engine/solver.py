@@ -307,6 +307,7 @@ class MNASolver:
                 fuses.append(comp)
             elif isinstance(comp, Transformer):
                 tagged.append((comp, _TAG_TRANSFORMER))
+                rhs_tagged.append((comp, _TAG_TRANSFORMER))
                 transformers.append(comp)
             elif isinstance(comp, SPDTRelay):
                 tagged.append((comp, _TAG_RELAY))
@@ -522,7 +523,17 @@ class MNASolver:
                     )
                 )
             elif isinstance(comp, Transformer):
-                sig.extend((comp.turns_ratio, comp.r_winding_ohm, comp.l_primary_h, comp.coupling_k))
+                sig.extend(
+                    (
+                        1.0 if comp.is_ideal else 0.0,
+                        comp.primary_turns,
+                        comp.secondary_turns,
+                        comp.r_primary_ohm,
+                        comp.r_secondary_ohm,
+                        comp.l_primary_h,
+                        comp.coupling_k,
+                    )
+                )
             elif isinstance(comp, SPDTRelay):
                 sig.extend((1.0 if comp.energized else 0.0, comp.coil_resistance_ohm))
             elif isinstance(comp, Potentiometer):
@@ -575,7 +586,17 @@ class MNASolver:
             elif tag == _TAG_FUSE:
                 sig.append(comp.conductance)
             elif tag == _TAG_TRANSFORMER:
-                sig.extend((comp.turns_ratio, comp.r_winding_ohm, comp.l_primary_h, comp.coupling_k))
+                sig.extend(
+                    (
+                        1.0 if comp.is_ideal else 0.0,
+                        comp.primary_turns,
+                        comp.secondary_turns,
+                        comp.r_primary_ohm,
+                        comp.r_secondary_ohm,
+                        comp.l_primary_h,
+                        comp.coupling_k,
+                    )
+                )
             elif tag == _TAG_RELAY:
                 sig.extend((1.0 if comp.energized else 0.0, comp.coil_resistance_ohm))
             elif tag == _TAG_POTENTIOMETER:
@@ -632,7 +653,10 @@ class MNASolver:
                     method_str if mode != "dc" else "dc",
                 )
                 self._stamp_conductance(matrix_a, comp.nodes[0], comp.nodes[1], g_d)
-            elif isinstance(comp, (BJTBase, MOSFETBase, OpAmp, NE555, Transformer, SPDTRelay)):
+            elif isinstance(comp, Transformer):
+                g_mat, _ = comp.companion_stamp(dt=dt, method=method_str, mode=mode)
+                self._stamp_small_matrix(matrix_a, self._node_to_idx, comp.nodes, g_mat)
+            elif isinstance(comp, (BJTBase, MOSFETBase, OpAmp, NE555, SPDTRelay)):
                 g_mat, _ = comp.companion_stamp()
                 self._stamp_small_matrix(matrix_a, self._node_to_idx, comp.nodes, g_mat)
             elif isinstance(comp, Switch):
@@ -893,6 +917,9 @@ class MNASolver:
             elif tag in (_TAG_BJT, _TAG_MOSFET, _TAG_OPAMP):
                 _, rhs_3 = comp.companion_stamp()
                 self._stamp_small_rhs(rhs_b, node_to_idx, comp.nodes, rhs_3)
+            elif tag == _TAG_TRANSFORMER:
+                _, rhs_4 = comp.companion_stamp(dt=dt, method=method_str, mode="transient")
+                self._stamp_small_rhs(rhs_b, node_to_idx, comp.nodes, rhs_4)
             elif tag == _TAG_SWITCH:
                 if comp.c_parasitic > 0.0 or comp.arcing:
                     _, i_sw_eq = comp.companion_model(dt, method_str)
@@ -1467,17 +1494,18 @@ class MNASolver:
         return i_out
 
     @staticmethod
-    def _update_transformer_telemetry(xfmr: Transformer, node_voltages: dict[str, float]) -> float:
-        """Update coupled transformer primary/secondary voltages, secondary current, and loss."""
-        vp = node_voltages.get(xfmr.node_p1, 0.0) - node_voltages.get(xfmr.node_p2, 0.0)
-        vs = node_voltages.get(xfmr.node_s1, 0.0) - node_voltages.get(xfmr.node_s2, 0.0)
-        n = xfmr.turns_ratio * xfmr.coupling_k
-        g_w = 1.0 / max(xfmr.r_winding_ohm, 1e-4)
-        i_sec = (n * vp - vs) * g_w
-        xfmr.voltage = vs
-        xfmr.current = i_sec
-        xfmr.power = abs((n * vp - vs) * i_sec)
-        return i_sec
+    def _update_transformer_telemetry(
+        xfmr: Transformer,
+        node_voltages: dict[str, float],
+        *,
+        dt: float = 0.0,
+        method_str: str = "trapezoidal",
+        mode: str = "dc",
+    ) -> float:
+        """Update coupled transformer primary/secondary currents, induced EMF, and loss."""
+        return xfmr.update_companion_state(
+            node_voltages, dt=dt, method=method_str, mode=mode
+        )
 
     @staticmethod
     def _update_relay_telemetry(relay: SPDTRelay, node_voltages: dict[str, float]) -> float:
@@ -2082,7 +2110,9 @@ class MNASolver:
                 continue
 
             if isinstance(comp, Transformer):
-                branch_currents[comp.name] = self._update_transformer_telemetry(comp, node_voltages)
+                branch_currents[comp.name] = self._update_transformer_telemetry(
+                    comp, node_voltages, mode="dc"
+                )
                 continue
 
             if isinstance(comp, SPDTRelay):
@@ -2718,7 +2748,9 @@ class MNASolver:
                 continue
 
             if tag == _TAG_TRANSFORMER:
-                branch_currents[comp.name] = self._update_transformer_telemetry(comp, node_voltages)
+                branch_currents[comp.name] = self._update_transformer_telemetry(
+                    comp, node_voltages, dt=dt, method_str=method_str, mode="transient"
+                )
                 continue
 
             if tag == _TAG_RELAY:

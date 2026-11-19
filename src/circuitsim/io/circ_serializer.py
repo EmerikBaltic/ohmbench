@@ -139,7 +139,7 @@ _EXTRA_SETTINGS: dict[str, dict[str, str]] = {
     "voltmeter": {"mode": "str", "is_ideal": "bool"},
     "ammeter": {"mode": "str", "is_ideal": "bool"},
     "mcu": {"v_low": "float", "r_dig_in": "float", "update_period": "float", "code": "str"},
-    "transformer": {},
+    "transformer": {"is_ideal": "bool"},
     "spdt_relay": {"r_on": "float", "r_off": "float", "energized": "bool"},
     "fuse": {"r_blown_ohm": "float", "is_blown": "bool"},
     "d_flipflop": {"initial_q": "bool"},
@@ -370,8 +370,9 @@ def _component_from_dict(entry: object, index: int) -> PlacedComponentSpec:
         except ValueError as exc:
             raise CircuitFileError(f"{who}: {exc}") from exc
     else:
+        compat_keys = {"turns_ratio", "r_winding_ohm"} if ctype == "transformer" else set()
         for key, value in params.items():
-            if key not in allowed:
+            if key not in allowed and key not in compat_keys:
                 raise CircuitFileError(f"{who} has an unknown parameter '{key}'.")
             if value is None and _NULLABLE_PARAMETERS.get((ctype, key)):
                 setattr(comp, key, None)

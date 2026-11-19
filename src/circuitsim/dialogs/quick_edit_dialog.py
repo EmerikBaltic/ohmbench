@@ -26,6 +26,7 @@ from circuitsim.components.led import LED, LED_COLOUR_PRESETS
 from circuitsim.components.lightbulb import Lightbulb
 from circuitsim.components.logic_gate import LOGIC_FAMILY_PRESETS, LogicGate
 from circuitsim.components.meters import Ammeter, Voltmeter
+from circuitsim.components.power import Transformer
 from circuitsim.components.resistor import Resistor
 from circuitsim.components.sources import ACVoltageSource, DCVoltageSource
 from circuitsim.components.switch import Switch
@@ -102,6 +103,7 @@ class QuickValueDialog(QDialog):
         self.meter_preset_combo: QComboBox | None = None
         self.meter_loading_notice_label: QLabel | None = None
         self.meter_ideal_hint_lbl: QLabel | None = None
+        self.transformer_ideal_cb: QCheckBox | None = None
         self.gate_family_combo: QComboBox | None = None
         self.gate_initial_combo: QComboBox | None = None
         self.gate_family_hint_lbl: QLabel | None = None
@@ -206,6 +208,17 @@ class QuickValueDialog(QDialog):
             )
             fam_vbox.addWidget(self.gate_family_hint_lbl)
             form.addRow("Logic Family:", fam_box)
+
+        if isinstance(component, Transformer):
+            self.transformer_ideal_cb = QCheckBox(
+                "Ideal Transformer (lossless, k=1)", self
+            )
+            self.transformer_ideal_cb.setObjectName("transformer_ideal_cb")
+            self.transformer_ideal_cb.setChecked(bool(component.is_ideal))
+            self.transformer_ideal_cb.toggled.connect(
+                self._on_transformer_ideal_toggled
+            )
+            form.addRow("Mode:", self.transformer_ideal_cb)
 
         for spec in self._param_specs:
             field_container = QWidget(self)
@@ -385,6 +398,9 @@ class QuickValueDialog(QDialog):
         self.show_value_cb = QCheckBox("Show value on schematic canvas")
         self.show_value_cb.setChecked(component.show_value)
         form.addRow("Display:", self.show_value_cb)
+
+        if isinstance(component, Transformer) and self.transformer_ideal_cb is not None:
+            self._on_transformer_ideal_toggled(bool(component.is_ideal))
 
         params_tab_layout.addLayout(form)
 
@@ -722,6 +738,14 @@ class QuickValueDialog(QDialog):
                 except ValueError:
                     pass
 
+    def _on_transformer_ideal_toggled(self, checked: bool) -> None:
+        """Enable Non-Ideal winding parameters when unchecked; dim them when Ideal."""
+        for key in ("l_primary_h", "coupling_k", "r_primary_ohm", "r_secondary_ohm"):
+            le = self.inputs.get(key)
+            if le is not None:
+                le.setEnabled(not checked)
+        self._refresh_warnings()
+
     def _refresh_warnings(self) -> None:
         if self.warning_label is None:
             return
@@ -970,6 +994,17 @@ class QuickValueDialog(QDialog):
                 parsed_map["initial_state"] = bool(
                     self.gate_initial_combo.currentData()
                 )
+
+        if isinstance(self.component, Transformer):
+            if self.transformer_ideal_cb is not None:
+                parsed_map["is_ideal"] = bool(self.transformer_ideal_cb.isChecked())
+            np_val = float(parsed_map.get("primary_turns", self.component.primary_turns))
+            ns_val = float(parsed_map.get("secondary_turns", self.component.secondary_turns))
+            k_val = float(parsed_map.get("coupling_k", self.component.coupling_k))
+            if np_val < 1.0 or ns_val < 1.0:
+                return None, "Primary and secondary windings must each be >= 1 turn."
+            if not (0.0 < k_val <= 1.0):
+                return None, f"Coupling Factor (k) must be in (0, 1] (got {k_val:g})."
 
         if self.max_power_edit is not None and self.max_voltage_edit is not None and self.max_current_edit is not None:
             for key, label, edit in (

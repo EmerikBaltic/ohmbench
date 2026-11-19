@@ -676,5 +676,19 @@ When ready to perform Stage 2 (internal/package rename after Stage 1 settles):
 - **Intermittent Windows Qt teardown access violation (`tests/conftest.py:112`, `_qt_cleanup_and_watchdog`)**: **Cause**: Three interacting lifecycle issues: (1) `tests/conftest.py` set `widget._is_closing = True` before `widget.close()`, causing `MainWindow.closeEvent` to return early without disconnecting `undo_stack.cleanChanged`, `frame_ready`, or `circuit_scene` signals; (2) `CircuitScene` had `parent=None` in `MainWindow` plus Python reference cycles (closure lambda on `cleanChanged`, `selectionChanged` slot), so scenes with selected items survived until later cyclic GC during unrelated tests and fired `selectionChanged` during C++ destruction; (3) `SimulationWorkerController._worker` (`_SessionThreadWorker`) had no C++ parent and was moved to `self._thread` at `__init__` without returning to the main thread / `deleteLater()` before `self._thread` destruction. **Fix**: Separated `_close_cleaned_up` from `_is_closing` in `MainWindow.closeEvent` and passed `parent=self` to `CircuitScene`, replaced the `cleanChanged` lambda with `_on_undo_clean_changed`, added `CircuitScene.shutdown_scene()`, deferred `_worker.moveToThread(self._thread)` until `_ensure_thread_running()` with `cleanup_for_shutdown()` on `SimulationWorkerController.shutdown()`, and updated `_qt_cleanup_and_watchdog` in `tests/conftest.py` to shut down standalone `CircuitScene`s and run `gc.collect()` + `DeferredDelete` flush between tests.
 - **`ScopeCore.auto_set` exact-value specification (A4c)**: `ScopeCore.auto_set` docstring (`src/circuitsim/scope/core.py:355`) states only `"Automatically choose vertical scale, offset, timebase, and trigger level."` and `PROGRESS.md` does not document its `Vpp / 5.0` divisor, midpoint offset rounding, or `1-2-5` snapping tie rules; exact-value Auto Set test in `tests/test_scope_core_exact.py` was skipped and reported as instructed.
 
+---
+
+## PHASE K QUEUE (POLISH & PHYSICS FIXES — K1 TO K5 + GATE K)
+
+| Item | Description | Status | Notes / Commit |
+| --- | --- | --- | --- |
+| `K1` | Transformer Overhaul: Primary/Secondary Windings (`Np`/`Ns`), Ideal vs Non-Ideal Mode, coupled-inductor AC/Transient & DC-blocking physics, Properties dialog toggle, polarity dots, and DC info hint | `[x]` | Done |
+| `K2` | Fix 7-Segment Display Live Updates in DC & Transient Simulation (`v_threshold=2.0`, sorted segment table, telemetry sync to canvas `ComponentItem` in `SimulationSession` & `apply_solve_result`) | `[ ]` | pending |
+| `K3` | Blown Fuse Visual: Broken Open Wire Gap + Animated "POP!" Spark Effect + Click-to-Reset Label | `[ ]` | pending |
+| `K4` | Always-Visible Pin Labels on All Multi-Pin Components (`ComponentItem.default_pin_labels`, upright edge labels, 7-seg pinout info hint) | `[ ]` | pending |
+| `K5` | Lock Problems Panel to Bottom Dock & Dynamic Palette Resizing (bottom corners owned by bottom dock, single title bar, non-floating) | `[ ]` | pending |
+| `GATE K` | Targeted Gate Verification (`test_k_ui_and_transformer.py`, `test_i_advanced_workbench.py`, `test_problems_panel.py`, `test_g_qol_fixes.py`) & `checkpoint/K-done` tag | `[ ]` | pending |
+
+
 
 

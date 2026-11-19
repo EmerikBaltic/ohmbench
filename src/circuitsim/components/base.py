@@ -164,10 +164,12 @@ _DEFAULT_PARAMETERS_BY_TYPE: dict[str, tuple[ComponentParameter, ...]] = {
         ComponentParameter("v_breakdown", "Breakdown Voltage", "V"),
     ),
     "transformer": (
-        ComponentParameter("turns_ratio", "Turns Ratio (Ns/Np)", ""),
-        ComponentParameter("r_winding_ohm", "Winding Resistance", "Ω"),
-        ComponentParameter("l_primary_h", "Primary Inductance", "H"),
+        ComponentParameter("primary_turns", "Primary Windings (Np)", "turns"),
+        ComponentParameter("secondary_turns", "Secondary Windings (Ns)", "turns"),
+        ComponentParameter("l_primary_h", "Primary Inductance (Lp)", "H"),
         ComponentParameter("coupling_k", "Coupling Factor (k)", ""),
+        ComponentParameter("r_primary_ohm", "Primary Resistance (Rp)", "Ω"),
+        ComponentParameter("r_secondary_ohm", "Secondary Resistance (Rs)", "Ω"),
     ),
     "spdt_relay": (
         ComponentParameter("coil_resistance_ohm", "Coil Resistance", "Ω"),
