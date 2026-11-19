@@ -285,6 +285,11 @@ class MainWindow(QMainWindow):
         self.act_export_kicad.triggered.connect(self._on_export_kicad)
         file_menu.addAction(self.act_export_kicad)
 
+        self.act_export_spice = QAction("Export as SPICE Netlist (.cir)...", self)
+        self.act_export_spice.setToolTip("Export circuit to a standard SPICE netlist (.cir / .sp)")
+        self.act_export_spice.triggered.connect(self._on_export_spice)
+        file_menu.addAction(self.act_export_spice)
+
         self.act_copy_share_url = QAction("Copy Share &URL (ohmbench://...)", self)
         self.act_copy_share_url.setToolTip("Encode schematic into an ohmbench://c/... sharing link")
         self.act_copy_share_url.triggered.connect(self.copy_share_url)
@@ -1383,6 +1388,27 @@ class MainWindow(QMainWindow):
         doc = self.circuit_scene.to_document_v2(self._current_view_state())
         export_to_kicad_sch(doc, path, title=Path(path).stem)
         self.statusBar().showMessage(f"Exported KiCad schematic: {path}", 4000)
+
+    def _on_export_spice(self) -> None:
+        from circuitsim.io.spice_export import export_to_spice_netlist
+
+        default_name = "schematic.cir"
+        if self._current_path:
+            default_name = f"{self._current_path.stem}.cir"
+        path, _ = QFileDialog.getSaveFileName(
+            self,
+            "Export SPICE Netlist",
+            default_name,
+            "SPICE Netlist (*.cir *.sp *.spice)",
+        )
+        if not path:
+            return
+        export_to_spice_netlist(
+            self.circuit_scene,
+            title=Path(path).stem,
+            output_path=path,
+        )
+        self.statusBar().showMessage(f"Exported SPICE netlist: {path}", 4000)
 
     def _on_speed_combo_changed(self, index: int) -> None:
         raw = self.speed_combo.itemData(index)

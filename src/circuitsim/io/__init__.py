@@ -15,6 +15,7 @@ from circuitsim.io.share_codec import (
     decode_circuit_share_url,
     encode_circuit_share_url,
 )
+from circuitsim.io.spice_export import export_to_spice_netlist, format_spice_value
 from circuitsim.io.spice_import import (
     EncryptedModelError,
     SpiceElement,
@@ -56,7 +57,9 @@ __all__ = [
     "export_bom_csv",
     "export_bom_markdown",
     "export_to_kicad_sch",
+    "export_to_spice_netlist",
     "export_waveform_to_wav",
+    "format_spice_value",
     "generate_bom_report",
     "instantiate_diode_model",
     "instantiate_subckt_elements",

@@ -438,3 +438,67 @@ def test_j4_properties_dialog_vip_inductor_and_lightbulb_helpers(qapp) -> None:
     finally:
         dlg_bulb.close()
         qapp.processEvents()
+
+
+def test_j5_spice_netlist_exporter(qapp) -> None:
+    """J5: Verify Qt-free SPICE netlist exporter with MEG/m/u/k suffixes, .MODEL, and virtual instrument comments."""
+    from conftest import assert_module_has_no_qt_imports
+
+    assert_module_has_no_qt_imports("circuitsim.io.spice_export")
+
+    from circuitsim.io.spice_export import export_to_spice_netlist, format_spice_value
+
+    assert format_spice_value(1_000_000.0) == "1MEG"
+    assert format_spice_value(0.001) == "1m"
+    assert format_spice_value(1e-6) == "1u"
+    assert format_spice_value(4700.0) == "4.7k"
+    assert format_spice_value(0.015) == "15m"
+
+    scene = CircuitScene(SymbolLibrary())
+    try:
+        v1 = scene.place_new_component("dc_voltage", QPointF(-300.0, -100.0))
+        r1 = scene.place_new_component("resistor", QPointF(-140.0, -100.0))
+        r2 = scene.place_new_component("resistor", QPointF(-140.0, 20.0))
+        d1 = scene.place_new_component("diode", QPointF(20.0, -100.0))
+        q1 = scene.place_new_component("npn_bjt", QPointF(160.0, -20.0))
+        osc = scene.place_new_component("oscilloscope", QPointF(360.0, 0.0))
+        gnd = scene.place_new_component("ground", QPointF(-220.0, 180.0))
+        assert v1 and r1 and r2 and d1 and q1 and osc and gnd
+
+        v1.component.dc_voltage = 12.0
+        r1.component.resistance = 1_000_000.0
+        r2.component.resistance = 0.015
+
+        vt = v1.terminal_scene_positions_px()
+        r1t = r1.terminal_scene_positions_px()
+        r2t = r2.terminal_scene_positions_px()
+        d1t = d1.terminal_scene_positions_px()
+        q1t = q1.terminal_scene_positions_px()
+        ot = osc.terminal_scene_positions_px()
+        gt = gnd.terminal_scene_positions_px()
+
+        scene.add_routed_wire(vt["pos"], r1t["a"], prefer_horizontal_first=False)
+        scene.add_routed_wire(r1t["b"], d1t["anode"], prefer_horizontal_first=True)
+        scene.add_routed_wire(d1t["cathode"], q1t["B"], prefer_horizontal_first=False)
+        scene.add_routed_wire(vt["pos"], q1t["C"], prefer_horizontal_first=False)
+        scene.add_routed_wire(q1t["E"], r2t["a"], prefer_horizontal_first=False)
+        scene.add_routed_wire(r2t["b"], gt["gnd"], prefer_horizontal_first=False)
+        scene.add_routed_wire(vt["neg"], gt["gnd"], prefer_horizontal_first=True)
+        scene.add_routed_wire(q1t["B"], ot["CH1"], prefer_horizontal_first=False)
+        scene.add_routed_wire(ot["GND"], gt["gnd"], prefer_horizontal_first=False)
+
+        # Label one wire VCC explicitly
+        vcc_wire = next(iter(scene.wire_graph.wires))
+        scene._wire_graph = scene.wire_graph.set_wire_net_label(vcc_wire.id, "VCC")
+
+        cir = export_to_spice_netlist(scene, title="Mixed J5 Test")
+        assert "* Mixed J5 Test" in cir
+        assert "1MEG" in cir
+        assert "15m" in cir
+        assert " 0 " in cir or " 0\n" in cir
+        assert ".MODEL" in cir
+        assert "* Oscilloscope OSC1" in cir
+        assert cir.rstrip().endswith(".end")
+    finally:
+        scene.shutdown_scene()
+        qapp.processEvents()
