@@ -12,7 +12,7 @@
 - [x] `I8` (`done`): Add Benchtop Digital Multimeter (DMM) tab (DC V, AC RMS, DC A, Resistance/Continuity) and Oscilloscope X-Y Lissajous mode.
 - [x] `I9` (`done`): Add automated Bill of Materials & Thermal Power Budget (`circuitsim.io.bom_export` + UI dialog) and Custom Subcircuit Macro packaging (`CustomMacroBlock`).
 - [x] `I10` (`done`): Add undoable Alignment & Distribution tools (`CircuitScene.align_selected`, `distribute_selected` + `Edit > Align & Distribute`), toggleable corner Minimap (`_MinimapOverlay` in `CircuitView` + `View > Show Minimap`), expand `BUILTIN_TEST_JIGS` to 18 circuits, and update `PROGRESS.md` & `AGENT_INSTRUCTIONS.md`. Note: `tests/test_f7_wav_and_jigs.py: len(jigs) == 12 -> len(jigs) == 18` and `tests/test_h_workbench_expansion.py::test_h10_all_twelve_test_jigs_load_validate_and_solve: len(jigs) == 12 -> len(jigs) == 18 (I10 expanded BUILTIN_TEST_JIGS from 12 to 18)`.
-- [ ] `GATE I` (`todo`): Run Gate I test suites, verify Qt-free boundaries, commit, and tag `checkpoint/I-done`.
+- [x] `GATE I` (`done`): Gate I targeted suite (`tests/test_i_advanced_workbench.py`, `tests/test_g_qol_fixes.py`, `tests/test_problems_panel.py`, `tests/test_paint_safety_and_theme_palette.py`, `tests/test_f7_wav_and_jigs.py`, `tests/test_h_workbench_expansion.py`) passed (`44 passed in 18.37s`); verified zero Qt imports across `wiring/`, `engine/`, `components/`, `io/`, `templates/`; tagged `checkpoint/I-done`.
 
 ## PHASE H QUEUE (PALETTE, ROUTER, ACTIVE SEMICONDUCTORS & WORKBENCH UI)
 - [x] `H0` (`done`): Initialized Phase H queue in `PROGRESS.md`, verified clean `wire-redesign` tree at `checkpoint/F-done` (`a451b18`), and created `tests/test_h_workbench_expansion.py` with offscreen Qt scaffolding.
