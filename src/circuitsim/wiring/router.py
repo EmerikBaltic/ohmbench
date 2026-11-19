@@ -18,7 +18,7 @@ Rules:
 from __future__ import annotations
 
 import heapq
-from collections.abc import Iterable, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from typing import NamedTuple
 
 GRID_PX: int = 20
@@ -373,10 +373,28 @@ def route(
     # --- 0-bend (straight line) ---
     if p0[0] == p3[0] or p0[1] == p3[1]:
         cand = (p0, p3)
-        if path_matches_directions(cand, s_dir, e_dir) and path_collision_free(
-            cand, norm_obstacles, p0, p3
-        ):
-            return cand
+        hits_same_body = any(
+            (r[0] <= p0[0] <= r[2] and r[1] <= p0[1] <= r[3])
+            and (r[0] <= p3[0] <= r[2] and r[1] <= p3[1] <= r[3])
+            and segment_intersects_rect(p0, p3, r)
+            for r in norm_obstacles
+        )
+        if not hits_same_body and path_collision_free(cand, norm_obstacles, p0, p3):
+            if path_matches_directions(cand, s_dir, e_dir):
+                return cand
+            # G6 / H1: Allow clean straight orthogonal wires (including parallel
+            # stacked components whose same-facing pins align vertically or horizontally)
+            # without a 1-unit outward U-loop jog, unless backtracking into a body.
+            dx = p3[0] - p0[0]
+            dy = p3[1] - p0[1]
+            step_dir = (
+                1 if dx > 0 else (-1 if dx < 0 else 0),
+                1 if dy > 0 else (-1 if dy < 0 else 0),
+            )
+            backtracks_start = s_dir is not None and step_dir == (-s_dir[0], -s_dir[1])
+            backtracks_end = e_dir is not None and step_dir == e_dir
+            if not backtracks_start and not backtracks_end:
+                return cand
 
     # --- 1-bend (L-shape) ---
     c_h = (p0, (p3[0], p0[1]), p3)  # H first
@@ -423,3 +441,95 @@ def route(
 
     # 2. Fallback: A* Grid Search around obstacles
     return _route_astar(p0, p3, s_dir, e_dir, norm_obstacles, latched_ori)
+
+
+def slide_segment_hints(
+    orig_pts: Sequence[PointPx],
+    seg_index: int,
+    orientation: str,
+    target_coord: int | float,
+) -> tuple[PointPx, ...]:
+    """Return grid-snapped interior waypoint `hints` after sliding segment `seg_index`.
+
+    `orientation` is `"H"` (horizontal segment moving vertically to `target_coord`)
+    or `"V"` (vertical segment moving horizontally to `target_coord`).
+    """
+    n = len(orig_pts)
+    if n < 2 or not (0 <= seg_index <= n - 2) or orientation not in ("H", "V"):
+        return ()
+
+    snapped_target = int(round(float(target_coord) / GRID_PX)) * GRID_PX
+    pts = [(int(p[0]), int(p[1])) for p in orig_pts]
+    p_start = pts[0]
+    p_end = pts[-1]
+
+    def _with_coord(pt: PointPx, coord: int) -> PointPx:
+        return (pt[0], coord) if orientation == "H" else (coord, pt[1])
+
+    if seg_index == 0 and seg_index == n - 2:
+        orig_coord = p_start[1] if orientation == "H" else p_start[0]
+        if snapped_target == orig_coord:
+            return ()
+        return (_with_coord(p_start, snapped_target), _with_coord(p_end, snapped_target))
+
+    new_pts = list(pts)
+    if seg_index == 0:
+        new_pts[1] = _with_coord(new_pts[1], snapped_target)
+        orig_coord = p_start[1] if orientation == "H" else p_start[0]
+        if snapped_target != orig_coord:
+            new_pts.insert(1, _with_coord(p_start, snapped_target))
+    elif seg_index == n - 2:
+        new_pts[-2] = _with_coord(new_pts[-2], snapped_target)
+        orig_coord = p_end[1] if orientation == "H" else p_end[0]
+        if snapped_target != orig_coord:
+            new_pts.insert(n - 1, _with_coord(p_end, snapped_target))
+    else:
+        new_pts[seg_index] = _with_coord(new_pts[seg_index], snapped_target)
+        new_pts[seg_index + 1] = _with_coord(new_pts[seg_index + 1], snapped_target)
+
+    simp = simplify_orthogonal_points(new_pts)
+    if len(simp) <= 2:
+        return ()
+    return tuple(simp[1:-1])
+
+
+def find_overlapping_wire_segments(
+    polylines: Sequence[Sequence[PointPx]] | Mapping[str, Sequence[PointPx]],
+) -> list[tuple[int | str, int | str, tuple[PointPx, PointPx]]]:
+    """Return all collinear overlapping orthogonal segment pairs across (and within) routed polylines.
+
+    Accepts either a sequence of polylines (keys are integer indices) or a mapping
+    of `{wire_id: polyline}` (keys are string IDs). Returns a list of
+    `(key_a, key_b, (overlap_start, overlap_end))` tuples where `overlap_start != overlap_end`.
+    """
+    items: list[tuple[int | str, Sequence[PointPx]]] = (
+        list(polylines.items()) if isinstance(polylines, Mapping) else list(enumerate(polylines))
+    )
+    segs: list[tuple[int | str, int, PointPx, PointPx]] = []
+    for key, pts in items:
+        for idx in range(len(pts) - 1):
+            p1 = (int(pts[idx][0]), int(pts[idx][1]))
+            p2 = (int(pts[idx + 1][0]), int(pts[idx + 1][1]))
+            if p1 != p2:
+                segs.append((key, idx, p1, p2))
+
+    overlaps: list[tuple[int | str, int | str, tuple[PointPx, PointPx]]] = []
+    n = len(segs)
+    for i in range(n):
+        ka, ia, a1, a2 = segs[i]
+        for j in range(i + 1, n):
+            kb, ib, b1, b2 = segs[j]
+            if ka == kb and ib <= ia:
+                continue
+            # Only compare parallel vertical or horizontal segments
+            if a1[0] == a2[0] and b1[0] == b2[0] and a1[0] == b1[0]:
+                low = max(min(a1[1], a2[1]), min(b1[1], b2[1]))
+                high = min(max(a1[1], a2[1]), max(b1[1], b2[1]))
+                if low < high:
+                    overlaps.append((ka, kb, ((a1[0], low), (a1[0], high))))
+            elif a1[1] == a2[1] and b1[1] == b2[1] and a1[1] == b1[1]:
+                low = max(min(a1[0], a2[0]), min(b1[0], b2[0]))
+                high = min(max(a1[0], a2[0]), max(b1[0], b2[0]))
+                if low < high:
+                    overlaps.append((ka, kb, ((low, a1[1]), (high, a1[1]))))
+    return overlaps

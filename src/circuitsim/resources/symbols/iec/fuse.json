@@ -1,0 +1,15 @@
+{
+  "id": "fuse",
+  "display_name": "Fuse",
+  "category": "Switches",
+  "style": "iec",
+  "grid_size": [4, 2],
+  "terminals": [
+    {"name": "a", "grid_pos": [-2, 0]},
+    {"name": "b", "grid_pos": [2, 0]}
+  ],
+  "label_offset": [0, -1.1],
+  "value_offset": [0, 1.1],
+  "default_svg": "fuse.svg",
+  "states": {}
+}

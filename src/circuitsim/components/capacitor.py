@@ -37,6 +37,7 @@ class Capacitor(Component):
         initial_voltage: float | str = 0.0,
         esr: float | str = 0.0,
         voltage_rating: float | str = 50.0,
+        polarized: bool = False,
         label: str | None = None,
         show_value: bool = True,
         color: str = "#FFFFFF",
@@ -70,6 +71,7 @@ class Capacitor(Component):
         self.initial_voltage: float = parsed_v0
         self.esr: float = parsed_esr
         self.voltage_rating: float = parsed_v_max
+        self.polarized: bool = bool(polarized)
 
         # Internal state of the ideal capacitive element (excluding ESR drop).
         self.cap_voltage: float = parsed_v0

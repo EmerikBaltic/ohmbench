@@ -26,6 +26,9 @@ class ComponentParameter:
     allow_negative: bool = False
     live_editable: bool = True
     choices: tuple[str, ...] = ()
+    min_value: float | None = None
+    max_value: float | None = None
+    description: str = ""
 
 
 _DEFAULT_PARAMETERS_BY_TYPE: dict[str, tuple[ComponentParameter, ...]] = {
@@ -69,6 +72,17 @@ _DEFAULT_PARAMETERS_BY_TYPE: dict[str, tuple[ComponentParameter, ...]] = {
             allow_negative=True,
         ),
     ),
+    "wav_voltage": (
+        ComponentParameter("gain_v", "Gain", "V/FS", allow_negative=True, allow_zero=True),
+        ComponentParameter(
+            "dc_offset",
+            "DC Offset",
+            "V",
+            allow_zero=True,
+            allow_negative=True,
+        ),
+        ComponentParameter("r_internal", "Internal Resistance", "Ω", allow_zero=True),
+    ),
     "dc_current": (
         ComponentParameter(
             "dc_current", "Current", "A", allow_zero=True, allow_negative=True
@@ -83,15 +97,102 @@ _DEFAULT_PARAMETERS_BY_TYPE: dict[str, tuple[ComponentParameter, ...]] = {
         ComponentParameter("rated_current", "Rated Current", "A"),
         ComponentParameter("max_current", "Max Current", "A"),
     ),
+    "diode": (
+        ComponentParameter("is_sat", "Saturation Current (Is)", "A"),
+        ComponentParameter("n", "Ideality Factor (N)", ""),
+        ComponentParameter("rs", "Series Resistance (Rs)", "Ω", allow_zero=True),
+        ComponentParameter("bv", "Breakdown Voltage (Vbr)", "V"),
+        ComponentParameter("max_current", "Max Forward Current", "A"),
+        ComponentParameter("max_power", "Max Power Rating", "W"),
+    ),
+    "zener_diode": (
+        ComponentParameter("v_z", "Zener Voltage (Vz / BV)", "V"),
+        ComponentParameter("i_s", "Saturation Current (Is)", "A"),
+        ComponentParameter("n", "Ideality Factor (N)", ""),
+        ComponentParameter("r_s", "Series Resistance (Rs)", "Ω", allow_zero=True),
+        ComponentParameter("max_power_w", "Max Power Rating", "W"),
+    ),
+    "npn_bjt": (
+        ComponentParameter("beta_f", "Forward Beta (BF)", ""),
+        ComponentParameter("beta_r", "Reverse Beta (BR)", ""),
+        ComponentParameter("i_s", "Saturation Current (IS)", "A"),
+        ComponentParameter("v_af", "Early Voltage (VAF)", "V"),
+        ComponentParameter("max_power_w", "Max Power Rating", "W"),
+    ),
+    "pnp_bjt": (
+        ComponentParameter("beta_f", "Forward Beta (BF)", ""),
+        ComponentParameter("beta_r", "Reverse Beta (BR)", ""),
+        ComponentParameter("i_s", "Saturation Current (IS)", "A"),
+        ComponentParameter("v_af", "Early Voltage (VAF)", "V"),
+        ComponentParameter("max_power_w", "Max Power Rating", "W"),
+    ),
+    "nmos": (
+        ComponentParameter("v_th", "Threshold Voltage (VTO)", "V", allow_zero=True, allow_negative=True),
+        ComponentParameter("k_p", "Transconductance (KP)", "A/V²"),
+        ComponentParameter("lambda_", "Channel Modulation (LAMBDA)", "1/V", allow_zero=True),
+        ComponentParameter("max_power_w", "Max Power Rating", "W"),
+    ),
+    "pmos": (
+        ComponentParameter("v_th", "Threshold Voltage (VTO)", "V", allow_zero=True, allow_negative=True),
+        ComponentParameter("k_p", "Transconductance (KP)", "A/V²"),
+        ComponentParameter("lambda_", "Channel Modulation (LAMBDA)", "1/V", allow_zero=True),
+        ComponentParameter("max_power_w", "Max Power Rating", "W"),
+    ),
+    "opamp": (
+        ComponentParameter("a_ol", "Open-Loop Gain (Aol)", ""),
+        ComponentParameter("r_in", "Input Resistance", "Ω"),
+        ComponentParameter("r_out", "Output Resistance", "Ω"),
+        ComponentParameter("v_rail_pos", "Positive Rail (+Vcc)", "V", allow_zero=True, allow_negative=True),
+        ComponentParameter("v_rail_neg", "Negative Rail (-Vee)", "V", allow_zero=True, allow_negative=True),
+    ),
+    "comparator": (
+        ComponentParameter("v_high", "Output High (Voh)", "V", allow_zero=True, allow_negative=True),
+        ComponentParameter("v_low", "Output Low (Vol)", "V", allow_zero=True, allow_negative=True),
+        ComponentParameter("v_offset", "Input Offset (Vos)", "V", allow_zero=True, allow_negative=True),
+        ComponentParameter("a_ol", "Voltage Gain (Aol)", ""),
+        ComponentParameter("r_in", "Input Resistance", "Ω"),
+        ComponentParameter("r_out", "Output Resistance", "Ω"),
+    ),
+    "ne555": (
+        ComponentParameter("r_div", "Divider Ladder R (5k)", "Ω"),
+        ComponentParameter("r_out", "Output Resistance", "Ω"),
+        ComponentParameter("r_dis_on", "Discharge ON Resistance", "Ω"),
+        ComponentParameter("v_reset_th", "Reset Threshold", "V"),
+    ),
     "switch": (
         ComponentParameter("r_on", "ON Resistance", "Ω"),
         ComponentParameter("v_breakdown", "Breakdown Voltage", "V"),
     ),
+    "transformer": (
+        ComponentParameter("primary_turns", "Primary Windings (Np)", "turns"),
+        ComponentParameter("secondary_turns", "Secondary Windings (Ns)", "turns"),
+        ComponentParameter("l_primary_h", "Primary Inductance (Lp)", "H"),
+        ComponentParameter("coupling_k", "Coupling Factor (k)", ""),
+        ComponentParameter("r_primary_ohm", "Primary Resistance (Rp)", "Ω"),
+        ComponentParameter("r_secondary_ohm", "Secondary Resistance (Rs)", "Ω"),
+    ),
+    "spdt_relay": (
+        ComponentParameter("coil_resistance_ohm", "Coil Resistance", "Ω"),
+        ComponentParameter("pull_in_voltage_v", "Pull-In Voltage", "V"),
+        ComponentParameter("drop_out_voltage_v", "Drop-Out Voltage", "V", allow_zero=True),
+    ),
+    "fuse": (
+        ComponentParameter("rating_amps", "Current Rating", "A"),
+        ComponentParameter("r_cold_ohm", "Cold Resistance", "Ω"),
+    ),
     "voltmeter": (
         ComponentParameter("r_internal", "Input Resistance", "Ω"),
     ),
+    "mcu": (
+        ComponentParameter("v_cc", "Logic / ADC Supply (Vcc)", "V"),
+        ComponentParameter("r_adc_in", "ADC Input Impedance", "Ω"),
+        ComponentParameter("r_dig_out", "GPIO Output Impedance", "Ω"),
+    ),
     "ammeter": (
         ComponentParameter("r_internal", "Series Resistance", "Ω"),
+    ),
+    "oscilloscope": (
+        ComponentParameter("r_in", "Input Impedance", "Ω"),
     ),
     "ground": (),
 }
@@ -109,6 +210,22 @@ _LOGIC_GATE_PARAMETERS: tuple[ComponentParameter, ...] = (
 
 for _gate_op in ("not", "and", "or", "nand", "nor", "xor", "xnor"):
     _DEFAULT_PARAMETERS_BY_TYPE[f"gate_{_gate_op}"] = _LOGIC_GATE_PARAMETERS
+
+_SEQUENTIAL_PARAMETERS: tuple[ComponentParameter, ...] = (
+    ComponentParameter("v_high", "Output High (Voh)", "V", allow_zero=True, allow_negative=True),
+    ComponentParameter("v_low", "Output Low (Vol)", "V", allow_zero=True, allow_negative=True),
+    ComponentParameter("v_threshold", "Logic Threshold (Vth)", "V", allow_zero=True),
+    ComponentParameter("r_in", "Input Resistance", "Ω"),
+    ComponentParameter("r_out", "Output Resistance", "Ω"),
+)
+
+for _seq_t in ("d_flipflop", "jk_flipflop", "counter_4bit"):
+    _DEFAULT_PARAMETERS_BY_TYPE[_seq_t] = _SEQUENTIAL_PARAMETERS
+
+_DEFAULT_PARAMETERS_BY_TYPE["seven_seg_display"] = (
+    ComponentParameter("v_threshold", "Input Threshold (Vth)", "V", allow_zero=True),
+    ComponentParameter("r_in", "Input Resistance", "Ω"),
+)
 
 
 class Component(ABC):
@@ -146,6 +263,40 @@ class Component(ABC):
         self.voltage: float = 0.0
         self.current: float = 0.0
         self.power: float = 0.0
+
+        # Maximum continuous operating ratings used by parameter dialog and stress checks (F1 / F4).
+        self.max_power: float = 0.25
+        self.max_voltage: float = 50.0
+        self.max_current: float = 0.5
+
+    def get_max_ratings(self) -> dict[str, float]:
+        """Return max ratings `{max_power, max_voltage, max_current}` for stress checks."""
+        return {
+            "max_power": float(self.max_power),
+            "max_voltage": float(self.max_voltage),
+            "max_current": float(self.max_current),
+        }
+
+    def set_max_ratings(
+        self,
+        *,
+        max_power: float | None = None,
+        max_voltage: float | None = None,
+        max_current: float | None = None,
+    ) -> None:
+        """Update positive continuous rating limits."""
+        if max_power is not None:
+            if max_power <= 0.0:
+                raise ValueError("max_power must be > 0 W.")
+            self.max_power = float(max_power)
+        if max_voltage is not None:
+            if max_voltage <= 0.0:
+                raise ValueError("max_voltage must be > 0 V.")
+            self.max_voltage = float(max_voltage)
+        if max_current is not None:
+            if max_current <= 0.0:
+                raise ValueError("max_current must be > 0 A.")
+            self.max_current = float(max_current)
 
     @property
     @abstractmethod

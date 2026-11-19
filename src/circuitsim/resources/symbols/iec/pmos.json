@@ -1,0 +1,16 @@
+{
+  "id": "pmos",
+  "display_name": "P-Channel MOSFET",
+  "category": "Semiconductors",
+  "style": "iec",
+  "grid_size": [4, 4],
+  "terminals": [
+    {"name": "G", "grid_pos": [-2, 0]},
+    {"name": "D", "grid_pos": [2, -2]},
+    {"name": "S", "grid_pos": [2, 2]}
+  ],
+  "label_offset": [0, -2.3],
+  "value_offset": [0, 2.3],
+  "default_svg": "pmos.svg",
+  "states": {}
+}

@@ -35,6 +35,8 @@ from circuitsim.components.led import LED
 from circuitsim.components.lightbulb import Lightbulb
 from circuitsim.components.logic_gate import LogicGate
 from circuitsim.components.meters import Ammeter, Voltmeter
+from circuitsim.components.potentiometer import Potentiometer
+from circuitsim.components.power import Fuse
 from circuitsim.components.resistor import Resistor
 from circuitsim.components.sources import (
     ACVoltageSource,
@@ -219,6 +221,14 @@ class ComponentTelemetry:
     led_color: str = ""
     loading_error_message: str | None = None
     logic_level: str = ""
+    decoded_hex_char: str = "0"
+    active_segments: tuple[str, ...] = ()
+    value_nibble: int = 0
+    state_q: bool = False
+    count: int = 0
+    is_blown: bool = False
+    energized: bool = False
+    output_high: bool = False
 
 
 class DiagnosticMessage(str):
@@ -259,12 +269,15 @@ class SimulationFrame:
     components: dict[str, ComponentTelemetry] = field(default_factory=dict)
     diagnostics: tuple[ProblemDiagnostic, ...] = ()
     overflow: bool = False
+    generation: int = 0
 
 
 def format_component_canvas_text(comp: Component) -> str:
     """Return the value/readout string shown beneath a component on the schematic."""
     if isinstance(comp, Resistor):
         return format_engineering_value(comp.resistance, "Ω")
+    if isinstance(comp, Potentiometer):
+        return f"{format_engineering_value(comp.resistance, 'Ω')} ({comp.alpha * 100.0:.0f}%)"
     if isinstance(comp, DCVoltageSource):
         return format_engineering_value(comp.dc_voltage, "V")
     if isinstance(comp, ACVoltageSource):
@@ -290,6 +303,13 @@ def format_component_canvas_text(comp: Component) -> str:
         return format_engineering_value(float(getattr(comp, "capacitance")), "F")
     if hasattr(comp, "inductance"):
         return format_engineering_value(float(getattr(comp, "inductance")), "H")
+    if hasattr(comp, "decoded_hex_char"):
+        return f"0x{getattr(comp, 'decoded_hex_char', '0')}"
+    if hasattr(comp, "is_blown") and getattr(comp, "is_blown", False):
+        return "BLOWN (click to reset)"
+    disp = getattr(comp, "display_value", "")
+    if isinstance(disp, str) and disp:
+        return disp
     return ""
 
 
@@ -347,6 +367,7 @@ class SimulationSession:
         self._has_scope_sink: bool = False
         self._active_diagnostics: list[ProblemDiagnostic] = []
         self._latched_warnings: dict[tuple[str, tuple[str, ...]], CircuitWarning] = {}
+        self._generation: int = 0
 
     @classmethod
     def from_schematic(
@@ -373,10 +394,29 @@ class SimulationSession:
         from circuitsim.canvas.connectivity import extract_connectivity
 
         was_running = self.state == SimulationState.RUNNING
+        self._generation += 1
         self._connectivity = extract_connectivity(
             placed_components, wires, explicit_junctions
         )
         self.circuit = self._connectivity.circuit
+        self.solver = MNASolver(self.circuit)
+        self._dt = self._compute_step_dt()
+        self._latched_warnings.clear()
+        self._active_diagnostics.clear()
+
+        if was_running:
+            return self.start()
+        self.state = SimulationState.STOPPED
+        return self.build_frame()
+
+    def load_connectivity(
+        self, connectivity: ConnectivityResult
+    ) -> SimulationFrame:
+        """Load a pre-extracted `ConnectivityResult` (e.g. built from `WireGraph`)."""
+        was_running = self.state == SimulationState.RUNNING
+        self._generation += 1
+        self._connectivity = connectivity
+        self.circuit = connectivity.circuit
         self.solver = MNASolver(self.circuit)
         self._dt = self._compute_step_dt()
         self._latched_warnings.clear()
@@ -743,6 +783,22 @@ class SimulationSession:
                         component_names=(cname,),
                     )
                 )
+
+        # Report any wires with an open FreeEnd termination as a non-blocking amber warning
+        if self._connectivity is not None:
+            open_ids = getattr(self._connectivity, "open_wire_ids", ())
+            for wid in open_ids:
+                diags.append(
+                    ProblemDiagnostic(
+                        code="open_wire",
+                        severity="warning",
+                        message=DiagnosticMessage(
+                            f"{wid} has an unconnected end: attach it to a terminal/junction or delete the wire",
+                            f"{wid} has an unconnected end",
+                        ),
+                        wire_ids=(wid,),
+                    )
+                )
         return diags
 
     def start(self) -> SimulationFrame:
@@ -915,10 +971,37 @@ class SimulationSession:
             raise TypeError(f"Component {switch_name!r} is not a Switch.")
         comp.toggle()
         self.circuit.mark_modified()
+        self._generation += 1
         self.solver._be_steps_remaining = max(self.solver._be_steps_remaining, 3)
 
         if self.state == SimulationState.RUNNING:
             return self.step_chunk(steps=3)
+        if self.state == SimulationState.PAUSED:
+            try:
+                dc_res = self.solver.solve_dc()
+                return self.build_frame(node_voltages=dc_res.node_voltages)
+            except Exception:
+                return self.build_frame()
+        return self.build_frame()
+
+    def reset_fuse(self, fuse_name: str) -> SimulationFrame:
+        """Reset a blown `Fuse` by name and immediately resume live simulation."""
+        comp = self.circuit.get_component(fuse_name)
+        if not isinstance(comp, Fuse):
+            raise TypeError(f"Component {fuse_name!r} is not a Fuse.")
+        comp.reset_fuse()
+        self.circuit.mark_modified()
+        self._generation += 1
+        self.solver._be_steps_remaining = max(self.solver._be_steps_remaining, 2)
+
+        if self.state == SimulationState.RUNNING:
+            return self.step_chunk(steps=3)
+        if self.state == SimulationState.PAUSED:
+            try:
+                dc_res = self.solver.solve_dc()
+                return self.build_frame(node_voltages=dc_res.node_voltages)
+            except Exception:
+                return self.build_frame()
         return self.build_frame()
 
     def update_component_parameter(
@@ -929,6 +1012,7 @@ class SimulationSession:
     ) -> SimulationFrame:
         """Validate and apply a parameter change (or atomic batch) to `comp_name` live."""
         comp = self.circuit.get_component(comp_name)
+        prev_rating = comp.rating_amps if isinstance(comp, Fuse) else 0.0
         if param_key == "__batch__" and isinstance(raw_value, dict):
             if isinstance(comp, LogicGate):
                 comp.set_parameters_batch(raw_value)  # type: ignore[arg-type]
@@ -950,11 +1034,23 @@ class SimulationSession:
                 comp.set_parameter_value(param_key, raw_value)  # type: ignore[arg-type]
             except (KeyError, TypeError):
                 setattr(comp, param_key, raw_value)
+        if isinstance(comp, Fuse):
+            comp.max_current = comp.rating_amps
+            if comp.rating_amps > prev_rating:
+                comp.reset_fuse()
+                self.solver._be_steps_remaining = max(self.solver._be_steps_remaining, 2)
         self.circuit.mark_modified()
+        self._generation += 1
         self._dt = self._compute_step_dt()
 
         if self.state == SimulationState.RUNNING:
             return self.step_chunk(steps=3)
+        if self.state == SimulationState.PAUSED:
+            try:
+                dc_res = self.solver.solve_dc()
+                return self.build_frame(node_voltages=dc_res.node_voltages)
+            except Exception:
+                return self.build_frame()
         return self.build_frame()
 
     def get_meter_reading_str(self, meter_name: str) -> str:
@@ -1017,6 +1113,14 @@ class SimulationSession:
                 led_color=led_col,
                 loading_error_message=loading_err,
                 logic_level=gate_lvl,
+                decoded_hex_char=str(getattr(comp, "decoded_hex_char", "0")),
+                active_segments=tuple(getattr(comp, "active_segments", ())),
+                value_nibble=int(getattr(comp, "value_nibble", 0)),
+                state_q=bool(getattr(comp, "state_q", False)),
+                count=int(getattr(comp, "count", 0)),
+                is_blown=bool(getattr(comp, "is_blown", False)),
+                energized=bool(getattr(comp, "energized", False)),
+                output_high=bool(getattr(comp, "output_high", False)),
             )
 
         return SimulationFrame(
@@ -1028,4 +1132,5 @@ class SimulationSession:
             components=comp_map,
             diagnostics=tuple(self._active_diagnostics),
             overflow=self._last_overflow,
+            generation=self._generation,
         )

@@ -240,6 +240,7 @@ class ConnectivityResult:
     junction_dots: set[PointPx] = field(default_factory=set)
     valid_wires: tuple[tuple[str, tuple[PointPx, ...]], ...] = ()
     unconnected_components: tuple[str, ...] = ()
+    open_wire_ids: list[str] = field(default_factory=list)
 
 
 class _UnionFind:

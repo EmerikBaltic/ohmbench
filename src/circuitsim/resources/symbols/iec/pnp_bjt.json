@@ -1,0 +1,16 @@
+{
+  "id": "pnp_bjt",
+  "display_name": "PNP BJT",
+  "category": "Semiconductors",
+  "style": "iec",
+  "grid_size": [4, 4],
+  "terminals": [
+    {"name": "B", "grid_pos": [-2, 0]},
+    {"name": "C", "grid_pos": [2, -2]},
+    {"name": "E", "grid_pos": [2, 2]}
+  ],
+  "label_offset": [0, -2.3],
+  "value_offset": [0, 2.3],
+  "default_svg": "pnp_bjt.svg",
+  "states": {}
+}

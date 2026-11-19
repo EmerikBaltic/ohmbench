@@ -59,14 +59,47 @@ _EXTRA_SETTINGS: dict[str, dict[str, str]] = {
         "r_off": "float",
         "c_parasitic": "float",
         "toggle_time": "float_or_none",
+        "momentary": "bool",
     },
     "ac_voltage": {"waveform": "str", "phase_deg": "float", "duty_cycle": "float"},
+    "wav_voltage": {"wav_path": "str", "sample_rate_hz": "float", "loop": "bool"},
     "lightbulb": {"use_filament_model": "bool", "burnout_enabled": "bool"},
     "led": {
         "color_name": "str",
         "color": "str",
         "burnout_enabled": "bool",
         "burnout_current": "float_or_none",
+    },
+    "diode": {
+        "model_name": "str",
+        "ibv": "float",
+    },
+    "zener_diode": {
+        "model_name": "str",
+        "ibv": "float",
+    },
+    "npn_bjt": {
+        "model_name": "str",
+    },
+    "pnp_bjt": {
+        "model_name": "str",
+    },
+    "nmos": {
+        "model_name": "str",
+    },
+    "pmos": {
+        "model_name": "str",
+    },
+    "opamp": {
+        "model_name": "str",
+    },
+    "comparator": {
+        "model_name": "str",
+    },
+    "ne555": {
+        "r_dis_off": "float",
+        "r_in": "float",
+        "initial_q": "bool",
     },
     "gate_not": {
         "family": "str",
@@ -105,6 +138,15 @@ _EXTRA_SETTINGS: dict[str, dict[str, str]] = {
     },
     "voltmeter": {"mode": "str", "is_ideal": "bool"},
     "ammeter": {"mode": "str", "is_ideal": "bool"},
+    "mcu": {"v_low": "float", "r_dig_in": "float", "update_period": "float", "code": "str"},
+    "transformer": {"is_ideal": "bool"},
+    "spdt_relay": {"r_on": "float", "r_off": "float", "energized": "bool"},
+    "fuse": {"r_blown_ohm": "float", "is_blown": "bool"},
+    "d_flipflop": {"initial_q": "bool"},
+    "jk_flipflop": {"initial_q": "bool"},
+    "counter_4bit": {"initial_count": "int"},
+    "seven_seg_display": {"v_high": "float", "v_low": "float"},
+    "oscilloscope": {"dso_state_json": "str"},
 }
 
 # Editable parameters that may legitimately be "none" (feature switched off).
@@ -329,8 +371,9 @@ def _component_from_dict(entry: object, index: int) -> PlacedComponentSpec:
         except ValueError as exc:
             raise CircuitFileError(f"{who}: {exc}") from exc
     else:
+        compat_keys = {"turns_ratio", "r_winding_ohm"} if ctype == "transformer" else set()
         for key, value in params.items():
-            if key not in allowed:
+            if key not in allowed and key not in compat_keys:
                 raise CircuitFileError(f"{who} has an unknown parameter '{key}'.")
             if value is None and _NULLABLE_PARAMETERS.get((ctype, key)):
                 setattr(comp, key, None)

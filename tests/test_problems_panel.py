@@ -332,3 +332,35 @@ def test_no_blank_buttons_or_icons_in_both_themes(qapp) -> None:
         win.circuit_scene.undo_stack.setClean()
         win.close()
         qapp.processEvents()
+
+
+def test_i2_stress_overload_appears_in_problems_panel(qapp, tmp_path) -> None:
+    """I2: Verify stress overload populates ProblemsPanel with part click navigation."""
+    from PySide6.QtCore import QPointF
+    from circuitsim.app.main_window import MainWindow
+    from circuitsim.app.settings import AppSettings
+    from circuitsim.wiring.model import TerminalRef
+
+    win = MainWindow(settings=AppSettings(data_dir=tmp_path / "p_i2"))
+    try:
+        s = win.circuit_scene
+        v1 = s.place_new_component("dc_voltage", QPointF(-160.0, 0.0), rotation_deg=90)
+        r1 = s.place_new_component("resistor", QPointF(0.0, 0.0))
+        g1 = s.place_new_component("ground", QPointF(0.0, 140.0))
+        assert v1 is not None and r1 is not None and g1 is not None
+        s.edit_component_parameters(v1, {"dc_voltage": 12.0})
+        s.edit_component_parameters(r1, {"resistance": 500.0})
+        s.add_wire(TerminalRef("V1", "pos"), TerminalRef("R1", "a"))
+        s.add_wire(TerminalRef("R1", "b"), TerminalRef("GND1", "gnd"))
+        s.add_wire(TerminalRef("V1", "neg"), TerminalRef("GND1", "gnd"))
+
+        frame = SimulationSession(connectivity=s.extract_connectivity_result()).start()
+        win._on_simulation_frame(frame)
+        assert win.problems_dock.panel.tree.topLevelItemCount() == 1
+        row = win.problems_dock.panel.tree.topLevelItem(0)
+        assert row.text(0) == "Overload"
+        assert "288" in row.text(1) and "R1" in row.text(2)
+    finally:
+        win.circuit_scene.undo_stack.setClean()
+        win.close()
+        qapp.processEvents()

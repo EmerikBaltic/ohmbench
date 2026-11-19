@@ -1,0 +1,17 @@
+{
+  "id": "seven_seg_display",
+  "display_name": "7-Seg Display",
+  "category": "Digital",
+  "style": "iec",
+  "grid_size": [6, 8],
+  "terminals": [
+    {"name": "D0", "grid_pos": [-3, -3]},
+    {"name": "D1", "grid_pos": [-3, -1]},
+    {"name": "D2", "grid_pos": [-3, 1]},
+    {"name": "D3", "grid_pos": [-3, 3]}
+  ],
+  "label_offset": [0, -4.2],
+  "value_offset": [0, 4.2],
+  "default_svg": "seven_seg_display.svg",
+  "states": {}
+}

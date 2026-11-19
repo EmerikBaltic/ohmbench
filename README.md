@@ -8,19 +8,16 @@ It is designed for electrical engineering students and hobbyists who want both a
 
 ---
 
-## Current Project Status: Milestone 2 Complete
+## Current Project Status: Release Candidate (Milestones 1–5 Complete)
 
 - **Milestone 1 (Simulation Engine — Complete)**:
   - Pure-Python/NumPy/SciPy **Modified Nodal Analysis (MNA)** solver with cached LU factorization (`scipy.linalg.lu_factor` / `lu_solve`), strictly decoupled from Qt.
-  - **DC Operating Point** and **Transient Analysis** using **Trapezoidal integration** (second-order accurate, lossless on undamped $LC$ tanks) with automatic **Backward Euler** startup and switch-event damping to eliminate numerical ringing.
-  - **Components**: Resistor, Capacitor (with initial voltage & ESR), Inductor (with winding resistance DCR, reactance $X_L = 2\pi f L$, and automatic Thévenin time constant $\tau = L / (R_{\text{th}} + \text{DCR})$), DC Voltage & Current Sources, AC Voltage Source (sine, square, triangle, sawtooth, pulse, DC offset), SPST Switch ($1\text{ m}\Omega$ ON, $1\text{ G}\Omega$ OFF, timed switching, $10\text{ pF}$ contact capacitance, and $350\text{ V}$ contact breakdown arc model), Incandescent Lightbulb ($R_{\text{hot}} = V^2/P$ and optional thermal filament inrush model), Light-Emitting Diode (LED) with real-world colour presets and forward voltages, perceptual glow, over-current warnings, and burnout modeling, and polarity-aware Voltmeter ($10\text{ M}\Omega$, $1\text{ M}\Omega$, or Ideal $0\text{ A}$ draw) & Ammeter ($1\text{ m}\Omega$ or Ideal $0\text{ V}$ drop) with dynamic circuit-loading warnings and DC, AC RMS, Peak, and Instantaneous modes.
-  - **Topological & Component Diagnostics**: Structured what/why/how detection of missing ground, floating/dangling nodes, ideal voltage-source loops, ammeters connected in parallel across voltage sources, voltmeter loading warnings ($\ge 0.1\%$), reversed LEDs, missing current-limiting resistors, LED over-current, and inductive kickback warnings in the dedicated Problems Panel (`F8`).
-- **Milestone 2 (Main Window, Interactive Schematic Canvas & Live Simulation — Complete)**:
-  - Dockable **PySide6 (Qt 6)** Main Window with Dark & Light themes (`Ctrl+T`), searchable Component Palette, and IEC 60617 symbol library (hybrid custom SVG + procedural renderer).
-  - Grid-snapped ($20\text{ px}$) schematic canvas with right-angle wire routing, Union-Find netlist extraction (`CircuitScene.build_circuit()`), explicit junction dots (`J`), attached wire re-routing on move/rotate/flip, and full `QUndoStack` Undo/Redo (`Ctrl+Z` / `Ctrl+Y`).
-  - Background `QThread` simulation worker (`SimulationWorkerController` + pure-Python `SimulationSession`) with live auto-ranged Voltmeter/Ammeter readouts, animated clickable Switch, real-power Lightbulb glow, double-click live value editing (supporting both dot and single-comma decimals like `5,65 G`), and red/amber canvas problem highlighting.
-  - **289 automated unit and UI tests** passing (`pytest`), including polarity geometry across all 8 orientations, precision hitboxes and click clearance, collision-avoiding wire rerouting, half-grid (10 px) wire snapping, view stability on selection/clicks, unified drawing/netlist polarity marks, full LED lifecycle and perceptual glow, Problems Panel (`F8`), paint safety guards and loop-free crash handling, Ideal & Realistic meter modes with loading warnings, and save/load of `.circ` files (Milestone 3, Step 3A).
-- **Milestone 3 (Save/Load `.circ` & Full Properties Dialog — In Progress)**
+  - **DC Operating Point**, **AC Small-Signal Sweep**, and **Transient Analysis** using **Trapezoidal integration** with automatic **Backward Euler** startup and switch-event damping.
+  - **Components**: Resistor, Potentiometer, Capacitor (ESR & $V_0$), Inductor (DCR, $X_L = 2\pi f L$, $\tau = L / R$, reverse calculator), DC/AC/WAV Voltage & Current Sources, SPST Switch ($350\text{ V}$ arc model), SPDT Relay, Fuse, Transformer ($N_p/N_s$, Ideal vs. Non-Ideal coupled coils), Incandescent Lightbulb ($R_{\text{hot}} = V^2/P$), Diode/Zener/LED, BJT (NPN/PNP), MOSFET (NMOS/PMOS), Op-Amp, Comparator, NE555, Digital Logic Gates & Sequential Blocks (D/JK Flip-Flops, 4-bit Counter, 7-Seg Display), Python-scriptable MCU Block, Voltmeter, Ammeter, and **4-pin Benchtop Oscilloscope (`OSC1` / DSO-1062D)**.
+- **Milestones 2–5 (Workbench, Benchtop DSO-1062D & I/O — Complete)**:
+  - Dockable **PySide6 (Qt 6)** Main Window with Dark & Light themes (`Ctrl+T`), live searchable Palette & Problems Dock, immutable `WireGraph` orthogonal routing & auto-connect, `QUndoStack` Undo/Redo, and animated Switches/Fuses/LEDs.
+  - Placeable **Voltcraft DSO-1062D** benchtop oscilloscope (`CH1`, `CH2`, `EXT_TRIG`, `GND` BNC inputs, miniature live LCD preview, double-click front-panel UI with 11 menus, `F0`–`F7` softkeys, rotary `QDial`s, `AUTO SET`, `SET TO 50%`, `SINGLE SEQ`, FFT, Cursors, and PNG/CSV export).
+  - Save/Load `.circ` v2, shareable `ohmbench://c/...` URLs, BOM/Power report, KiCad `.kicad_sch` export, **Standard SPICE Netlist export (`.cir` with `MEG` suffixes)**, and 3rd-party SPICE `.MODEL`/`.SUBCKT` import.
 
 ---
 
@@ -28,7 +25,7 @@ It is designed for electrical engineering students and hobbyists who want both a
 
 1. **Place Parts**: Click or drag a part from the left **Component Palette** onto the schematic canvas (or double-click a palette item to place it at the center). Always include a **Ground** part wired to your circuit.
 2. **Rotate & Flip**: Select one or more parts and press **`R`** to rotate $90^\circ$ clockwise or **`F`** to flip horizontally. Labels and values stay upright and readable at any angle.
-3. **Draw Wires**: Click directly on any component terminal dot to start a right-angle wire, or press **`W`** to enter Wire Mode (`Esc` returns to Select Mode). Crossing wires do *not* connect unless they form a T-junction or you place a **Junction Dot** (**`J`**).
+3. **Draw & Edit Wires**: Drag from any component terminal dot or press **`W`** for Wire Mode (**`Esc`** returns to Select Mode). Click empty grid intersections to place orthogonal waypoints (**`Backspace`** removes the last waypoint; double-click or click a terminal/junction finishes). Drag any wire segment orthogonally to slide it, or drag a wire endpoint handle to detach (`FreeEnd` hollow marker) or reattach to another terminal/junction (10 px snap radius). Crossing wires do *not* connect unless connected through an explicit **Junction Dot**.
 4. **Edit Component Values**: **Double-click** any component on the canvas to open its value editor. Type values using engineering prefixes (`4.7k`, `5,65 G`, `100n`, `10K`)—a live preview (`= 4.7 kΩ`) appears below the input, and changes apply immediately even while the simulation is running (and can be undone with **`Ctrl+Z`**).
 5. **Run / Pause / Stop**: Use the top toolbar or keyboard shortcuts—**Run (`F5`)**, **Pause / Resume (`F6` or `Space`)**, and **Stop (`F7`)**—and choose simulation speed (`1x Real-Time`, `0.1x Slow`, `10x Fast`).
 6. **Toggle Switches Live**: Click directly on any **Switch** on the canvas while running to animate its lever open/closed and watch meter readings and lightbulb brightness respond in real time.
@@ -83,7 +80,7 @@ python -m venv .venv
 
 ### 3. Run the Unit Test Suite
 
-Run all 290 tests (uses a shared offscreen `QApplication` for Qt tests and clean subprocesses for Qt-free module import checks so `sys.modules` is verified without Qt already loaded):
+Run the full automated test suite (uses a shared offscreen `QApplication` for Qt tests and clean subprocesses for Qt-free module import checks so `sys.modules` is verified without Qt already loaded):
 
 ```powershell
 .\.venv\Scripts\python.exe -m pytest
@@ -109,9 +106,44 @@ Run the fast subset (excludes `@pytest.mark.slow` tests taking over 3 seconds, s
 |-----------|-------|--------|
 | **Milestone 1** | Core MNA DC & Transient Engine, R/L/C, Sources, Switch, Bulb, Meters, Parser, Analytical Tests | **Done** |
 | **Milestone 2** | Dockable Main Window, Component Palette, Interactive IEC Schematic Canvas, Worker Thread, Live Meters/Switch/Bulb | **Done** |
-| **Milestone 3** | Double-Click Live Properties Dialog, Inductor $X_L / \tau$ Calculator, `.circ` JSON Save/Load (Saved Parts bar cancelled) | **In Progress** |
-| **Milestone 4** | 4-Channel Oscilloscope (Probes, Trigger, Cursors, Automatic Measurements, X-Y Mode, Math & FFT, PNG/CSV Export) | Planned |
-| **Milestone 5** | Semiconductors (Diode, Zener, LED, BJT, MOSFET, Op-Amp via Newton-Raphson), Current Animation, Themes, SPICE Import/Export, Packaging | Planned |
+| **Milestone 3** | Double-Click Live Properties Dialog, Inductor $X_L / \tau$ Calculator, `.circ` JSON Save/Load (Saved Parts bar cancelled) | **Done** |
+| **Milestone 4** | Benchtop DSO-1062D Oscilloscope (Probes, Trigger, Cursors, Auto Measurements, X-Y, Math & FFT, PNG/CSV Export) | **Done** |
+| **Milestone 5** | Semiconductors (Diode, Zener, LED, BJT, MOSFET, Op-Amp), Transformers, MCU, Themes, SPICE Import/Export, Packaging | **Done** |
+
+---
+
+## Building and Packaging (Windows)
+
+Ohmbench ships a PyInstaller `--onedir` spec ([`packaging/ohmbench.spec`](packaging/ohmbench.spec)) and an Inno Setup 6 installer script ([`packaging/installer.iss`](packaging/installer.iss)).
+
+### Why `--onedir` over `--onefile`?
+
+- **Fast startup**: `--onedir` launches `dist\Ohmbench\Ohmbench.exe` directly without extracting Qt 6 DLLs, NumPy, and SciPy into `%TEMP%` on every launch (which `--onefile` must repeat every time).
+- **Antivirus & Clean-PC reliability**: Fewer false-positive Windows Defender heuristics than self-extracting single-file stubs, and all Qt LGPL shared libraries remain cleanly replaceable in the application directory.
+
+### Exact Build Commands (PowerShell)
+
+1. Install PyInstaller in your virtual environment (if not already installed):
+```powershell
+.\.venv\Scripts\pip.exe install pyinstaller
+```
+
+2. Build the portable `--onedir` application and create a distributable `.zip`:
+```powershell
+.\.venv\Scripts\pyinstaller.exe --noconfirm --clean packaging\ohmbench.spec
+Compress-Archive -Path .\dist\Ohmbench\* -DestinationPath .\dist\Ohmbench-win64.zip -Force
+```
+
+3. *(Optional)* Build the Windows installer `.exe` using Inno Setup 6 (`ISCC.exe`):
+```powershell
+iscc.exe packaging\installer.iss
+```
+*(Outputs `packaging\Output\Ohmbench-Setup-0.1.0.exe`.)*
+
+### Clean-PC / Windows Sandbox Verification Steps
+
+1. Copy `dist\Ohmbench-win64.zip` (or run `Ohmbench-Setup-0.1.0.exe`) inside a clean Windows Sandbox or VM without Python installed.
+2. Launch `Ohmbench.exe`, verify Dark/Light theme switching, open an example from `File > Examples`, drop and double-click `Oscilloscope (DSO-1062D)`, run simulation (`F5`), and export `.circ` and `.cir` files to confirm all bundled resources resolve via `sys._MEIPASS`.
 
 ---
 
@@ -146,8 +178,8 @@ Ohmbench/
 ## Licensing & Third-Party Libraries
 
 - **Ohmbench** is released under the [MIT License](LICENSE).
-- **PySide6 (Qt for Python)** is licensed under the **LGPLv3**.
-- **NumPy** and **SciPy** are licensed under the **BSD 3-Clause License**.
+- **PySide6 / Qt 6** (Qt for Python / Qt Widgets) is used under the **LGPL v3 (GNU Lesser General Public License v3.0)**; dynamic linking in the `--onedir` Windows distribution allows end users to replace or relink Qt shared libraries cleanly.
+- **NumPy** and **SciPy** are licensed under the **BSD 3-Clause License (BSD-3-Clause)**.
 
 ---
 

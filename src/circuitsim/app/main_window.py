@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from typing import Mapping, Sequence
 
 from PySide6.QtCore import QByteArray, QPointF, Qt, QUrl
 from PySide6.QtGui import QAction, QCloseEvent, QDesktopServices, QKeySequence
@@ -26,7 +27,7 @@ from PySide6.QtWidgets import (
 
 from circuitsim.app.palette_dock import ComponentPaletteWidget
 from circuitsim.app.problems_panel import ProblemsDock
-from circuitsim.app.settings import AppSettings
+from circuitsim.app.settings import AppSettings, DEFAULT_SHORTCUTS
 from circuitsim.app.sim_worker import SimulationWorkerController
 from circuitsim.app.themes import ThemeMode, build_stylesheet, get_theme_palette
 from circuitsim.app_info import (
@@ -51,7 +52,7 @@ from circuitsim.canvas.scene import CircuitScene
 from circuitsim.canvas.symbol_renderer import SymbolLibrary
 from circuitsim.canvas.view import CircuitView
 from circuitsim.components.lightbulb import Lightbulb
-from circuitsim.dialogs.preferences_dialog import PreferencesDialog
+from circuitsim.dialogs.preferences_dialog import PreferencesDialog, ShortcutsDialog
 from circuitsim.dialogs.value_parser import (
     format_engineering_value,
     set_global_number_format,
@@ -59,8 +60,10 @@ from circuitsim.dialogs.value_parser import (
 from circuitsim.io.circ_serializer import (
     CircuitFileError,
     ViewState,
-    load_document,
-    save_document,
+)
+from circuitsim.wiring.serializer import (
+    load_document_v2,
+    save_document_v2,
 )
 from circuitsim.engine.simulation_session import (
     SimulationFrame,
@@ -70,28 +73,45 @@ from circuitsim.engine.simulation_session import (
     compute_transport_controls_state,
 )
 
-DEFAULT_SHORTCUTS_HELP_TEXT: str = (
-    "No component selected.\n\n"
-    "KEYBOARD & MOUSE SHORTCUTS:\n"
-    "• Place part: Drag from Palette (or double-click)\n"
-    "• Edit values live: Double-click any component\n"
-    "• Toggle switch: Click switch on canvas\n"
-    "• Draw wire: Drag from any terminal (or press W)\n"
-    "• Cancel wire / Deselect: Esc (or Right-click)\n"
-    "• Toggle junction dot: J (at cursor) or Right-click\n"
-    "• Rotate 90° CW: R\n"
-    "• Flip horizontal: F\n"
-    "• Delete selection: Del or Backspace\n"
-    "• Cut / Copy / Paste: Ctrl+X / Ctrl+C / Ctrl+V\n"
-    "• Undo / Redo: Ctrl+Z / Ctrl+Y\n"
-    "• Run / Resume: F5\n"
-    "• Pause: F6\n"
-    "• Stop: Shift+F5\n"
-    "• Zoom to fit: Ctrl+0\n"
-    "• Zoom: Mouse wheel (Ctrl++ / Ctrl+-)\n"
-    "• Pan canvas: Middle-drag or Space + Left-drag\n"
-    "• Toggle Dark/Light theme: Ctrl+T"
-)
+def format_shortcuts_help_text(shortcuts: dict[str, str] | None = None) -> str:
+    """Build the Properties-panel keyboard shortcut guide synced to active settings."""
+    sc = dict(DEFAULT_SHORTCUTS)
+    if shortcuts:
+        sc.update(shortcuts)
+
+    def _key(action_id: str) -> str:
+        val = str(sc.get(action_id, DEFAULT_SHORTCUTS.get(action_id, "")) or "").strip()
+        return val or "None"
+
+    return (
+        "No component selected.\n\n"
+        "KEYBOARD & MOUSE SHORTCUTS:\n"
+        "• Place part: Drag from Palette (or double-click)\n"
+        "• Edit values live: Double-click any component\n"
+        "• Toggle switch: Click switch on canvas\n"
+        f"• Draw wire: Drag from any terminal (or press {_key('wire_mode')})\n"
+        "• Cancel wire / Deselect: Esc (or Right-click)\n"
+        f"• Toggle junction dot: {_key('junction')} (at cursor) or Right-click\n"
+        f"• Rotate 90° CW: {_key('rotate')}\n"
+        f"• Flip horizontal: {_key('flip')}\n"
+        f"• Delete selection: {_key('delete')} or Backspace\n"
+        "• Cut / Copy / Paste: Ctrl+X / Ctrl+C / Ctrl+V\n"
+        "• Undo / Redo: Ctrl+Z / Ctrl+Y\n"
+        "• Run / Resume: F5\n"
+        "• Pause: F6\n"
+        "• Stop: Shift+F5\n"
+        "• Zoom to fit: Ctrl+0\n"
+        "• Zoom: Mouse wheel (Ctrl++ / Ctrl+-)\n"
+        "• Pan canvas: Middle-drag or Space + Left-drag\n"
+        "• Toggle Dark/Light theme: Ctrl+T\n\n"
+        "QUICK PLACEMENT HOTKEYS:\n"
+        f"• Resistor: {_key('place_resistor')}  |  Capacitor: {_key('place_capacitor')}  |  Inductor: {_key('place_inductor')}\n"
+        f"• Diode/LED: {_key('place_diode')}  |  DC V: {_key('place_dc_voltage')}  |  DC I: {_key('place_dc_current')}\n"
+        f"• Ground: {_key('place_ground')}  |  Voltmeter: {_key('place_voltmeter')}  |  Ammeter: {_key('place_ammeter')}"
+    )
+
+
+DEFAULT_SHORTCUTS_HELP_TEXT: str = format_shortcuts_help_text()
 
 
 class _ExamplesActionList(list):
@@ -159,7 +179,7 @@ class MainWindow(QMainWindow):
         self.circuit_scene = CircuitScene(
             self.symbol_library, theme=self.theme, settings=self.settings, parent=self
         )
-        self.circuit_view = CircuitView(self.circuit_scene)
+        self.circuit_view = CircuitView(self.circuit_scene, settings=self.settings)
         self.setCentralWidget(self.circuit_view)
 
         self.sim_controller = SimulationWorkerController(self)
@@ -171,11 +191,16 @@ class MainWindow(QMainWindow):
         self._close_cleaned_up: bool = False
         self._user_closed_problems_panel: bool = False
         self._prev_error_count: int = 0
+        self.instruments_dialog: object | None = None
+        self.sweep_dialog: object | None = None
+        self._dso_dialogs: dict[str, object] = {}
 
         self._build_menus_and_toolbars()
         self._build_docks()
         self._build_status_bar()
         self._connect_signals()
+        self.settings.register_shortcuts_listener(self.apply_shortcuts)
+        self.apply_shortcuts()
         self.circuit_scene.undo_stack.cleanChanged.connect(self._on_undo_clean_changed)
         self.apply_theme(self.theme)
         self._update_window_title()
@@ -220,6 +245,9 @@ class MainWindow(QMainWindow):
         file_menu.addMenu(self.examples_menu)
         self._build_examples_menu()
 
+        self.test_jigs_menu = file_menu.addMenu("Test &Jigs")
+        self._build_test_jigs_menu()
+
         self.act_save = QAction("&Save", self)
         self.act_save.setIconText("Save")
         self.act_save.setToolTip("Save current circuit to file (Ctrl+S)")
@@ -245,6 +273,37 @@ class MainWindow(QMainWindow):
         )
         self.act_export_svg.triggered.connect(self._on_export_svg)
         file_menu.addAction(self.act_export_svg)
+
+        file_menu.addSeparator()
+        self.act_import_spice = QAction("Import &SPICE Model / Subcircuit...", self)
+        self.act_import_spice.setToolTip("Parse 3rd-party .MODEL or .SUBCKT library with pin-order mapper")
+        self.act_import_spice.triggered.connect(self._on_import_spice)
+        file_menu.addAction(self.act_import_spice)
+
+        self.act_export_kicad = QAction("Export as &KiCad Schematic (.kicad_sch)...", self)
+        self.act_export_kicad.setToolTip("Export schematic to KiCad S-expression (.kicad_sch)")
+        self.act_export_kicad.triggered.connect(self._on_export_kicad)
+        file_menu.addAction(self.act_export_kicad)
+
+        self.act_export_spice = QAction("Export as SPICE Netlist (.cir)...", self)
+        self.act_export_spice.setToolTip("Export circuit to a standard SPICE netlist (.cir / .sp)")
+        self.act_export_spice.triggered.connect(self._on_export_spice)
+        file_menu.addAction(self.act_export_spice)
+
+        self.act_copy_share_url = QAction("Copy Share &URL (ohmbench://...)", self)
+        self.act_copy_share_url.setToolTip("Encode schematic into an ohmbench://c/... sharing link")
+        self.act_copy_share_url.triggered.connect(self.copy_share_url)
+        file_menu.addAction(self.act_copy_share_url)
+
+        self.act_open_share_url = QAction("Open Share U&RL...", self)
+        self.act_open_share_url.setToolTip("Decode and open an ohmbench://c/... sharing link")
+        self.act_open_share_url.triggered.connect(self._on_open_share_url)
+        file_menu.addAction(self.act_open_share_url)
+
+        self.act_bom_report = QAction("Bill of &Materials && Power Report...", self)
+        self.act_bom_report.setToolTip("Inspect grouped BOM, thermal power budget, and export CSV/Markdown")
+        self.act_bom_report.triggered.connect(self.show_bom_report_dialog)
+        file_menu.addAction(self.act_bom_report)
 
         file_menu.addSeparator()
         act_exit = QAction("E&xit", self)
@@ -289,18 +348,33 @@ class MainWindow(QMainWindow):
         self.act_paste.triggered.connect(self.circuit_scene.paste_clipboard)
         edit_menu.addAction(self.act_paste)
 
+        self.act_duplicate = QAction("D&uplicate", self)
+        self.act_duplicate.setShortcut(QKeySequence("Ctrl+D"))
+        self.act_duplicate.setToolTip("Duplicate selected subcircuit (Shortcut: Ctrl+D)")
+        self.act_duplicate.triggered.connect(self.circuit_scene.duplicate_selected)
+        edit_menu.addAction(self.act_duplicate)
+
         self.act_delete = QAction("&Delete", self)
         self.act_delete.setIconText("Del")
         self.act_delete.setShortcut(QKeySequence.StandardKey.Delete)
-        self.act_delete.setToolTip("Delete selected items and attached wires (Shortcut: Del)")
-        self.act_delete.triggered.connect(self.circuit_scene.delete_selected)
+        self.act_delete.setToolTip("Delete selected items (Shortcut: Del)")
+        self.act_delete.triggered.connect(
+            lambda: self.circuit_scene.delete_selected(detach_unselected_wires=True)
+        )
         edit_menu.addAction(self.act_delete)
 
+        self.act_select_all = QAction("Select &All", self)
+        self.act_select_all.setShortcut(QKeySequence.StandardKey.SelectAll)
+        self.act_select_all.setToolTip("Select all components, wires, and junctions (Shortcut: Ctrl+A)")
+        self.act_select_all.triggered.connect(self.circuit_scene.select_all)
+        edit_menu.addAction(self.act_select_all)
+
         edit_menu.addSeparator()
-        self.act_rotate = QAction("&Rotate (R)", self)
+        self.act_rotate = QAction("&Rotate (Ctrl+R)", self)
         self.act_rotate.setIconText("Rot")
+        self.act_rotate.setShortcut(QKeySequence("Ctrl+R"))
         self.act_rotate.setToolTip(
-            "Rotate selected component(s) 90° clockwise (Shortcut: R)"
+            "Rotate selected component(s) 90° clockwise (Shortcut: Ctrl+R)"
         )
         self.act_rotate.triggered.connect(self._rotate_selected)
         edit_menu.addAction(self.act_rotate)
@@ -312,6 +386,28 @@ class MainWindow(QMainWindow):
         )
         self.act_flip.triggered.connect(self._flip_selected)
         edit_menu.addAction(self.act_flip)
+
+        align_menu = edit_menu.addMenu("&Align && Distribute")
+        for lbl, mode in (
+            ("Align &Left", "left"),
+            ("Align &Right", "right"),
+            ("Align &Top", "top"),
+            ("Align &Bottom", "bottom"),
+            ("Align Center &Horizontal (X)", "center_x"),
+            ("Align Center &Vertical (Y)", "center_y"),
+        ):
+            act_al = QAction(lbl, self)
+            act_al.triggered.connect(lambda _checked=False, m=mode: self.circuit_scene.align_selected(m))
+            align_menu.addAction(act_al)
+        align_menu.addSeparator()
+        for lbl, axis in (
+            ("Distribute &Horizontally", "horizontal"),
+            ("Distribute &Vertically", "vertical"),
+        ):
+            act_dist = QAction(lbl, self)
+            act_dist.triggered.connect(lambda _checked=False, ax=axis: self.circuit_scene.distribute_selected(ax))
+            align_menu.addAction(act_dist)
+        self.align_distribute_menu = align_menu
 
         self.act_wire_mode = QAction("&Wire (W)", self, checkable=True)
         self.act_wire_mode.setIconText("Wire")
@@ -335,9 +431,19 @@ class MainWindow(QMainWindow):
 
         edit_menu.addSeparator()
         self.act_preferences = QAction("&Preferences...", self)
-        self.act_preferences.setToolTip("Application preferences (number format, etc.)")
+        self.act_preferences.setToolTip("Application preferences (number format, shortcuts, etc.)")
         self.act_preferences.triggered.connect(self._open_preferences_dialog)
         edit_menu.addAction(self.act_preferences)
+
+        self.act_shortcuts = QAction("&Shortcuts...", self)
+        self.act_shortcuts.setToolTip("Configure keyboard shortcuts")
+        self.act_shortcuts.triggered.connect(self._open_shortcuts_dialog)
+        edit_menu.addAction(self.act_shortcuts)
+
+        self.act_create_macro = QAction("Create Custom &Macro from Scene...", self)
+        self.act_create_macro.setToolTip("Package current schematic subcircuit with Net Labels into a CustomMacroBlock")
+        self.act_create_macro.triggered.connect(self.create_custom_macro_from_scene)
+        edit_menu.addAction(self.act_create_macro)
 
         # View menu
         self.view_menu = menu_bar.addMenu("&View")
@@ -353,6 +459,75 @@ class MainWindow(QMainWindow):
         self.act_toggle_theme.setToolTip("Toggle between Dark and Light themes (Shortcut: Ctrl+T)")
         self.act_toggle_theme.triggered.connect(self.toggle_theme)
         self.view_menu.addAction(self.act_toggle_theme)
+
+        self.act_voltage_colors = QAction("Voltage &Colors", self, checkable=True)
+        self.act_voltage_colors.setChecked(False)
+        self.act_voltage_colors.setToolTip(
+            "Color-code wires by live node voltage (neutral gray = 0 V, green > 0 V, red < 0 V)"
+        )
+        self.act_voltage_colors.toggled.connect(
+            self.circuit_scene.set_voltage_colors_enabled
+        )
+        self.view_menu.addAction(self.act_voltage_colors)
+
+        self.act_current_dots = QAction("Current &Dots", self, checkable=True)
+        self.act_current_dots.setChecked(False)
+        self.act_current_dots.setToolTip(
+            "Animate dots along wires showing conventional positive current flow"
+        )
+        self.act_current_dots.toggled.connect(
+            self.circuit_scene.set_current_dots_enabled
+        )
+        self.view_menu.addAction(self.act_current_dots)
+
+        self.act_stress_warnings = QAction("Stress & Overload Warnings", self, checkable=True)
+        self.act_stress_warnings.setChecked(True)
+        self.act_stress_warnings.setToolTip(
+            "Show amber derating and red overload/smoke warning badges on stressed components"
+        )
+        self.act_stress_warnings.toggled.connect(
+            self.circuit_scene.set_stress_warnings_enabled
+        )
+        self.view_menu.addAction(self.act_stress_warnings)
+
+        self.act_pinout_labels = QAction(
+            "Show Physical &Pinout / Package Labels", self, checkable=True
+        )
+        self.act_pinout_labels.setChecked(False)
+        self.act_pinout_labels.setToolTip(
+            "Overlay physical package names and pinout identifiers (A/K, +/-, 1/2, A0..RX) without mutating wiring"
+        )
+        self.act_pinout_labels.toggled.connect(
+            self.circuit_scene.set_pinout_labels_enabled
+        )
+        self.view_menu.addAction(self.act_pinout_labels)
+
+        self.act_show_minimap = QAction("Show &Minimap", self, checkable=True)
+        self.act_show_minimap.setChecked(False)
+        self.act_show_minimap.setToolTip("Show 160x110 px schematic overview minimap in the bottom-right corner")
+        self.act_show_minimap.toggled.connect(self.circuit_view.set_minimap_visible)
+        self.view_menu.addAction(self.act_show_minimap)
+
+        # Place menu (cross-platform accessible entry alongside canvas hotkeys)
+        self.place_menu = menu_bar.addMenu("&Place")
+        self.place_actions: dict[str, QAction] = {}
+        for comp_id, menu_label, tb_text, key_hint in (
+            ("resistor", "&Resistor (R)", "R", "R"),
+            ("capacitor", "&Capacitor (C)", "C", "C"),
+            ("inductor", "&Inductor (L)", "L", "L"),
+            ("led", "&Diode / LED (D)", "D", "D"),
+            ("dc_voltage", "&Voltage Source (V)", "V", "V"),
+            ("dc_current", "Current &Source (I)", "I", "I"),
+            ("ground", "&Ground (G)", "G", "G"),
+        ):
+            act = QAction(menu_label, self)
+            act.setIconText(tb_text)
+            act.setToolTip(f"Place {menu_label.replace('&', '')} (Canvas key: {key_hint})")
+            act.triggered.connect(
+                lambda _checked=False, cid=comp_id: self.circuit_view.start_component_placement(cid)
+            )
+            self.place_menu.addAction(act)
+            self.place_actions[comp_id] = act
 
         self.view_menu.addSeparator()
         act_zoom_in = QAction("Zoom &In", self)
@@ -395,6 +570,33 @@ class MainWindow(QMainWindow):
         sim_menu.addAction(self.act_run)
         sim_menu.addAction(self.act_pause)
         sim_menu.addAction(self.act_stop)
+        sim_menu.addSeparator()
+        self.act_virtual_instruments = QAction(
+            "Virtual &Instruments (Waveform & Bode)...", self
+        )
+        self.act_virtual_instruments.setToolTip(
+            "Open multi-channel Waveform Capture & AC Bode / Z_in Analyzer"
+        )
+        self.act_virtual_instruments.triggered.connect(self.show_instruments_panel)
+        sim_menu.addAction(self.act_virtual_instruments)
+
+        self.act_sweep_analysis = QAction(
+            "Parameter &Sweep && Monte Carlo...", self
+        )
+        self.act_sweep_analysis.setToolTip(
+            "Open .STEP Parameter Sweep & Monte Carlo Tolerance Analyzer"
+        )
+        self.act_sweep_analysis.triggered.connect(self.show_sweep_panel)
+        sim_menu.addAction(self.act_sweep_analysis)
+
+        self.act_curve_tracer = QAction(
+            "&I-V Curve Tracer...", self
+        )
+        self.act_curve_tracer.setToolTip(
+            "Trace multi-curve I-V characteristic families for diodes, Zeners, BJTs, and MOSFETs"
+        )
+        self.act_curve_tracer.triggered.connect(self.show_curve_tracer_panel)
+        sim_menu.addAction(self.act_curve_tracer)
 
         # Help menu
         help_menu = menu_bar.addMenu("&Help")
@@ -453,6 +655,13 @@ class MainWindow(QMainWindow):
         main_tb.addAction(self.act_toggle_theme)
         self.addToolBar(Qt.ToolBarArea.TopToolBarArea, main_tb)
 
+        self.addToolBarBreak(Qt.ToolBarArea.TopToolBarArea)
+        self.place_tb = QToolBar("Quick Place", self)
+        self.place_tb.setMovable(False)
+        for cid in ("resistor", "capacitor", "inductor", "led", "dc_voltage", "dc_current", "ground"):
+            self.place_tb.addAction(self.place_actions[cid])
+        self.addToolBar(Qt.ToolBarArea.TopToolBarArea, self.place_tb)
+
     def _build_docks(self) -> None:
         self.setDockOptions(
             QMainWindow.DockOption.AllowNestedDocks
@@ -487,7 +696,7 @@ class MainWindow(QMainWindow):
         info_container = QWidget()
         info_layout = QVBoxLayout(info_container)
         info_layout.setContentsMargins(10, 10, 10, 10)
-        self.info_label = QLabel(DEFAULT_SHORTCUTS_HELP_TEXT)
+        self.info_label = QLabel(self.get_shortcuts_help_text())
         self.info_label.setWordWrap(True)
         self.info_label.setAlignment(
             Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft
@@ -500,8 +709,11 @@ class MainWindow(QMainWindow):
         self.info_dock.setWidget(self.info_scroll)
         self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self.info_dock)
 
-        # 3. Bottom Dock: Problems Panel
+        # 3. Bottom Dock: Problems Panel (owns bottom corners so it spans full width & shrinks side docks)
+        self.setCorner(Qt.Corner.BottomLeftCorner, Qt.DockWidgetArea.BottomDockWidgetArea)
+        self.setCorner(Qt.Corner.BottomRightCorner, Qt.DockWidgetArea.BottomDockWidgetArea)
         self.problems_dock = ProblemsDock(self)
+        self.problems_dock.setFloating(False)
         self.addDockWidget(Qt.DockWidgetArea.BottomDockWidgetArea, self.problems_dock)
         self.resizeDocks([self.problems_dock], [120], Qt.Orientation.Vertical)
         self.problems_dock.hide()
@@ -546,6 +758,8 @@ class MainWindow(QMainWindow):
         )
         self.circuit_view.cursor_grid_moved.connect(self._on_cursor_moved)
         self.circuit_view.zoom_changed.connect(self._on_zoom_changed)
+        self.circuit_view.wire_mode_changed.connect(self._on_wire_mode_changed)
+        self.circuit_view.placement_mode_changed.connect(self._on_placement_mode_changed)
         self.circuit_scene.component_placed.connect(self._on_component_placed)
         self.circuit_scene.selection_info_changed.connect(
             self._update_info_panel
@@ -554,9 +768,16 @@ class MainWindow(QMainWindow):
         self.circuit_scene.switch_toggled_by_user.connect(
             self._on_user_switch_toggled
         )
+        self.circuit_scene.fuse_reset_by_user.connect(
+            self._on_user_fuse_reset
+        )
+        self.circuit_scene.oscilloscope_open_requested.connect(
+            self.open_dso_dialog_for_item
+        )
         self.circuit_scene.component_parameters_edited.connect(
             self._on_user_parameters_edited
         )
+        self.circuit_scene.status_notice.connect(self._on_scene_status_notice)
         self.sim_controller.frame_ready.connect(self._on_simulation_frame)
 
     # ------------------------------------------------------------------
@@ -564,14 +785,8 @@ class MainWindow(QMainWindow):
     # ------------------------------------------------------------------
 
     def _sync_schematic_to_worker(self) -> None:
-        placed_specs = [
-            item.to_placed_spec() for item in self.circuit_scene.placed_items
-        ]
-        wire_specs = [
-            wire.to_wire_spec() for wire in self.circuit_scene.placed_wires
-        ]
-        self.sim_controller.load_schematic(
-            placed_specs, wire_specs, self.circuit_scene.explicit_junctions
+        self.sim_controller.load_connectivity(
+            self.circuit_scene.extract_connectivity_result()
         )
 
     def start_simulation(self) -> None:
@@ -746,7 +961,7 @@ class MainWindow(QMainWindow):
         """Load a `.circ` file. On any problem show a message and change nothing."""
         p = Path(path)
         try:
-            doc = load_document(p)  # reads + validates; builds new objects only
+            doc = load_document_v2(p)  # reads + validates v2 (auto-migrates v1)
             self.circuit_scene.load_document(doc)  # all-or-nothing swap
         except CircuitFileError as exc:
             self._show_error("Could not open file", str(exc))
@@ -778,7 +993,9 @@ class MainWindow(QMainWindow):
         """Save the circuit to `path`; show a message and return False on failure."""
         p = Path(path)
         try:
-            save_document(p, self.circuit_scene.to_document(self._current_view_state()))
+            save_document_v2(
+                p, self.circuit_scene.to_document_v2(self._current_view_state())
+            )
         except CircuitFileError as exc:
             self._show_error("Could not save file", str(exc))
             return False
@@ -885,14 +1102,73 @@ class MainWindow(QMainWindow):
         )
         QMessageBox.about(self, f"About {APP_NAME}", text)
 
+    def apply_shortcuts(self) -> None:
+        """Apply configurable shortcuts from `self.settings.shortcuts` to window actions."""
+        sc = self.settings.shortcuts
+        rot_seq = sc.get("rotate", "Ctrl+R")
+        self.act_rotate.setShortcut(QKeySequence(rot_seq) if rot_seq else QKeySequence())
+        self.act_rotate.setToolTip(
+            f"Rotate selected component(s) 90° clockwise (Shortcut: {rot_seq or 'None'})"
+        )
+        flip_seq = sc.get("flip", "F")
+        self.act_flip.setToolTip(
+            f"Flip selected component(s) horizontally (Shortcut: {flip_seq or 'None'})"
+        )
+        wire_seq = sc.get("wire_mode", "W")
+        self.act_wire_mode.setToolTip(
+            f"Toggle Wire Drawing mode (Shortcut: {wire_seq or 'None'})."
+        )
+        junc_seq = sc.get("junction", "J")
+        self.act_junction.setToolTip(
+            f"Place or remove an explicit junction dot (Shortcut: {junc_seq or 'None'})"
+        )
+        del_seq = sc.get("delete", "Del")
+        self.act_delete.setShortcut(QKeySequence(del_seq) if del_seq else QKeySequence())
+        place_action_keys = {
+            "resistor": "place_resistor",
+            "capacitor": "place_capacitor",
+            "inductor": "place_inductor",
+            "led": "place_diode",
+            "dc_voltage": "place_dc_voltage",
+            "dc_current": "place_dc_current",
+            "ground": "place_ground",
+        }
+        for cid, act_key in place_action_keys.items():
+            act = self.place_actions.get(cid)
+            if act is not None:
+                key_hint = sc.get(act_key, "")
+                act.setIconText(key_hint or cid[0].upper())
+                act.setToolTip(f"Place {cid} (Canvas key: {key_hint or 'None'})")
+        if (
+            hasattr(self, "info_label")
+            and hasattr(self, "circuit_scene")
+            and not any(
+                isinstance(it, ComponentItem)
+                for it in self.circuit_scene.selectedItems()
+            )
+        ):
+            self.info_label.setText(self.get_shortcuts_help_text())
+
+    def get_shortcuts_help_text(self) -> str:
+        """Return empty-selection help text synced to the user's configured shortcuts."""
+        return format_shortcuts_help_text(self.settings.shortcuts)
+
     def _open_preferences_dialog(self) -> None:
         dlg = PreferencesDialog(self.settings, self)
         if dlg.exec() == PreferencesDialog.DialogCode.Accepted:
+            self.apply_shortcuts()
             self.circuit_scene.update()
             self.statusBar().showMessage(
                 f"Preferences saved (number format: {self.settings.get_number_format()})",
                 3000,
             )
+
+    def _open_shortcuts_dialog(self) -> None:
+        dlg = ShortcutsDialog(self.settings, self)
+        if dlg.exec() == ShortcutsDialog.DialogCode.Accepted:
+            self.apply_shortcuts()
+            self.circuit_scene.update()
+            self.statusBar().showMessage("Keyboard shortcuts updated", 3000)
 
     def _update_recent_files_menu(self) -> None:
         self.recent_menu.clear()
@@ -939,8 +1215,10 @@ class MainWindow(QMainWindow):
         self.open_path(p)
 
     def _build_examples_menu(self) -> None:
+        from circuitsim.canvas.symbol_geometry import get_resource_path
+
         self.examples_menu.clear()
-        ex_dir = Path(__file__).resolve().parent.parent / "resources" / "examples"
+        ex_dir = get_resource_path("resources", "examples")
         index_file = ex_dir / "index.json"
         if not index_file.exists():
             return
@@ -982,7 +1260,7 @@ class MainWindow(QMainWindow):
             return
 
         try:
-            doc = load_document(path)
+            doc = load_document_v2(path)
             self.circuit_scene.load_document(doc)
         except Exception as exc:
             self._show_error("Could not load example", f"Failed to load example circuit: {exc}")
@@ -1002,6 +1280,138 @@ class MainWindow(QMainWindow):
         self._update_window_title()
         self.statusBar().showMessage(f"Loaded example: {title}", 4000)
 
+    def _build_test_jigs_menu(self) -> None:
+        from circuitsim.templates.test_jigs import list_test_jigs
+
+        self.test_jigs_menu.clear()
+        for jig in list_test_jigs():
+            act = QAction(jig.title, self)
+            act.setToolTip(jig.description)
+            act.setStatusTip(jig.description)
+            act.triggered.connect(
+                lambda _checked=False, jid=jig.jig_id, t=jig.title: self.load_test_jig(
+                    jid, title=t
+                )
+            )
+            self.test_jigs_menu.addAction(act)
+
+    def load_test_jig(
+        self, jig_id: str, *, title: str | None = None, prompt_discard: bool = True
+    ) -> None:
+        """Load one of the 6 built-in Test Jigs directly onto the schematic canvas."""
+        from circuitsim.templates.test_jigs import build_test_jig
+
+        if prompt_discard and not self._confirm_discard_changes("loading a test jig"):
+            return
+        doc = build_test_jig(jig_id)
+        self.circuit_scene.load_document(doc)
+        self.stop_simulation()
+        self._current_path = None
+        self._switch_modified = False
+        self._update_window_title()
+        self.statusBar().showMessage(f"Loaded test jig: {title or jig_id}", 4000)
+
+    def _on_import_spice(self) -> None:
+        from circuitsim.dialogs.spice_import_dialog import ImportSPICEDialog
+
+        dlg = ImportSPICEDialog(self)
+        if dlg.exec():
+            comp = dlg.selected_component or dlg.selected_diode
+            if comp is not None:
+                center = self.circuit_view.mapToScene(self.circuit_view.viewport().rect().center())
+                fx, fy = self.circuit_scene._find_nearest_free_grid_pos(comp.component_type, center.x(), center.y(), 0)
+                item = self.circuit_scene.place_new_component(comp.component_type, QPointF(fx, fy))
+                if item is None:
+                    return
+                for p in comp.get_editable_parameters():
+                    try:
+                        item.component.set_parameter_value(p.key, comp.get_parameter_value(p.key))
+                    except Exception:
+                        pass
+                if hasattr(comp, "model_name") and hasattr(item.component, "model_name"):
+                    item.component.model_name = comp.model_name  # type: ignore[attr-defined]
+                if hasattr(comp, "ibv") and hasattr(item.component, "ibv"):
+                    item.component.ibv = comp.ibv  # type: ignore[attr-defined]
+                item.update()
+                self.statusBar().showMessage(
+                    f"Imported SPICE {comp.component_type} model: {getattr(comp, 'model_name', comp.name)}",
+                    4000,
+                )
+
+    def copy_share_url(self) -> str:
+        """Encode current schematic to an `ohmbench://c/...` share URL and copy to clipboard."""
+        from PySide6.QtWidgets import QApplication
+        from circuitsim.io.share_codec import encode_circuit_share_url
+
+        doc = self.circuit_scene.to_document_v2(self._current_view_state())
+        url = encode_circuit_share_url(doc)
+        cb = QApplication.clipboard()
+        if cb is not None:
+            cb.setText(url)
+        self.statusBar().showMessage("Copied ohmbench:// share URL to clipboard.", 4000)
+        return url
+
+    def load_share_url(self, url: str) -> None:
+        """Decode an `ohmbench://c/...` share URL and load it into the schematic scene."""
+        from circuitsim.io.share_codec import decode_circuit_share_url
+
+        doc = decode_circuit_share_url(url)
+        self.circuit_scene.load_document(doc)
+        self.stop_simulation()
+        self._current_path = None
+        self._switch_modified = False
+        self._update_window_title()
+        self.statusBar().showMessage("Loaded circuit from share URL.", 4000)
+
+    def _on_open_share_url(self) -> None:
+        from PySide6.QtWidgets import QInputDialog
+
+        url, ok = QInputDialog.getText(
+            self, "Open Share URL", "Paste ohmbench://c/... link:"
+        )
+        if not ok or not url.strip():
+            return
+        try:
+            self.load_share_url(url)
+        except Exception as exc:
+            self._show_error("Invalid Share URL", str(exc))
+
+    def _on_export_kicad(self) -> None:
+        from circuitsim.io.kicad_export import export_to_kicad_sch
+
+        default_name = "schematic.kicad_sch"
+        if self._current_path:
+            default_name = f"{self._current_path.stem}.kicad_sch"
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Export KiCad Schematic", default_name, "KiCad Schematic (*.kicad_sch)"
+        )
+        if not path:
+            return
+        doc = self.circuit_scene.to_document_v2(self._current_view_state())
+        export_to_kicad_sch(doc, path, title=Path(path).stem)
+        self.statusBar().showMessage(f"Exported KiCad schematic: {path}", 4000)
+
+    def _on_export_spice(self) -> None:
+        from circuitsim.io.spice_export import export_to_spice_netlist
+
+        default_name = "schematic.cir"
+        if self._current_path:
+            default_name = f"{self._current_path.stem}.cir"
+        path, _ = QFileDialog.getSaveFileName(
+            self,
+            "Export SPICE Netlist",
+            default_name,
+            "SPICE Netlist (*.cir *.sp *.spice)",
+        )
+        if not path:
+            return
+        export_to_spice_netlist(
+            self.circuit_scene,
+            title=Path(path).stem,
+            output_path=path,
+        )
+        self.statusBar().showMessage(f"Exported SPICE netlist: {path}", 4000)
+
     def _on_speed_combo_changed(self, index: int) -> None:
         raw = self.speed_combo.itemData(index)
         if raw:
@@ -1012,6 +1422,14 @@ class MainWindow(QMainWindow):
         self._update_window_title()
         if self._sim_state in (SimulationState.RUNNING, SimulationState.PAUSED):
             self.sim_controller.toggle_switch(switch_name)
+
+    def _on_user_fuse_reset(self, fuse_name: str) -> None:
+        selected = [
+            it for it in self.circuit_scene.selectedItems() if isinstance(it, ComponentItem)
+        ]
+        self._update_info_panel(selected[0] if selected else None)
+        if self._sim_state in (SimulationState.RUNNING, SimulationState.PAUSED):
+            self.sim_controller.reset_fuse(fuse_name)
 
     def _on_user_parameters_edited(
         self, comp_name: str, param_map: object
@@ -1028,11 +1446,58 @@ class MainWindow(QMainWindow):
                 for k, v in param_map.items():
                     self.sim_controller.update_component_parameter(comp_name, k, v)
 
+    def refresh_diagnostics_display(self, frame_diagnostics: Sequence[object] = ()) -> None:
+        """Merge simulation/topology diagnostics with component stress diagnostics into Problems & status bar."""
+        combined = list(frame_diagnostics)
+        seen = {(getattr(d, "code", ""), tuple(getattr(d, "component_names", ()))) for d in combined}
+        for sd in getattr(self.circuit_scene, "latest_stress_diagnostics", ()):
+            key = (sd.code, tuple(sd.component_names))
+            if key not in seen:
+                combined.append(sd)
+                seen.add(key)
+
+        errors = [d for d in combined if getattr(d, "severity", "") == "error"]
+        if combined:
+            n_prob = len(combined)
+            prob_str = "1 problem" if n_prob == 1 else f"{n_prob} problems"
+            if errors:
+                self.status_warnings.setStyleSheet("color: #FF6B6B; font-weight: 600;")
+            else:
+                self.status_warnings.setStyleSheet("color: #FFA726; font-weight: 600;")
+            full_txt = " ; ".join(str(getattr(d, "message", "")) for d in combined)
+            self.status_warnings.setText(DiagnosticStatusText(prob_str, full_txt))
+        else:
+            self.status_warnings.setStyleSheet("")
+            if self._sim_state == SimulationState.RUNNING or self.circuit_scene.is_simulation_running:
+                self.status_warnings.setText(DiagnosticStatusText("0 problems", "Simulation Running (OK)", ok_state=True))
+            else:
+                self._refresh_warnings_display()
+
+        if hasattr(self, "problems_dock"):
+            self.problems_dock.panel.update_diagnostics(combined)  # type: ignore[arg-type]
+
+        curr_error_count = len(errors)
+        if curr_error_count > self._prev_error_count:
+            if not self._user_closed_problems_panel and hasattr(self, "problems_dock"):
+                self.problems_dock.setFloating(False)
+                self.problems_dock.show()
+                if hasattr(self, "action_view_problems"):
+                    self.action_view_problems.setChecked(True)
+        self._prev_error_count = curr_error_count
+
     def _on_simulation_frame(self, frame: SimulationFrame) -> None:
         self._sim_state = frame.state
         self.circuit_scene.apply_simulation_frame(frame)
 
-        errors = [d for d in frame.diagnostics if d.severity == "error"]
+        combined = list(frame.diagnostics)
+        seen = {(d.code, tuple(d.component_names)) for d in combined}
+        for sd in getattr(self.circuit_scene, "latest_stress_diagnostics", ()):
+            key = (sd.code, tuple(sd.component_names))
+            if key not in seen:
+                combined.append(sd)
+                seen.add(key)
+
+        errors = [d for d in combined if d.severity == "error"]
         err_msg = errors[0].message if errors else ""
         self._apply_transport_controls_ui(frame.state, error_reason=err_msg)
 
@@ -1051,38 +1516,165 @@ class MainWindow(QMainWindow):
         else:
             self.status_sim.setText("Sim: Stopped (t = 0 s)")
 
-        if frame.diagnostics:
-            n_prob = len(frame.diagnostics)
-            prob_str = "1 problem" if n_prob == 1 else f"{n_prob} problems"
-            if errors:
-                self.status_warnings.setStyleSheet(
-                    "color: #FF6B6B; font-weight: 600;"
-                )
-            else:
-                self.status_warnings.setStyleSheet(
-                    "color: #FFA726; font-weight: 600;"
-                )
-            full_txt = " ; ".join(str(d.message) for d in frame.diagnostics)
-            self.status_warnings.setText(DiagnosticStatusText(prob_str, full_txt))
-        else:
-            self.status_warnings.setStyleSheet("")
-            if frame.state == SimulationState.RUNNING:
-                self.status_warnings.setText(DiagnosticStatusText("0 problems", "Simulation Running (OK)", ok_state=True))
-            else:
-                self._refresh_warnings_display()
+        self.refresh_diagnostics_display(frame.diagnostics)
+        if self.instruments_dialog is not None:
+            self.instruments_dialog.on_simulation_frame(frame)  # type: ignore[attr-defined]
+        for dlg in list(self._dso_dialogs.values()):
+            try:
+                dlg.on_simulation_frame(frame)  # type: ignore[attr-defined]
+            except RuntimeError:
+                pass
 
-        # Update Problems Panel diagnostics
-        if hasattr(self, "problems_dock"):
-            self.problems_dock.panel.update_diagnostics(frame.diagnostics)
+    def open_dso_dialog_for_item(self, item: ComponentItem):
+        """Open (or focus) the multi-instance DSO-1062D window bound to `item`."""
+        from circuitsim.app.dso_panel import DSOOscilloscopeDialog
 
-        # Auto-open Problems panel on new error unless closed during current run
-        curr_error_count = len(errors)
-        if curr_error_count > self._prev_error_count:
-            if not self._user_closed_problems_panel and hasattr(self, "problems_dock"):
-                self.problems_dock.show()
-                if hasattr(self, "action_view_problems"):
-                    self.action_view_problems.setChecked(True)
-        self._prev_error_count = curr_error_count
+        cname = item.component.name
+        existing = self._dso_dialogs.get(cname)
+        if isinstance(existing, DSOOscilloscopeDialog) and existing.osc_component is item.component:
+            existing.refresh_net_labels()
+            existing.capture_from_scene()
+            existing.show()
+            existing.raise_()
+            existing.activateWindow()
+            return existing
+
+        dlg = DSOOscilloscopeDialog(
+            item,
+            circuit_provider=lambda: self.circuit_scene.extract_connectivity_result().circuit,
+            nets_provider=lambda name=cname: self.circuit_scene.extract_connectivity_result().component_nodes.get(
+                name, {}
+            ),
+            parent=self,
+        )
+        self._dso_dialogs[cname] = dlg
+        dlg.refresh_net_labels()
+        dlg.capture_from_scene()
+        dlg.show()
+        dlg.raise_()
+        dlg.activateWindow()
+        return dlg
+
+    def show_instruments_panel(self):
+        """Open (or focus) the Benchtop Virtual Instruments panel."""
+        from circuitsim.app.instruments_panel import BenchtopInstrumentsDialog
+
+        if self.instruments_dialog is None:
+            self.instruments_dialog = BenchtopInstrumentsDialog(
+                circuit_provider=lambda: self.circuit_scene.extract_connectivity_result().circuit,
+                parent=self,
+            )
+        dlg: BenchtopInstrumentsDialog = self.instruments_dialog  # type: ignore[assignment]
+        dlg.refresh_nodes()
+        dlg.show()
+        dlg.raise_()
+        dlg.activateWindow()
+        return dlg
+
+    def show_sweep_panel(self):
+        """Open (or focus) the Parameter Sweep (.STEP) & Monte Carlo Analyzer dialog."""
+        from circuitsim.app.sweep_panel import SweepAnalysisDialog
+
+        if self.sweep_dialog is None:
+            self.sweep_dialog = SweepAnalysisDialog(
+                circuit_provider=self.circuit_scene.build_circuit,
+                parent=self,
+            )
+        dlg: SweepAnalysisDialog = self.sweep_dialog  # type: ignore[assignment]
+        dlg.refresh_circuit()
+        dlg.show()
+        dlg.raise_()
+        dlg.activateWindow()
+        return dlg
+
+    def show_curve_tracer_panel(self):
+        """Open (or focus) the interactive I-V Characteristic Curve Tracer dialog."""
+        from circuitsim.app.curve_tracer_panel import CurveTracerDialog
+
+        def _selected_comp():
+            sel = [
+                it.component
+                for it in self.circuit_scene.selectedItems()
+                if isinstance(it, ComponentItem)
+            ]
+            return sel[0] if len(sel) == 1 else None
+
+        dlg = getattr(self, "curve_tracer_dialog", None)
+        if dlg is None:
+            dlg = CurveTracerDialog(selected_component_provider=_selected_comp, parent=self)
+            self.curve_tracer_dialog = dlg
+        dlg.show()
+        dlg.raise_()
+        dlg.activateWindow()
+        return dlg
+
+    def show_bom_report_dialog(self):
+        """Display the grouped Bill of Materials & Thermal Power Budget report with CSV/MD export."""
+        from PySide6.QtWidgets import QDialog, QFileDialog, QHBoxLayout, QPushButton, QTextEdit, QVBoxLayout
+        from circuitsim.io.bom_export import export_bom_csv, export_bom_markdown, generate_bom_report
+
+        conn = self.circuit_scene.extract_connectivity_result()
+        report = generate_bom_report(conn.circuit)
+        md_text = export_bom_markdown(report)
+
+        dlg = QDialog(self)
+        dlg.setWindowTitle("Bill of Materials & Power Budget Report")
+        dlg.resize(680, 440)
+        lay = QVBoxLayout(dlg)
+        txt = QTextEdit(dlg)
+        txt.setReadOnly(True)
+        txt.setPlainText(md_text)
+        lay.addWidget(txt, 1)
+        row = QHBoxLayout()
+        btn_csv = QPushButton("Export CSV...", dlg)
+        btn_md = QPushButton("Export Markdown...", dlg)
+        btn_close = QPushButton("Close", dlg)
+        row.addWidget(btn_csv)
+        row.addWidget(btn_md)
+        row.addStretch(1)
+        row.addWidget(btn_close)
+        lay.addLayout(row)
+
+        def _save_csv() -> None:
+            p, _ = QFileDialog.getSaveFileName(dlg, "Export BOM CSV", "bom_report.csv", "CSV Files (*.csv)")
+            if p:
+                export_bom_csv(report, p)
+
+        def _save_md() -> None:
+            p, _ = QFileDialog.getSaveFileName(dlg, "Export BOM Markdown", "bom_report.md", "Markdown Files (*.md)")
+            if p:
+                export_bom_markdown(report, p)
+
+        btn_csv.clicked.connect(_save_csv)
+        btn_md.clicked.connect(_save_md)
+        btn_close.clicked.connect(dlg.accept)
+        dlg.show()
+        return report
+
+    def create_custom_macro_from_scene(self, macro_name: str | None = None):
+        """Package current schematic components + labeled nets into a reusable SubcircuitMacroDef."""
+        from circuitsim.components.custom_macro import package_subcircuit_macro
+
+        conn = self.circuit_scene.extract_connectivity_result()
+        pins: list[str] = []
+        seen_pins: set[str] = set()
+        for w in self.circuit_scene.wire_graph.wires:
+            if w.net_label and w.net_label.strip() and w.net_label.strip() not in seen_pins:
+                seen_pins.add(w.net_label.strip())
+                pins.append(w.net_label.strip())
+        for j in self.circuit_scene.wire_graph.junctions:
+            if j.net_label and j.net_label.strip() and j.net_label.strip() not in seen_pins:
+                seen_pins.add(j.net_label.strip())
+                pins.append(j.net_label.strip())
+        if not pins:
+            pins = ["IN", "OUT", "GND"]
+        name = (macro_name or "CustomMacro").strip() or "CustomMacro"
+        macro_def = package_subcircuit_macro(name, pins, conn.circuit.components)
+        if not hasattr(self, "custom_macros"):
+            self.custom_macros = {}
+        self.custom_macros[name] = macro_def
+        self.statusBar().showMessage(f"Created macro '{name}' with pins {pins}", 4000)
+        return macro_def
 
     def _toggle_problems_panel(self, checked: bool | None = None) -> None:
         if checked is None:
@@ -1091,6 +1683,8 @@ class MainWindow(QMainWindow):
             new_visible = bool(checked)
         if not new_visible and self._sim_state == SimulationState.RUNNING:
             self._user_closed_problems_panel = True
+        if new_visible:
+            self.problems_dock.setFloating(False)
         self.problems_dock.setVisible(new_visible)
         if hasattr(self, "action_view_problems"):
             self.action_view_problems.setChecked(new_visible)
@@ -1155,9 +1749,14 @@ class MainWindow(QMainWindow):
         center_pt = self.circuit_view.mapToScene(
             self.circuit_view.viewport().rect().center()
         )
-        self.circuit_scene.place_new_component(component_id, QPointF(center_pt))
+        fx, fy = self.circuit_scene._find_nearest_free_grid_pos(
+            component_id, center_pt.x(), center_pt.y(), 0
+        )
+        self.circuit_scene.place_new_component(component_id, QPointF(fx, fy))
 
     def _rotate_selected(self) -> None:
+        if self.circuit_view.rotate_placement_preview():
+            return
         if self.circuit_scene.rotate_selected():
             selected = [
                 it
@@ -1184,6 +1783,31 @@ class MainWindow(QMainWindow):
 
     def _on_zoom_changed(self, zoom: float) -> None:
         self.status_zoom.setText(f"Zoom: {int(round(zoom * 100.0))}%")
+
+    def _on_placement_mode_changed(self, component_id: str) -> None:
+        if component_id:
+            self.statusBar().showMessage(
+                f"Place {component_id} - click canvas to place, Ctrl+R to rotate, Esc to cancel"
+            )
+        elif not self.circuit_view.wire_mode_enabled:
+            self.statusBar().clearMessage()
+
+    def _on_wire_mode_changed(self, enabled: bool) -> None:
+        if self.act_wire_mode.isChecked() != enabled:
+            blocked = self.act_wire_mode.blockSignals(True)
+            try:
+                self.act_wire_mode.setChecked(enabled)
+            finally:
+                self.act_wire_mode.blockSignals(blocked)
+        if enabled:
+            self.statusBar().showMessage(
+                "Wire mode - click a terminal to start, Esc to leave"
+            )
+        else:
+            self.statusBar().clearMessage()
+
+    def _on_scene_status_notice(self, message: str) -> None:
+        self.statusBar().showMessage(message, 5000)
 
     def _on_component_placed(self, item: ComponentItem) -> None:
         self._update_status_counts()
@@ -1216,7 +1840,7 @@ class MainWindow(QMainWindow):
     def _update_info_panel(self, item: ComponentItem | None) -> None:
         self._update_status_counts()
         if item is None:
-            self.info_label.setText(DEFAULT_SHORTCUTS_HELP_TEXT)
+            self.info_label.setText(self.get_shortcuts_help_text())
             return
 
         comp = item.component
@@ -1248,10 +1872,21 @@ class MainWindow(QMainWindow):
             extra_live = f"\n  • Brightness: {comp.brightness_percent:.1f}%"
             if comp.is_over_bright:
                 extra_live += " (OVER-BRIGHT!)"
+        elif comp.component_type == "transformer":
+            extra_live = "\n  • Info: Transformers block steady DC; use an AC Voltage Source to transform voltage."
+        elif comp.component_type == "seven_seg_display":
+            extra_live = "\n  • Pinout: 4-bit Hex/BCD inputs: D0(1), D1(2), D2(4), D3(8) — no GND pin needed"
         if item.diagnostic_message:
             extra_live += f"\n  • Diagnostic: {item.diagnostic_message}"
 
+        stress_banner = ""
+        if item.stress_level == "overload" and item.stress_reason:
+            stress_banner = f"⚠️ OVERLOAD: {item.stress_reason}\n\n"
+        elif item.stress_level == "warning" and item.stress_reason:
+            stress_banner = f"⚠️ DERATING WARNING: {item.stress_reason}\n\n"
+
         self.info_label.setText(
+            f"{stress_banner}"
             f"Name: {comp.name}\n"
             f"Type: {meta.display_name} ({comp.component_type})\n"
             f"Category: {meta.category}\n"
@@ -1297,16 +1932,22 @@ class MainWindow(QMainWindow):
             pass
 
         # 3. Stop the simulation worker thread and wait for it
+        self.settings.unregister_shortcuts_listener(self.apply_shortcuts)
         self.sim_controller.shutdown()
 
         # 4. Disconnect handlers from the scene, undo stack, and worker before destruction
         for sig, slot in (
+            (self.circuit_view.wire_mode_changed, self._on_wire_mode_changed),
+            (self.circuit_view.placement_mode_changed, self._on_placement_mode_changed),
             (self.circuit_scene.undo_stack.cleanChanged, self._on_undo_clean_changed),
             (self.circuit_scene.component_placed, self._on_component_placed),
             (self.circuit_scene.selection_info_changed, self._update_info_panel),
             (self.circuit_scene.circuit_modified, self._on_circuit_modified),
             (self.circuit_scene.switch_toggled_by_user, self._on_user_switch_toggled),
+            (self.circuit_scene.fuse_reset_by_user, self._on_user_fuse_reset),
+            (self.circuit_scene.oscilloscope_open_requested, self.open_dso_dialog_for_item),
             (self.circuit_scene.component_parameters_edited, self._on_user_parameters_edited),
+            (self.circuit_scene.status_notice, self._on_scene_status_notice),
             (self.sim_controller.frame_ready, self._on_simulation_frame),
         ):
             try:
@@ -1314,5 +1955,26 @@ class MainWindow(QMainWindow):
             except (RuntimeError, TypeError):
                 pass
 
+        if self.instruments_dialog is not None:
+            try:
+                self.instruments_dialog.close()  # type: ignore[attr-defined]
+            except RuntimeError:
+                pass
+        for dlg in list(self._dso_dialogs.values()):
+            try:
+                dlg.close()  # type: ignore[attr-defined]
+            except RuntimeError:
+                pass
+        self._dso_dialogs.clear()
+        if hasattr(self, "circuit_view") and self.circuit_view is not None:
+            try:
+                self.circuit_view.set_minimap_visible(False)
+            except RuntimeError:
+                pass
+        if getattr(self, "curve_tracer_dialog", None) is not None:
+            try:
+                self.curve_tracer_dialog.close()
+            except RuntimeError:
+                pass
         self.circuit_scene.shutdown_scene()
         super().closeEvent(event)

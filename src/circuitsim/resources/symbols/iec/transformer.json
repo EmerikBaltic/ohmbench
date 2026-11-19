@@ -1,0 +1,17 @@
+{
+  "id": "transformer",
+  "display_name": "Transformer",
+  "category": "Passive",
+  "style": "iec",
+  "grid_size": [4, 4],
+  "terminals": [
+    {"name": "p1", "grid_pos": [-2, -1]},
+    {"name": "p2", "grid_pos": [-2, 1]},
+    {"name": "s1", "grid_pos": [2, -1]},
+    {"name": "s2", "grid_pos": [2, 1]}
+  ],
+  "label_offset": [0, -2.3],
+  "value_offset": [0, 2.3],
+  "default_svg": "transformer.svg",
+  "states": {}
+}

@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
-from typing import Sequence
+import math
+from typing import TYPE_CHECKING, Any, Sequence
 
 from PySide6.QtCore import QPointF, QRectF, Qt
 from PySide6.QtGui import (
+    QBrush,
     QColor,
+    QFont,
     QPainter,
     QPainterPath,
     QPainterPathStroker,
@@ -25,14 +28,19 @@ from circuitsim.canvas.connectivity import (
     WireSpec,
     simplify_orthogonal_points,
 )
+from circuitsim.wiring.model import FreeEnd
+
+if TYPE_CHECKING:
+    from circuitsim.wiring.model import Attachment
 
 
 class WireItem(QGraphicsObject):
     """Orthogonal wire polyline on the schematic canvas.
 
     Stores its vertices in scene pixel coordinates (`points`) while keeping
-    `pos() == (0, 0)`. Supports selection, theme switching, and a dashed
-    live-preview mode while the user is routing a new wire.
+    `pos() == (0, 0)`. Supports selection, theme switching, attachment metadata
+    (`end_a`, `end_b`, `hints`) from `WireGraph`, and a dashed live-preview mode
+    while the user is routing a new wire.
     """
 
     def __init__(
@@ -42,18 +50,34 @@ class WireItem(QGraphicsObject):
         *,
         theme: ThemeMode = ThemeMode.DARK,
         is_preview: bool = False,
+        end_a: Attachment | None = None,
+        end_b: Attachment | None = None,
+        hints: Sequence[tuple[int, int]] = (),
+        net_label: str = "",
     ) -> None:
         super().__init__()
         self.wire_id: str = wire_id
         self.theme: ThemeMode = theme
         self.is_preview: bool = is_preview
+        self.end_a: Attachment | None = end_a
+        self.end_b: Attachment | None = end_b
+        self.hints: tuple[PointPx, ...] = tuple((int(p[0]), int(p[1])) for p in hints)
+        self.net_label: str = str(net_label or "").strip()
         self._points: tuple[PointPx, ...] = simplify_orthogonal_points(
             points, snap=True
         )
         self._path: QPainterPath = QPainterPath()
         self._hit_shape: QPainterPath = QPainterPath()
+        self._cached_bounding_rect: QRectF = QRectF(0.0, 0.0, 1.0, 1.0)
         self.diagnostic_severity: str | None = None
         self.diagnostic_message: str = ""
+        self.voltage_color_enabled: bool = False
+        self.current_dots_enabled: bool = False
+        self.overlay_rgb: tuple[int, int, int] | None = None
+        self.dot_velocity: float = 0.0
+        self.dot_phase: float = 0.0
+        self.show_probe_badge: bool = False
+        self.probe_badge_text: str = ""
         self._rebuild_paths()
 
         if not is_preview:
@@ -80,6 +104,49 @@ class WireItem(QGraphicsObject):
         self._rebuild_paths()
         self.update()
 
+    def set_net_label(self, label: str) -> None:
+        cleaned = str(label or "").strip()
+        if cleaned == self.net_label:
+            return
+        self.prepareGeometryChange()
+        self.net_label = cleaned
+        self._rebuild_paths()
+        self.update()
+
+    def set_probe_badge(self, enabled: bool, text: str = "") -> None:
+        """Toggle on-canvas live voltage/current probe badge visibility and text."""
+        text_s = str(text or "")
+        if self.show_probe_badge == bool(enabled) and self.probe_badge_text == text_s:
+            return
+        self.prepareGeometryChange()
+        self.show_probe_badge = bool(enabled)
+        self.probe_badge_text = text_s
+        self._rebuild_paths()
+        self.update()
+
+    def _polyline_midpoint(self) -> QPointF:
+        if len(self._points) < 2:
+            return QPointF(0.0, 0.0)
+        segs: list[tuple[tuple[int, int], tuple[int, int], float]] = []
+        total = 0.0
+        for p0, p1 in zip(self._points, self._points[1:]):
+            sl = math.hypot(float(p1[0] - p0[0]), float(p1[1] - p0[1]))
+            if sl > 0.0:
+                segs.append((p0, p1, sl))
+                total += sl
+        if total <= 0.0:
+            p0 = self._points[0]
+            return QPointF(float(p0[0]), float(p0[1]))
+        half = 0.5 * total
+        acc = 0.0
+        for p0, p1, sl in segs:
+            if acc + sl >= half:
+                t = (half - acc) / sl
+                return QPointF(p0[0] + (p1[0] - p0[0]) * t, p0[1] + (p1[1] - p0[1]) * t)
+            acc += sl
+        pn = self._points[-1]
+        return QPointF(float(pn[0]), float(pn[1]))
+
     def set_theme(self, theme: ThemeMode) -> None:
         """Update theme color and repaint."""
         self.theme = theme
@@ -104,6 +171,73 @@ class WireItem(QGraphicsObject):
             return "#FFA726"
         return None
 
+    def set_overlay_state(
+        self,
+        *,
+        voltage_color_enabled: bool | None = None,
+        current_dots_enabled: bool | None = None,
+        overlay_rgb: tuple[int, int, int] | None = None,
+        dot_velocity: float | None = None,
+        dot_phase: float | None = None,
+        clear_overlay: bool = False,
+    ) -> None:
+        """Update live voltage color and current dot animation parameters on this wire."""
+        if voltage_color_enabled is not None:
+            self.voltage_color_enabled = bool(voltage_color_enabled)
+        if current_dots_enabled is not None:
+            self.current_dots_enabled = bool(current_dots_enabled)
+        if clear_overlay:
+            self.overlay_rgb = None
+            self.dot_velocity = 0.0
+            self.dot_phase = 0.0
+        else:
+            if overlay_rgb is not None:
+                self.overlay_rgb = (int(overlay_rgb[0]), int(overlay_rgb[1]), int(overlay_rgb[2]))
+            if dot_velocity is not None:
+                self.dot_velocity = float(dot_velocity)
+            if dot_phase is not None:
+                self.dot_phase = float(dot_phase) % 1.0
+        self.update()
+
+    def advance_dot_phase(self, step_scale: float = 0.12) -> None:
+        """Advance current dot phase along the polyline according to signed `dot_velocity`."""
+        if not self.current_dots_enabled or abs(self.dot_velocity) <= 0.0:
+            return
+        self.dot_phase = (self.dot_phase + self.dot_velocity * float(step_scale)) % 1.0
+        self.update()
+
+    def _sample_dot_positions(self, spacing_px: float = 28.0) -> list[QPointF]:
+        """Return animated dot positions along `self._points` shifted by normalized `dot_phase`."""
+        if len(self._points) < 2:
+            return []
+        segments: list[tuple[float, float, float, float, float]] = []
+        total_len = 0.0
+        for idx in range(len(self._points) - 1):
+            x0, y0 = float(self._points[idx][0]), float(self._points[idx][1])
+            x1, y1 = float(self._points[idx + 1][0]), float(self._points[idx + 1][1])
+            seg_len = math.hypot(x1 - x0, y1 - y0)
+            if seg_len > 1e-6:
+                segments.append((x0, y0, x1, y1, seg_len))
+                total_len += seg_len
+        if total_len < 6.0:
+            return []
+        step = max(12.0, float(spacing_px))
+        offset = (self.dot_phase % 1.0) * step
+        positions: list[QPointF] = []
+        s = offset
+        seg_idx = 0
+        seg_start = 0.0
+        while s <= total_len and seg_idx < len(segments):
+            x0, y0, x1, y1, sl = segments[seg_idx]
+            if s > seg_start + sl:
+                seg_start += sl
+                seg_idx += 1
+                continue
+            t = (s - seg_start) / sl
+            positions.append(QPointF(x0 + (x1 - x0) * t, y0 + (y1 - y0) * t))
+            s += step
+        return positions
+
     def to_wire_spec(self) -> WireSpec:
         """Convert to a pure-Python `WireSpec` for connectivity extraction."""
         return WireSpec(wire_id=self.wire_id, points=self._points)
@@ -122,11 +256,23 @@ class WireItem(QGraphicsObject):
         stroker.setCapStyle(Qt.PenCapStyle.RoundCap)
         stroker.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
         self._hit_shape = stroker.createStroke(path)
+        base_rect = (
+            QRectF(0.0, 0.0, 1.0, 1.0)
+            if self._path.isEmpty()
+            else self._hit_shape.boundingRect().adjusted(-4.0, -4.0, 4.0, 4.0)
+        )
+        if self.net_label and len(self._points) >= 2:
+            mp = self._polyline_midpoint()
+            flag_w = max(36.0, float(len(self.net_label)) * 7.5 + 16.0)
+            base_rect = base_rect.united(QRectF(mp.x() - 4.0, mp.y() - 26.0, flag_w + 10.0, 28.0))
+        if self.show_probe_badge and len(self._points) >= 2:
+            mp = self._polyline_midpoint()
+            pill_w = max(92.0, float(len(self.probe_badge_text or "V: -- | I: --")) * 6.8 + 16.0)
+            base_rect = base_rect.united(QRectF(mp.x() - pill_w * 0.5, mp.y() + 6.0, pill_w + 8.0, 24.0))
+        self._cached_bounding_rect = base_rect
 
     def boundingRect(self) -> QRectF:
-        if self._path.isEmpty():
-            return QRectF(0.0, 0.0, 1.0, 1.0)
-        return self._hit_shape.boundingRect().adjusted(-4.0, -4.0, 4.0, 4.0)
+        return self._cached_bounding_rect
 
     def shape(self) -> QPainterPath:
         return self._hit_shape
@@ -188,6 +334,7 @@ class WireItem(QGraphicsObject):
         palette: ThemePalette = get_theme_palette(self.theme)
         painter.save()
 
+        active_color: QColor | None = None
         if self.is_preview:
             pen = QPen(
                 QColor(palette.terminal_hover),
@@ -205,22 +352,23 @@ class WireItem(QGraphicsObject):
                     QPointF(float(ep[0]), float(ep[1])), 5.0, 5.0
                 )
         elif self.isSelected():
+            active_color = QColor(palette.selection_accent)
             # Subtle outer glow + accent wire stroke
             glow_pen = QPen(
-                QColor(palette.selection_accent),
+                active_color,
                 5.0,
                 Qt.PenStyle.SolidLine,
                 Qt.PenCapStyle.RoundCap,
                 Qt.PenJoinStyle.RoundJoin,
             )
-            glow_col = QColor(palette.selection_accent)
+            glow_col = QColor(active_color)
             glow_col.setAlpha(90)
             glow_pen.setColor(glow_col)
             painter.setPen(glow_pen)
             painter.drawPath(self._path)
 
             main_pen = QPen(
-                QColor(palette.selection_accent),
+                active_color,
                 2.4,
                 Qt.PenStyle.SolidLine,
                 Qt.PenCapStyle.RoundCap,
@@ -229,12 +377,12 @@ class WireItem(QGraphicsObject):
             painter.setPen(main_pen)
             painter.drawPath(self._path)
         elif self.diagnostic_severity in ("error", "warning"):
-            diag_col = (
+            active_color = (
                 QColor("#FF5252")
                 if self.diagnostic_severity == "error"
                 else QColor("#FFA726")
             )
-            glow_col = QColor(diag_col)
+            glow_col = QColor(active_color)
             glow_col.setAlpha(85)
             painter.setPen(
                 QPen(
@@ -248,7 +396,7 @@ class WireItem(QGraphicsObject):
             painter.drawPath(self._path)
             painter.setPen(
                 QPen(
-                    diag_col,
+                    active_color,
                     2.4,
                     Qt.PenStyle.SolidLine,
                     Qt.PenCapStyle.RoundCap,
@@ -257,15 +405,91 @@ class WireItem(QGraphicsObject):
             )
             painter.drawPath(self._path)
         else:
+            if self.voltage_color_enabled and self.overlay_rgb is not None:
+                active_color = QColor(*self.overlay_rgb)
+                pen_w = 2.6
+            else:
+                active_color = QColor(palette.symbol_stroke)
+                pen_w = 2.2
             pen = QPen(
-                QColor(palette.symbol_stroke),
-                2.2,
+                active_color,
+                pen_w,
                 Qt.PenStyle.SolidLine,
                 Qt.PenCapStyle.RoundCap,
                 Qt.PenJoinStyle.MiterJoin,
             )
             painter.setPen(pen)
             painter.drawPath(self._path)
+
+        if not self.is_preview and self.current_dots_enabled and abs(self.dot_velocity) > 0.0:
+            dot_pts = self._sample_dot_positions()
+            if dot_pts:
+                painter.setPen(Qt.PenStyle.NoPen)
+                painter.setBrush(QBrush(QColor("#FFD166")))
+                for dp in dot_pts:
+                    painter.drawEllipse(dp, 2.5, 2.5)
+
+        sc = self.scene()
+        suppress_chrome = bool(sc is not None and getattr(sc, "_suppress_export_chrome", False))
+        if not self.is_preview and active_color is not None and not suppress_chrome:
+            marker_pen = QPen(active_color, 1.6)
+            painter.setPen(marker_pen)
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            if isinstance(self.end_a, FreeEnd):
+                p0 = self._points[0]
+                painter.drawEllipse(QPointF(float(p0[0]), float(p0[1])), 3.5, 3.5)
+            if isinstance(self.end_b, FreeEnd):
+                pn = self._points[-1]
+                painter.drawEllipse(QPointF(float(pn[0]), float(pn[1])), 3.5, 3.5)
+
+        if not self.is_preview and self.net_label:
+            mp = self._polyline_midpoint()
+            lbl_txt = self.net_label.strip().upper()
+            flag_w = max(28.0, float(len(lbl_txt)) * 7.2 + 14.0)
+            flag_h = 17.0
+            x0, y0 = mp.x(), mp.y() - 3.0
+            flag = QPainterPath()
+            flag.moveTo(x0, y0)
+            flag.lineTo(x0 + 6.0, y0 - flag_h * 0.5)
+            flag.lineTo(x0 + 6.0 + flag_w, y0 - flag_h * 0.5)
+            flag.lineTo(x0 + 6.0 + flag_w, y0 + flag_h * 0.5)
+            flag.lineTo(x0 + 6.0, y0 + flag_h * 0.5)
+            flag.closeSubpath()
+            is_dark = self.theme == ThemeMode.DARK
+            fill_c = QColor("#1f2937") if is_dark else QColor("#eef2ff")
+            border_c = QColor("#38bdf8") if is_dark else QColor("#2563eb")
+            txt_c = QColor("#f8fafc") if is_dark else QColor("#1e293b")
+            painter.setPen(QPen(border_c, 1.3))
+            painter.setBrush(QBrush(fill_c))
+            painter.drawPath(flag)
+            f = QFont("Segoe UI", 8)
+            f.setBold(True)
+            painter.setFont(f)
+            painter.setPen(txt_c)
+            painter.drawText(
+                QRectF(x0 + 7.0, y0 - flag_h * 0.5, flag_w - 2.0, flag_h),
+                Qt.AlignmentFlag.AlignCenter,
+                lbl_txt,
+            )
+
+        if not self.is_preview and self.show_probe_badge and not suppress_chrome:
+            mp = self._polyline_midpoint()
+            txt = self.probe_badge_text or "V: -- V | I: -- A"
+            pill_w = max(92.0, float(len(txt)) * 6.4 + 16.0)
+            pill_h = 18.0
+            pill_rect = QRectF(mp.x() - pill_w * 0.5, mp.y() + 8.0, pill_w, pill_h)
+            is_dark = self.theme == ThemeMode.DARK
+            fill_c = QColor("#0f172a") if is_dark else QColor("#fffbeb")
+            border_c = QColor("#f59e0b")
+            txt_c = QColor("#fef3c7") if is_dark else QColor("#78350f")
+            painter.setPen(QPen(border_c, 1.3))
+            painter.setBrush(QBrush(fill_c))
+            painter.drawRoundedRect(pill_rect, 4.0, 4.0)
+            pf = QFont("Consolas", 8)
+            pf.setBold(True)
+            painter.setFont(pf)
+            painter.setPen(txt_c)
+            painter.drawText(pill_rect, Qt.AlignmentFlag.AlignCenter, txt)
 
         painter.restore()
 
@@ -278,14 +502,38 @@ class JunctionItem(QGraphicsObject):
         position: QPointF,
         theme: ThemeMode | str = ThemeMode.DARK,
         parent: Any = None,
+        *,
+        junction_id: str | None = None,
+        net_label: str = "",
     ) -> None:
         super().__init__(parent)
         self.setPos(position)
         self.theme: ThemeMode | str = theme
+        self.junction_id: str | None = junction_id
+        self.net_label: str = str(net_label or "").strip()
         self._paint_error_logged: bool = False
+        self.setZValue(6.0)
+        self.setFlags(QGraphicsItem.GraphicsItemFlag.ItemIsSelectable)
+
+    def set_theme(self, theme: ThemeMode | str) -> None:
+        """Update theme color and repaint."""
+        self.theme = theme
+        self.update()
+
+    def set_net_label(self, label: str) -> None:
+        cleaned = str(label or "").strip()
+        if cleaned == self.net_label:
+            return
+        self.prepareGeometryChange()
+        self.net_label = cleaned
+        self.update()
 
     def boundingRect(self) -> QRectF:
-        return QRectF(-6.0, -6.0, 12.0, 12.0)
+        base = QRectF(-7.0, -7.0, 14.0, 14.0)
+        if self.net_label:
+            w = max(36.0, float(len(self.net_label)) * 7.5 + 16.0)
+            base = base.united(QRectF(0.0, -24.0, w + 10.0, 26.0))
+        return base
 
     def paint(
         self,
@@ -333,9 +581,41 @@ class JunctionItem(QGraphicsObject):
         _ = (option, widget)
         palette = get_theme_palette(self.theme)
         painter.save()
+        if self.isSelected():
+            painter.setPen(QPen(QColor(palette.selection_accent), 1.5))
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            painter.drawEllipse(QPointF(0.0, 0.0), 5.8, 5.8)
         junc_color = QColor(palette.symbol_stroke)
         painter.setPen(QPen(junc_color, 1.2))
         painter.setBrush(QBrush(junc_color))
         painter.drawEllipse(QPointF(0.0, 0.0), 4.2, 4.2)
+        if self.net_label:
+            lbl_txt = self.net_label.strip().upper()
+            flag_w = max(28.0, float(len(lbl_txt)) * 7.2 + 14.0)
+            flag_h = 17.0
+            x0, y0 = 4.0, -8.0
+            flag = QPainterPath()
+            flag.moveTo(x0, y0)
+            flag.lineTo(x0 + 6.0, y0 - flag_h * 0.5)
+            flag.lineTo(x0 + 6.0 + flag_w, y0 - flag_h * 0.5)
+            flag.lineTo(x0 + 6.0 + flag_w, y0 + flag_h * 0.5)
+            flag.lineTo(x0 + 6.0, y0 + flag_h * 0.5)
+            flag.closeSubpath()
+            is_dark = self.theme == ThemeMode.DARK
+            fill_c = QColor("#1f2937") if is_dark else QColor("#eef2ff")
+            border_c = QColor("#38bdf8") if is_dark else QColor("#2563eb")
+            txt_c = QColor("#f8fafc") if is_dark else QColor("#1e293b")
+            painter.setPen(QPen(border_c, 1.3))
+            painter.setBrush(QBrush(fill_c))
+            painter.drawPath(flag)
+            f = QFont("Segoe UI", 8)
+            f.setBold(True)
+            painter.setFont(f)
+            painter.setPen(txt_c)
+            painter.drawText(
+                QRectF(x0 + 7.0, y0 - flag_h * 0.5, flag_w - 2.0, flag_h),
+                Qt.AlignmentFlag.AlignCenter,
+                lbl_txt,
+            )
         painter.restore()
 

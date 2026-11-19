@@ -6,7 +6,10 @@ from PySide6.QtCore import QByteArray, QMimeData, QPointF, QSize, Qt, Signal
 from PySide6.QtGui import QDrag
 from PySide6.QtWidgets import (
     QAbstractItemView,
+    QHBoxLayout,
     QLineEdit,
+    QPushButton,
+    QSizePolicy,
     QTreeWidget,
     QTreeWidgetItem,
     QVBoxLayout,
@@ -22,17 +25,21 @@ CATEGORY_ORDER: tuple[str, ...] = (
     "Passive",
     "Switches",
     "Semiconductors",
+    "Active",
     "Logic Gates",
+    "Digital",
+    "Mixed-Signal",
     "Loads",
     "Instruments",
 )
 
 # Explicit component ordering within each category (matching Section 3.1 of spec)
 COMPONENT_ORDER_IN_CATEGORY: dict[str, tuple[str, ...]] = {
-    "Sources": ("dc_voltage", "ac_voltage", "dc_current", "ground"),
-    "Passive": ("resistor", "capacitor", "inductor"),
-    "Switches": ("switch",),
-    "Semiconductors": ("led",),
+    "Sources": ("dc_voltage", "ac_voltage", "wav_voltage", "dc_current", "ground"),
+    "Passive": ("resistor", "capacitor", "inductor", "potentiometer", "transformer"),
+    "Switches": ("switch", "spdt_relay", "fuse"),
+    "Semiconductors": ("diode", "zener_diode", "led", "npn_bjt", "pnp_bjt", "nmos", "pmos", "opamp"),
+    "Active": ("opamp", "npn_bjt", "pnp_bjt", "nmos", "pmos"),
     "Logic Gates": (
         "gate_not",
         "gate_and",
@@ -42,8 +49,10 @@ COMPONENT_ORDER_IN_CATEGORY: dict[str, tuple[str, ...]] = {
         "gate_xor",
         "gate_xnor",
     ),
+    "Digital": ("d_flipflop", "jk_flipflop", "counter_4bit", "seven_seg_display"),
+    "Mixed-Signal": ("ne555", "comparator", "mcu"),
     "Loads": ("lightbulb",),
-    "Instruments": ("voltmeter", "ammeter"),
+    "Instruments": ("voltmeter", "ammeter", "oscilloscope"),
 }
 
 
@@ -62,6 +71,11 @@ class _PaletteTreeWidget(QTreeWidget):
         self.setAnimated(True)
         self.setIndentation(12)
         self.setUniformRowHeights(True)
+        self.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        self.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.setVerticalScrollMode(QAbstractItemView.ScrollMode.ScrollPerPixel)
+        self.setMinimumHeight(0)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
 
     def startDrag(self, supported_actions: Qt.DropAction) -> None:
         _ = supported_actions
@@ -101,23 +115,46 @@ class ComponentPaletteWidget(QWidget):
         super().__init__(parent)
         self.symbol_library: SymbolLibrary = symbol_library
         self.theme: ThemeMode = theme
+        self._saved_expanded_states: dict[str, bool] | None = None
+        self.setMinimumHeight(0)
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(6, 6, 6, 6)
         layout.setSpacing(4)
 
         self.search_input = QLineEdit()
-        self.search_input.setPlaceholderText("Search components (e.g. voltmeter, resistor)...")
+        self.search_input.setPlaceholderText("Search components (e.g. NPN, Op-Amp, 555)...")
         self.search_input.setClearButtonEnabled(True)
         self.search_input.textChanged.connect(self._apply_search_filter)
         layout.addWidget(self.search_input)
 
+        btn_row = QHBoxLayout()
+        btn_row.setContentsMargins(0, 0, 0, 0)
+        btn_row.setSpacing(4)
+        self.btn_expand_all = QPushButton("Expand All", self)
+        self.btn_expand_all.setToolTip("Expand all component categories")
+        self.btn_expand_all.clicked.connect(self.expand_all)
+        self.btn_collapse_all = QPushButton("Collapse All", self)
+        self.btn_collapse_all.setToolTip("Collapse all component categories")
+        self.btn_collapse_all.clicked.connect(self.collapse_all)
+        btn_row.addWidget(self.btn_expand_all)
+        btn_row.addWidget(self.btn_collapse_all)
+        layout.addLayout(btn_row)
+
         self.tree = _PaletteTreeWidget(symbol_library, self)
         self.tree.theme = theme
         self.tree.itemDoubleClicked.connect(self._on_item_double_clicked)
-        layout.addWidget(self.tree)
+        layout.addWidget(self.tree, 1)
 
         self._populate_tree()
+
+    def expand_all(self) -> None:
+        """Expand every category in the component palette tree."""
+        self.tree.expandAll()
+
+    def collapse_all(self) -> None:
+        """Collapse every category in the component palette tree."""
+        self.tree.collapseAll()
 
     def set_theme(self, theme: ThemeMode) -> None:
         """Rebuild palette icons for the active theme."""
@@ -169,6 +206,13 @@ class ComponentPaletteWidget(QWidget):
 
     def _apply_search_filter(self, query: str) -> None:
         needle = query.strip().lower()
+        if needle and self._saved_expanded_states is None:
+            self._saved_expanded_states = {
+                self.tree.topLevelItem(i).text(0): self.tree.topLevelItem(i).isExpanded()
+                for i in range(self.tree.topLevelItemCount())
+                if self.tree.topLevelItem(i) is not None
+            }
+
         for i in range(self.tree.topLevelItemCount()):
             cat_item = self.tree.topLevelItem(i)
             if cat_item is None:
@@ -191,6 +235,16 @@ class ComponentPaletteWidget(QWidget):
                 if matches:
                     visible_children += 1
             cat_item.setHidden(visible_children == 0)
+            if needle and visible_children > 0:
+                cat_item.setExpanded(True)
+
+        if not needle and self._saved_expanded_states is not None:
+            for i in range(self.tree.topLevelItemCount()):
+                cat_item = self.tree.topLevelItem(i)
+                if cat_item is None:
+                    continue
+                cat_item.setExpanded(self._saved_expanded_states.get(cat_item.text(0), True))
+            self._saved_expanded_states = None
 
     def _on_item_double_clicked(self, item: QTreeWidgetItem, column: int) -> None:
         _ = column

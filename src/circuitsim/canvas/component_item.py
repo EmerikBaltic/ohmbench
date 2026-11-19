@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import math
+
 from PySide6.QtCore import QPointF, QRectF, Qt, QVariantAnimation
 from PySide6.QtGui import (
     QBrush,
@@ -11,6 +13,7 @@ from PySide6.QtGui import (
     QPainter,
     QPainterPath,
     QPen,
+    QPolygonF,
     QRadialGradient,
     QTransform,
 )
@@ -41,23 +44,41 @@ from circuitsim.canvas.symbol_renderer import SymbolLibrary
 from circuitsim.components import (
     ACVoltageSource,
     Ammeter,
+    BJTBase,
     Capacitor,
+    Comparator,
     Component,
+    Counter4Bit,
     DCCurrentSource,
     DCVoltageSource,
+    DFlipFlop,
+    DigitalSequentialBlock,
+    Diode,
+    Fuse,
     Ground,
     Inductor,
+    JKFlipFlop,
     LED,
     Lightbulb,
+    MOSFETBase,
+    NE555,
+    OpAmp,
+    Oscilloscope,
+    Potentiometer,
     Resistor,
+    SPDTRelay,
+    SevenSegDisplay,
     Switch,
+    Transformer,
     Voltmeter,
+    ZenerDiode,
 )
 from circuitsim.dialogs.value_parser import format_engineering_value
 from circuitsim.engine.simulation_session import ComponentTelemetry
 
 COMPONENT_PREFIXES: dict[str, str] = {
     "resistor": "R",
+    "potentiometer": "POT",
     "capacitor": "C",
     "inductor": "L",
     "dc_voltage": "V",
@@ -65,6 +86,22 @@ COMPONENT_PREFIXES: dict[str, str] = {
     "dc_current": "I",
     "ground": "GND",
     "switch": "SW",
+    "spdt_relay": "K",
+    "fuse": "F",
+    "transformer": "T",
+    "diode": "D",
+    "zener_diode": "DZ",
+    "npn_bjt": "Q",
+    "pnp_bjt": "Q",
+    "nmos": "M",
+    "pmos": "M",
+    "opamp": "U",
+    "comparator": "U",
+    "ne555": "U",
+    "d_flipflop": "U",
+    "jk_flipflop": "U",
+    "counter_4bit": "U",
+    "seven_seg_display": "DS",
     "gate_not": "U",
     "gate_and": "U",
     "gate_or": "U",
@@ -75,6 +112,8 @@ COMPONENT_PREFIXES: dict[str, str] = {
     "lightbulb": "B",
     "voltmeter": "VM",
     "ammeter": "A",
+    "mcu": "U",
+    "oscilloscope": "OSC",
 }
 
 
@@ -86,6 +125,8 @@ def format_component_value_summary(comp: Component) -> str:
     """Return a concise engineering-notation summary string for canvas display."""
     if isinstance(comp, Resistor):
         return format_engineering_value(comp.resistance, "Ω")
+    if isinstance(comp, Potentiometer):
+        return f"{format_engineering_value(comp.resistance, 'Ω')} ({comp.alpha * 100.0:.0f}%)"
     if isinstance(comp, Capacitor):
         return format_engineering_value(comp.capacitance, "F")
     if isinstance(comp, Inductor):
@@ -102,10 +143,34 @@ def format_component_value_summary(comp: Component) -> str:
         if comp.arcing and not comp.closed:
             return "ARC!"
         return "ON" if comp.closed else "OFF"
+    if isinstance(comp, Fuse):
+        return comp.display_value
+    if isinstance(comp, SPDTRelay):
+        return comp.display_value
+    if isinstance(comp, Transformer):
+        return comp.display_value
     if isinstance(comp, Lightbulb):
         if comp.burned_out:
             return "BURNED OUT"
         return f"{comp.rated_power:g}W / {comp.rated_voltage:g}V"
+    if isinstance(comp, ZenerDiode):
+        return f"{comp.v_z:g} V"
+    if isinstance(comp, Diode):
+        return comp.model_name
+    if isinstance(comp, BJTBase):
+        return f"β={comp.beta_f:g}"
+    if isinstance(comp, MOSFETBase):
+        return f"Vth={comp.v_th:g}V"
+    if isinstance(comp, Comparator):
+        return comp.display_value
+    if isinstance(comp, OpAmp):
+        return f"A={comp.a_ol:.0e}"
+    if isinstance(comp, NE555):
+        return comp.display_value
+    if isinstance(comp, DigitalSequentialBlock):
+        return comp.display_value
+    if isinstance(comp, Oscilloscope):
+        return comp.display_value
     if isinstance(comp, (Voltmeter, Ammeter)):
         return comp.format_reading()
     if isinstance(comp, LogicGate):
@@ -152,7 +217,7 @@ def rect_intersects_segment(
     # Orthogonal vertical segment
     if abs(x1 - x2) < 1e-6:
         seg_x = x1
-        if rx1 <= seg_x <= ry2:
+        if rx1 <= seg_x <= rx2:
             seg_min_y = min(y1, y2)
             seg_max_y = max(y1, y2)
             if max(seg_min_y, ry1) <= min(seg_max_y, ry2):
@@ -210,8 +275,16 @@ class ComponentItem(QGraphicsObject):
         self.diagnostic_severity: str | None = None  # "error", "warning", or None
         self.diagnostic_message: str = ""
         self.diagnostic_code: str = ""
+        self.stress_level: str = "normal"  # "normal", "warning", "overload"
+        self.stress_reason: str = ""
+        self.stress_utilization_pct: float = 0.0
+        self.stress_warnings_enabled: bool = True
+        self._pinout_overlay_enabled: bool = False
         self.is_unconnected: bool = False
         self.label_position: str = "default"
+        self._cached_bounds_key: tuple[object, ...] | None = None
+        self._cached_bounding_rect: QRectF | None = None
+        self._bounding_rect_recompute_count: int = 0
 
         # Switch lever animation state
         self._lever_angle_deg: float = (
@@ -220,6 +293,10 @@ class ComponentItem(QGraphicsObject):
             else self.OPEN_LEVER_ANGLE_DEG
         )
         self._lever_anim: QVariantAnimation | None = None
+
+        # Blown fuse POP! starburst animation state
+        self._fuse_pop_progress: float = 0.0
+        self._fuse_pop_anim: QVariantAnimation | None = None
 
         self.setToolTip(self.get_live_tooltip(is_running=False))
         self.setAcceptHoverEvents(True)
@@ -247,6 +324,10 @@ class ComponentItem(QGraphicsObject):
         """Return active symbol state name (e.g. 'open' or 'closed' for Switch)."""
         if isinstance(self.component, Switch):
             return "closed" if self.component.closed else "open"
+        if isinstance(self.component, Fuse):
+            return "blown" if self.component.is_blown else "intact"
+        if isinstance(self.component, SPDTRelay):
+            return "closed" if self.component.energized else "open"
         if isinstance(self.component, Lightbulb):
             if self.component.burned_out:
                 return "burned_out"
@@ -285,9 +366,22 @@ class ComponentItem(QGraphicsObject):
 
     def get_live_tooltip(self, is_running: bool = False) -> str:
         """Return formatted live tooltip text for this component."""
+        if isinstance(self.component, Oscilloscope):
+            osc = self.component
+            lines = [
+                f"{osc.name} (DSO-1062D)",
+                "Double-click to open DSO",
+            ]
+            if is_running:
+                lines.append(
+                    f"CH1: {format_engineering_value(osc.v_ch1, 'V')} | CH2: {format_engineering_value(osc.v_ch2, 'V')}"
+                )
+            return "\n".join(lines)
         if isinstance(self.component, LED):
             led = self.component
             lines: list[str] = []
+            if self.stress_level in ("overload", "warning") and self.stress_reason:
+                lines.append(f"{self.stress_level.upper()}: {self.stress_reason}")
             if self.diagnostic_message:
                 lines.append(f"Problem: {self.diagnostic_message}")
             lines.append(f"Name: {led.name}")
@@ -314,6 +408,8 @@ class ComponentItem(QGraphicsObject):
             return "\n".join(lines)
 
         lines: list[str] = []
+        if self.stress_level in ("overload", "warning") and self.stress_reason:
+            lines.append(f"{self.stress_level.upper()}: {self.stress_reason}")
         if self.diagnostic_message:
             lines.append(f"Problem: {self.diagnostic_message}")
         lines.append(f"Name: {self.component.name}")
@@ -416,14 +512,67 @@ class ComponentItem(QGraphicsObject):
             self.logic_level = telemetry.logic_level
             if telemetry.logic_level in ("H", "L"):
                 self.component._output_level = telemetry.logic_level == "H"
+        elif isinstance(self.component, SevenSegDisplay):
+            self.component.decoded_hex_char = telemetry.decoded_hex_char
+            self.component.active_segments = telemetry.active_segments
+            self.component.value_nibble = telemetry.value_nibble
+        elif isinstance(self.component, (DFlipFlop, JKFlipFlop)):
+            self.component.state_q = telemetry.state_q
+        elif isinstance(self.component, Counter4Bit):
+            self.component.count = telemetry.count
+        elif isinstance(self.component, Fuse):
+            was_blown = self.component.is_blown
+            self.component.is_blown = telemetry.is_blown
+            if not was_blown and telemetry.is_blown and hasattr(self, "trigger_fuse_pop_animation"):
+                self.trigger_fuse_pop_animation()
+        elif isinstance(self.component, SPDTRelay):
+            self.component.energized = telemetry.energized
+        elif isinstance(self.component, NE555):
+            self.component.output_high = telemetry.output_high
 
         self.setToolTip(self.get_live_tooltip(is_running=True))
         self.update()
+
+    def set_stress_state(
+        self,
+        level: str | None,
+        reason: str = "",
+        utilization_pct: float = 0.0,
+        *,
+        warnings_enabled: bool | None = None,
+    ) -> None:
+        """Update component stress/overload badge state (F4)."""
+        norm_level = (level or "normal").lower()
+        changed = (
+            self.stress_level != norm_level
+            or self.stress_reason != reason
+            or abs(self.stress_utilization_pct - utilization_pct) > 1e-9
+            or (warnings_enabled is not None and self.stress_warnings_enabled != bool(warnings_enabled))
+        )
+        self.stress_level = norm_level
+        self.stress_reason = reason
+        self.stress_utilization_pct = float(utilization_pct)
+        if warnings_enabled is not None:
+            self.stress_warnings_enabled = bool(warnings_enabled)
+        if isinstance(self.component, Fuse):
+            if norm_level == "overload" and "blown" in reason.lower() and not self.component.is_blown:
+                self.component.is_blown = True
+                self.trigger_fuse_pop_animation()
+        if changed:
+            self.setToolTip(
+                self.get_live_tooltip(
+                    is_running=(self.live_display_value is not None or norm_level != "normal")
+                )
+            )
+            self.update()
 
     def reset_live_telemetry(self) -> None:
         """Clear live telemetry and restore initial component state (when simulation stops)."""
         self.live_display_value = None
         self.logic_level = ""
+        self.stress_level = "normal"
+        self.stress_reason = ""
+        self.stress_utilization_pct = 0.0
         self.component.reset_state()
         if isinstance(self.component, Switch):
             self._lever_angle_deg = (
@@ -431,6 +580,9 @@ class ComponentItem(QGraphicsObject):
                 if self.component.closed
                 else self.OPEN_LEVER_ANGLE_DEG
             )
+        if self._fuse_pop_anim is not None:
+            self._fuse_pop_anim.stop()
+        self._fuse_pop_progress = 0.0
         self.setToolTip(self.get_live_tooltip(is_running=False))
         self.setAcceptHoverEvents(True)
         self._is_hovered: bool = False
@@ -465,6 +617,24 @@ class ComponentItem(QGraphicsObject):
     def _on_lever_anim_step(self, value: object) -> None:
         if isinstance(value, (int, float)):
             self._lever_angle_deg = float(value)
+            self.update()
+
+    def trigger_fuse_pop_animation(self, *, duration_ms: int = 400) -> None:
+        """Trigger a ~400 ms expanding starburst flash when a Fuse blows."""
+        self._fuse_pop_progress = 1.0
+        if self._fuse_pop_anim is None:
+            self._fuse_pop_anim = QVariantAnimation(self)
+            self._fuse_pop_anim.valueChanged.connect(self._on_fuse_pop_step)
+        self._fuse_pop_anim.stop()
+        self._fuse_pop_anim.setDuration(max(50, int(duration_ms)))
+        self._fuse_pop_anim.setStartValue(1.0)
+        self._fuse_pop_anim.setEndValue(0.0)
+        self._fuse_pop_anim.start()
+        self.update()
+
+    def _on_fuse_pop_step(self, value: object) -> None:
+        if isinstance(value, (int, float)):
+            self._fuse_pop_progress = max(0.0, min(1.0, float(value)))
             self.update()
 
     def hoverEnterEvent(self, event: QGraphicsSceneHoverEvent) -> None:
@@ -731,8 +901,299 @@ class ComponentItem(QGraphicsObject):
         path.setFillRule(Qt.FillRule.WindingFill)
         return path
 
+    def invalidate_geometry_cache(self) -> None:
+        """Invalidate cached `boundingRect()` so Qt updates spatial bounds cleanly."""
+        self.prepareGeometryChange()
+        self._cached_bounds_key = None
+        self._cached_bounding_rect = None
+
+    def set_pinout_overlay_enabled(self, enabled: bool) -> None:
+        """Toggle physical package & pinout markings without mutating wiring topology."""
+        val = bool(enabled)
+        if val != self._pinout_overlay_enabled:
+            self._pinout_overlay_enabled = val
+            self.invalidate_geometry_cache()
+            self.update()
+
+    @staticmethod
+    def default_pin_labels(comp: Component) -> dict[str, str]:
+        """Return short, always-visible terminal pin labels for multi-pin (>=3) components."""
+        ctype = comp.component_type
+        if ctype == "seven_seg_display":
+            return {"D0": "D0", "D1": "D1", "D2": "D2", "D3": "D3"}
+        if ctype == "ne555":
+            return {
+                "vcc": "VCC",
+                "gnd": "GND",
+                "trig": "TRIG",
+                "thr": "THR",
+                "dis": "DIS",
+                "out": "OUT",
+                "reset": "RST",
+                "ctrl": "CTRL",
+            }
+        if ctype == "d_flipflop":
+            return {"D": "D", "CLK": "CLK", "RST": "RST", "Q": "Q", "Q_BAR": "Q̄"}
+        if ctype == "jk_flipflop":
+            return {"J": "J", "K": "K", "CLK": "CLK", "RST": "RST", "Q": "Q", "Q_BAR": "Q̄"}
+        if ctype == "counter_4bit":
+            return {"CLK": "CLK", "RST": "RST", "Q0": "Q0", "Q1": "Q1", "Q2": "Q2", "Q3": "Q3"}
+        if ctype == "spdt_relay":
+            return {"coil_pos": "COIL+", "coil_neg": "COIL-", "com": "COM", "no": "NO", "nc": "NC"}
+        if ctype == "mcu":
+            return {"A0": "A0", "A1": "A1", "D0": "D0", "D1": "D1", "TX": "TX", "RX": "RX"}
+        if ctype in ("opamp", "comparator"):
+            return {"in_pos": "+", "in_neg": "-", "out": "OUT"}
+        if ctype in ("npn_bjt", "pnp_bjt"):
+            return {"B": "B", "C": "C", "E": "E"}
+        if ctype in ("nmos", "pmos"):
+            return {"G": "G", "D": "D", "S": "S"}
+        if ctype == "potentiometer":
+            return {"a": "A", "w": "W", "b": "B"}
+        if ctype == "transformer":
+            return {"p1": "P1", "p2": "P2", "s1": "S1", "s2": "S2"}
+        if ctype == "oscilloscope":
+            return {"CH1": "CH1", "CH2": "CH2", "EXT_TRIG": "EXT_TRIG", "GND": "GND"}
+        if ctype.startswith("gate_") and ctype != "gate_not":
+            return {"a": "A", "b": "B", "out": "Y", "in0": "A", "in1": "B"}
+        return {}
+
+    def default_pin_label_rects(self) -> list[tuple[str, str, QRectF]]:
+        """Return `[(terminal_name, label_text, tight_upright_rect)]` clear of all 5 px terminal dots."""
+        if len(self.metadata.terminals) < 3:
+            return []
+        pin_map = self.default_pin_labels(self.component)
+        if not pin_map:
+            return []
+
+        pin_font = QFont("Segoe UI", 7)
+        pin_font.setBold(True)
+        fm = QFontMetrics(pin_font)
+        ctype = self.component.component_type
+
+        term_centers: list[tuple[float, float]] = [
+            transform_terminal_position(
+                t.grid_pos,
+                (0.0, 0.0),
+                rotation_deg=self.rotation_deg,
+                flipped_h=self.flipped_h,
+                grid_px=GRID_PITCH_PX,
+            )
+            for t in self.metadata.terminals
+        ]
+
+        results: list[tuple[str, str, QRectF]] = []
+        for term in self.metadata.terminals:
+            tag = pin_map.get(term.name)
+            if not tag:
+                continue
+            lx0 = term.grid_pos[0] * GRID_PITCH_PX
+            ly0 = term.grid_pos[1] * GRID_PITCH_PX
+            if ctype == "transformer":
+                lx = -24.0 if lx0 < 0 else 24.0
+                ly = -33.0 if ly0 < 0 else 33.0
+            elif ctype == "seven_seg_display":
+                lx = -27.0
+                ly = ly0 * 0.9
+            elif ctype == "oscilloscope":
+                lx = -44.0 if lx0 < 0 else 44.0
+                ly = ly0
+            elif ctype == "spdt_relay":
+                if lx0 < 0:
+                    lx = -22.0
+                    ly = -33.0 if ly0 < 0 else 33.0
+                else:
+                    lx = 28.0
+                    ly = ly0 * 0.85
+            elif ctype in ("ne555", "d_flipflop", "jk_flipflop", "counter_4bit", "mcu"):
+                if abs(lx0) <= 5.0:
+                    lx = 0.0
+                    ly = -32.0 if ly0 < 0 else 32.0
+                else:
+                    lx = -23.0 if lx0 < 0 else 23.0
+                    ly = ly0 * 0.9
+            elif ctype in ("opamp", "comparator"):
+                if abs(ly0) < 5.0:
+                    lx = 24.0
+                    ly = -14.0
+                else:
+                    lx = -25.0
+                    ly = -33.0 if ly0 < 0 else 33.0
+            elif ctype in ("npn_bjt", "pnp_bjt", "nmos", "pmos"):
+                if lx0 < 0:
+                    lx, ly = -26.0, -13.0
+                else:
+                    lx = 22.0
+                    ly = -33.0 if ly0 < 0 else 33.0
+            elif ctype == "potentiometer":
+                if abs(lx0) < 5.0:
+                    lx, ly = 13.0, -27.0
+                else:
+                    lx = -26.0 if lx0 < 0 else 26.0
+                    ly = -14.0
+            elif ctype.startswith("gate_"):
+                if lx0 < 0:
+                    lx = -26.0
+                    ly = -32.0 if ly0 < 0 else 32.0
+                else:
+                    lx, ly = 26.0, -13.0
+            else:
+                lx = lx0 * 0.55
+                ly = ly0 - 13.0 if abs(ly0) < 5.0 else ly0 * 0.72
+
+            ix, iy = transform_terminal_position(
+                (lx / GRID_PITCH_PX, ly / GRID_PITCH_PX),
+                (0.0, 0.0),
+                rotation_deg=self.rotation_deg,
+                flipped_h=self.flipped_h,
+                grid_px=GRID_PITCH_PX,
+            )
+            tb = fm.boundingRect(tag)
+            w = max(float(tb.width()) + 2.0, 10.0)
+            h = max(float(tb.height()) + 2.0, 10.0)
+            rect = QRectF(ix - w / 2.0, iy - h / 2.0, w, h)
+
+            # Guarantee zero overlap with any 5.0 px terminal dot circle (+1 px safety margin)
+            min_clear = 6.0
+            for _ in range(4):
+                nudged = False
+                for tx, ty in term_centers:
+                    cx = max(rect.left(), min(tx, rect.right()))
+                    cy = max(rect.top(), min(ty, rect.bottom()))
+                    dx = cx - tx
+                    dy = cy - ty
+                    dist = math.hypot(dx, dy)
+                    if dist < min_clear:
+                        if dist > 1e-6:
+                            ux, uy = dx / dist, dy / dist
+                        else:
+                            ux = -1.0 if tx > 0 else (1.0 if tx < 0 else 0.0)
+                            uy = -1.0 if ty > 0 else (1.0 if ty < 0 else -1.0)
+                            norm = math.hypot(ux, uy) or 1.0
+                            ux, uy = ux / norm, uy / norm
+                        push = min_clear - dist + 0.5
+                        rect.translate(ux * push, uy * push)
+                        nudged = True
+                if not nudged:
+                    break
+
+            results.append((term.name, tag, rect))
+        return results
+
+    @staticmethod
+    def package_and_pinout_labels(comp: Component) -> tuple[str, dict[str, str]]:
+        """Return `(package_name, {terminal_name: physical_pin_label})` for `comp`."""
+        ctype = comp.component_type
+        if ctype == "diode":
+            return ("DO-35", {"anode": "Anode", "cathode": "Cathode"})
+        if ctype == "zener_diode":
+            return ("DO-41", {"anode": "Anode", "cathode": "Cathode"})
+        if ctype in ("npn_bjt", "pnp_bjt"):
+            return ("TO-92: 1-E, 2-B, 3-C", {"B": "2:B", "C": "3:C", "E": "1:E"})
+        if ctype in ("nmos", "pmos"):
+            return ("TO-92: 1-S, 2-G, 3-D", {"G": "2:G", "D": "3:D", "S": "1:S"})
+        if ctype == "opamp":
+            return ("DIP-8", {"in_pos": "3:+IN", "in_neg": "2:-IN", "out": "1:OUT"})
+        if ctype == "comparator":
+            return ("DIP-8", {"in_pos": "3:+IN", "in_neg": "2:-IN", "out": "1:OUT"})
+        if ctype == "ne555":
+            return (
+                "DIP-8",
+                {
+                    "vcc": "8:VCC",
+                    "gnd": "1:GND",
+                    "trig": "2:TRIG",
+                    "thr": "6:THR",
+                    "dis": "7:DIS",
+                    "out": "3:OUT",
+                    "reset": "4:RST",
+                },
+            )
+        if ctype == "led":
+            return ("LED-5mm", {"anode": "A(+)", "cathode": "K(-)"})
+        if ctype == "capacitor":
+            if getattr(comp, "polarized", False):
+                return ("ELEC-RAD", {"a": "+", "b": "-"})
+            return ("CER-0805", {"a": "1", "b": "2"})
+        if ctype == "resistor":
+            return ("AXIAL-1/4W", {"a": "1", "b": "2"})
+        if ctype == "inductor":
+            return ("RADIAL-L", {"a": "1", "b": "2"})
+        if ctype == "potentiometer":
+            return ("TRIM-3P", {"a": "1:CW", "w": "2:W", "b": "3:CCW"})
+        if ctype in ("dc_voltage", "ac_voltage", "wav_voltage", "dc_current", "voltmeter", "ammeter"):
+            return (ctype.upper(), {"pos": "+", "neg": "-"})
+        if ctype == "mcu":
+            return ("DIP-MCU", {"A0": "A0", "A1": "A1", "D0": "D0", "D1": "D1", "TX": "TX", "RX": "RX"})
+        if ctype == "d_flipflop":
+            return ("74HC74", {"D": "D", "CLK": "CLK", "RST": "RST", "Q": "Q", "Q_BAR": "Q̄"})
+        if ctype == "jk_flipflop":
+            return ("74LS73", {"J": "J", "K": "K", "CLK": "CLK", "RST": "RST", "Q": "Q", "Q_BAR": "Q̄"})
+        if ctype == "counter_4bit":
+            return ("74HC161", {"CLK": "CLK", "RST": "RST", "Q0": "Q0", "Q1": "Q1", "Q2": "Q2", "Q3": "Q3"})
+        if ctype == "seven_seg_display":
+            return ("7SEG-HEX", {"D0": "D0", "D1": "D1", "D2": "D2", "D3": "D3"})
+        if ctype == "switch":
+            return ("SPST", {"a": "1", "b": "2"})
+        if ctype == "fuse":
+            return ("FUSE-5x20", {"a": "1", "b": "2"})
+        if ctype == "transformer":
+            return ("XFMR-4P", {"p1": "P1", "p2": "P2", "s1": "S1", "s2": "S2"})
+        if ctype == "spdt_relay":
+            return ("RELAY-5P", {"coil_pos": "+COIL", "coil_neg": "-COIL", "com": "COM", "no": "NO", "nc": "NC"})
+        if ctype == "oscilloscope":
+            return ("DSO-1062D", {"CH1": "CH1", "CH2": "CH2", "EXT_TRIG": "TRIG", "GND": "GND"})
+        if ctype == "lightbulb":
+            return ("LAMP", {"a": "1", "b": "2"})
+        if ctype == "ground":
+            return ("GND", {"gnd": "0V"})
+        if ctype.startswith("gate_"):
+            return ("SOIC-14", {"in": "in", "a": "a", "b": "b", "out": "out"})
+        return (ctype.upper(), {})
+
     def boundingRect(self) -> QRectF:
-        """Return tight bounding rectangle enclosing the rotated symbol body, terminals, and upright labels."""
+        """Return cached tight bounding rectangle enclosing body, terminals, and labels."""
+        val_text = ""
+        if self.component.show_value and self.component.component_type != "ground":
+            val_text = (
+                self.live_display_value
+                if self.live_display_value is not None
+                else format_component_value_summary(self.component)
+            ) or ""
+        is_over_bulb = (
+            isinstance(self.component, Lightbulb)
+            and self.component.is_over_bright
+        )
+        is_over_led = (
+            self.component.component_type == "led"
+            and getattr(self.component, "is_over_current", False)
+        )
+        bulb_lit = (
+            isinstance(self.component, Lightbulb)
+            and not self.is_ghost
+            and getattr(self.component, "brightness", 0.0) > 0.0
+        )
+        pinout_vis = bool(getattr(self, "_pinout_overlay_enabled", False))
+        cache_key: tuple[object, ...] = (
+            self.rotation_deg,
+            self.flipped_h,
+            self.is_ghost,
+            self.component.label or "",
+            bool(self.component.show_value),
+            val_text,
+            bool(self.isSelected()),
+            bool(self._is_hovered),
+            self.diagnostic_severity,
+            self.stress_level if self.stress_warnings_enabled else "normal",
+            is_over_bulb,
+            is_over_led,
+            bulb_lit,
+            pinout_vis,
+        )
+        if self._cached_bounds_key == cache_key and self._cached_bounding_rect is not None:
+            return self._cached_bounding_rect
+
+        self._bounding_rect_recompute_count += 1
         w_px, h_px = self.metadata.pixel_size
         t = QTransform()
         if self.flipped_h:
@@ -763,21 +1224,12 @@ class ComponentItem(QGraphicsObject):
                 l_box = fm.boundingRect(lbl_rect.toRect(), int(text_align), lbl_text)
                 rect = rect.united(QRectF(l_box).adjusted(-2.0, -1.0, 2.0, 1.0))
 
-            if (
-                self.component.show_value
-                and self.component.component_type != "ground"
-            ):
-                val_text = (
-                    self.live_display_value
-                    if self.live_display_value is not None
-                    else format_component_value_summary(self.component)
-                )
-                if val_text and val_text.strip():
-                    font_v = QFont("Segoe UI", 8)
-                    font_v.setBold(isinstance(self.component, (Voltmeter, Ammeter)))
-                    fm_v = QFontMetrics(font_v)
-                    v_box = fm_v.boundingRect(val_rect.toRect(), int(text_align), val_text)
-                    rect = rect.united(QRectF(v_box).adjusted(-3.0, -1.0, 3.0, 1.0))
+            if val_text.strip():
+                font_v = QFont("Segoe UI", 8)
+                font_v.setBold(isinstance(self.component, (Voltmeter, Ammeter)))
+                fm_v = QFontMetrics(font_v)
+                v_box = fm_v.boundingRect(val_rect.toRect(), int(text_align), val_text)
+                rect = rect.united(QRectF(v_box).adjusted(-3.0, -1.0, 3.0, 1.0))
 
             if self.component.component_type == "led" and (self.isSelected() or self._is_hovered):
                 marks = led_marks(self.rotation_deg, self.flipped_h, (0.0, 0.0))
@@ -785,6 +1237,10 @@ class ComponentItem(QGraphicsObject):
                 kx, ky = marks["cathode_tag"]
                 rect = rect.united(QRectF(ax - 8.0, ay - 6.0, 16.0, 12.0))
                 rect = rect.united(QRectF(kx - 8.0, ky - 6.0, 16.0, 12.0))
+
+            if len(self.metadata.terminals) >= 3 and not self._pinout_overlay_enabled:
+                for _tname, _tag, pin_rect in self.default_pin_label_rects():
+                    rect = rect.united(pin_rect.adjusted(-1.0, -1.0, 1.0, 1.0))
 
             if isinstance(self.component, LogicGate) and (
                 self.isSelected() or self._is_hovered
@@ -798,20 +1254,17 @@ class ComponentItem(QGraphicsObject):
                 for _pin_name, (tx, ty) in gate_info["pin_tags"]:  # type: ignore[misc]
                     rect = rect.united(QRectF(tx - 15.0, ty - 7.0, 30.0, 14.0))
 
-            is_over_bulb = (
-                isinstance(self.component, Lightbulb)
-                and self.component.is_over_bright
-            )
-            is_over_led = (
-                self.component.component_type == "led"
-                and getattr(self.component, "is_over_current", False)
-            )
             if self.diagnostic_severity in ("error", "warning") or is_over_bulb or is_over_led:
                 rect = rect.united(QRectF(11.0, -25.0, 14.0, 14.0))
 
-        if isinstance(self.component, Lightbulb) and not self.is_ghost and getattr(self.component, "brightness", 0.0) > 0.0:
+        if bulb_lit:
             rect = rect.united(QRectF(-36.0, -36.0, 72.0, 72.0))
 
+        if pinout_vis:
+            rect = rect.adjusted(-16.0, -16.0, 16.0, 16.0)
+
+        self._cached_bounds_key = cache_key
+        self._cached_bounding_rect = rect
         return rect
 
     def itemChange(
@@ -894,6 +1347,53 @@ class ComponentItem(QGraphicsObject):
         painter.drawEllipse(QPointF(0.0, 0.0), radius, radius)
         painter.restore()
 
+    def _paint_seven_seg_leds(self, painter: QPainter, disp: SevenSegDisplay) -> None:
+        """Render the 7 glowing LED bars (a..g) directly on the 7-segment body."""
+        seg_lines = {
+            "a": ((-7.0, -24.0), (15.0, -24.0)),
+            "b": ((16.0, -22.0), (16.0, -2.0)),
+            "c": ((16.0, 2.0), (16.0, 22.0)),
+            "d": ((-7.0, 24.0), (15.0, 24.0)),
+            "e": ((-8.0, 2.0), (-8.0, 22.0)),
+            "f": ((-8.0, -22.0), (-8.0, -2.0)),
+            "g": ((-7.0, 0.0), (15.0, 0.0)),
+        }
+        active = set(disp.active_segments)
+        painter.save()
+        for seg_name, (p1, p2) in seg_lines.items():
+            is_on = seg_name in active
+            col = QColor("#FF3B30") if is_on else QColor(110, 120, 130, 75)
+            pen = QPen(col, 3.6 if is_on else 2.2)
+            pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+            painter.setPen(pen)
+            painter.drawLine(QPointF(p1[0], p1[1]), QPointF(p2[0], p2[1]))
+        painter.restore()
+
+    def _paint_oscilloscope_preview(self, painter: QPainter, osc: Oscilloscope) -> None:
+        """Render miniature yellow/cyan waveforms inside the canvas DSO LCD."""
+        lcd = QRectF(-14.0, -34.0, 54.0, 68.0)
+        painter.save()
+        painter.setClipRect(lcd)
+        for samples, hex_col, y_center, amp in (
+            (osc.mini_preview_ch1, "#FACC15", lcd.top() + lcd.height() * 0.35, 16.0),
+            (osc.mini_preview_ch2, "#22D3EE", lcd.top() + lcd.height() * 0.70, 14.0),
+        ):
+            pts: list[QPointF] = []
+            if len(samples) >= 2:
+                n = len(samples)
+                for idx, val in enumerate(samples):
+                    x = lcd.left() + 2.0 + (idx / (n - 1)) * (lcd.width() - 4.0)
+                    clamped = max(-1.0, min(1.0, float(val)))
+                    y = y_center - clamped * amp
+                    pts.append(QPointF(x, y))
+            else:
+                # Idle flat trace indicator on miniature LCD
+                pts.append(QPointF(lcd.left() + 2.0, y_center))
+                pts.append(QPointF(lcd.right() - 2.0, y_center))
+            painter.setPen(QPen(QColor(hex_col), 1.4))
+            painter.drawPolyline(QPolygonF(pts))
+        painter.restore()
+
     def paint(
         self,
         painter: QPainter,
@@ -933,6 +1433,26 @@ class ComponentItem(QGraphicsObject):
             painter.restore()
         except Exception:
             pass
+
+    def _plate_intersects_scene_wire(self, local_plate: QRectF) -> bool:
+        """Return True if any non-preview wire segment in the scene crosses `local_plate`."""
+        sc = self.scene()
+        if sc is None:
+            return False
+        scene_rect = QRectF(
+            local_plate.x() + self.pos().x(),
+            local_plate.y() + self.pos().y(),
+            local_plate.width(),
+            local_plate.height(),
+        ).adjusted(-2.5, -2.5, 2.5, 2.5)
+        for item in sc.items(scene_rect):
+            pts = getattr(item, "points", None)
+            if not pts or len(pts) < 2 or not hasattr(item, "wire_id"):
+                continue
+            for idx in range(len(pts) - 1):
+                if rect_intersects_segment(scene_rect, pts[idx], pts[idx + 1]):
+                    return True
+        return False
 
     def _paint_impl(
         self,
@@ -990,6 +1510,11 @@ class ComponentItem(QGraphicsObject):
             if isinstance(self.component, Switch)
             else None
         )
+        wiper_arg = (
+            self.component.alpha
+            if isinstance(self.component, Potentiometer)
+            else None
+        )
         self.symbol_library.paint_symbol(
             painter,
             self.component.component_type,
@@ -998,9 +1523,61 @@ class ComponentItem(QGraphicsObject):
             show_terminals=True,
             terminal_color=palette.terminal_dot,
             lever_angle_deg=lever_arg,
+            wiper_alpha=wiper_arg,
             rotation_deg=self.rotation_deg,
             flipped_h=self.flipped_h,
         )
+        if isinstance(self.component, SevenSegDisplay) and not self.is_ghost:
+            self._paint_seven_seg_leds(painter, self.component)
+        if isinstance(self.component, Oscilloscope) and not self.is_ghost:
+            self._paint_oscilloscope_preview(painter, self.component)
+        if isinstance(self.component, Fuse) and self._fuse_pop_progress > 0.0 and not self.is_ghost:
+            p = self._fuse_pop_progress
+            alpha = int(round(235 * p))
+            radius_outer = 10.0 + (1.0 - p) * 22.0
+            radius_inner = 4.0 + (1.0 - p) * 8.0
+            painter.save()
+            spark_pen = QPen(QColor(255, 214, 0, alpha), 2.0)
+            spark_pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+            painter.setPen(spark_pen)
+            for k in range(8):
+                ang = k * (math.pi / 4.0)
+                painter.drawLine(
+                    QPointF(math.cos(ang) * radius_inner, math.sin(ang) * radius_inner),
+                    QPointF(math.cos(ang) * radius_outer, math.sin(ang) * radius_outer),
+                )
+            painter.setPen(QPen(QColor(248, 81, 73, int(round(200 * p))), 1.6))
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            painter.drawEllipse(QPointF(0.0, 0.0), radius_outer * 0.72, radius_outer * 0.72)
+            painter.restore()
+        # Pin-0 / positive-branch-current reference marker (Pin 0 -> Pin 1) inside body bounds
+        if not self.is_ghost and self.component.component_type in (
+            "resistor",
+            "capacitor",
+            "inductor",
+        ):
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.setBrush(QBrush(QColor(palette.symbol_label)))
+            painter.drawEllipse(QPointF(-26.0, -7.0), 1.8, 1.8)
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+        if (
+            not self.is_ghost
+            and (self.isSelected() or self._is_hovered)
+            and self.component.component_type
+            in (
+                "resistor",
+                "capacitor",
+                "inductor",
+                "dc_voltage",
+                "ac_voltage",
+                "dc_current",
+            )
+        ):
+            arr_col = QColor(palette.selection_accent)
+            painter.setPen(QPen(arr_col, 1.4))
+            painter.drawLine(QPointF(-10.0, -14.0), QPointF(10.0, -14.0))
+            painter.drawLine(QPointF(6.0, -17.0), QPointF(10.0, -14.0))
+            painter.drawLine(QPointF(6.0, -11.0), QPointF(10.0, -14.0))
         painter.restore()
 
         # 3. Upright component label, value/meter readout, and warning badges (never rotated/flipped)
@@ -1013,11 +1590,13 @@ class ComponentItem(QGraphicsObject):
             painter.setFont(font)
             fm = painter.fontMetrics()
 
-            # Background plate for name label so intersecting wires never cut through text (only if label exists)
+            # Background plate for name label so non-wire areas remain legible without cutting wires
             lbl_text = self.component.label or ""
             if lbl_text.strip():
                 lbl_box = fm.boundingRect(lbl_rect.toRect(), int(text_align), lbl_text)
-                painter.fillRect(QRectF(lbl_box).adjusted(-2.0, -1.0, 2.0, 1.0), QColor(palette.canvas_bg))
+                lbl_plate = QRectF(lbl_box).adjusted(-2.0, -1.0, 2.0, 1.0)
+                if not self._plate_intersects_scene_wire(lbl_plate):
+                    painter.fillRect(lbl_plate, QColor(palette.canvas_bg))
                 painter.setPen(QColor(palette.symbol_text))
                 painter.drawText(lbl_rect, text_align, lbl_text)
 
@@ -1034,12 +1613,14 @@ class ComponentItem(QGraphicsObject):
                     else format_component_value_summary(self.component)
                 )
                 if val_text and val_text.strip():
-                    # Background plate for value readout so intersecting wires never cut through text
+                    # Background plate for value readout; omitted if a wire passes through so wire stays visible
                     val_box = fm_val.boundingRect(val_rect.toRect(), int(text_align), val_text)
-                    painter.fillRect(QRectF(val_box).adjusted(-3.0, -1.0, 3.0, 1.0), QColor(palette.canvas_bg))
+                    val_plate = QRectF(val_box).adjusted(-3.0, -1.0, 3.0, 1.0)
+                    if not self._plate_intersects_scene_wire(val_plate):
+                        painter.fillRect(val_plate, QColor(palette.canvas_bg))
                     painter.drawText(val_rect, text_align, val_text)
 
-            # Over-bright, over-current, or problem badge in upright coordinates
+            # Over-bright, over-current, stress/smoke overload, or problem badge in upright coordinates
             is_over_bulb = (
                 isinstance(self.component, Lightbulb)
                 and self.component.is_over_bright
@@ -1048,12 +1629,26 @@ class ComponentItem(QGraphicsObject):
                 isinstance(self.component, LED)
                 and getattr(self.component, "is_over_current", False)
             )
-            if self.diagnostic_severity in ("error", "warning") or is_over_bulb or is_over_led:
-                badge_col = (
-                    QColor("#FF5252")
-                    if self.diagnostic_severity == "error"
-                    else QColor("#FFA726")
-                )
+            stress_overload = self.stress_warnings_enabled and self.stress_level == "overload"
+            stress_warning = self.stress_warnings_enabled and self.stress_level == "warning"
+            if (
+                self.diagnostic_severity in ("error", "warning")
+                or is_over_bulb
+                or is_over_led
+                or stress_overload
+                or stress_warning
+            ):
+                if self.diagnostic_severity == "error" or stress_overload:
+                    badge_col = QColor("#FF5252")
+                else:
+                    badge_col = QColor("#FFA726")
+                if stress_overload:
+                    # Subtle smoke wisps rising inside upright body region
+                    painter.setPen(Qt.PenStyle.NoPen)
+                    painter.setBrush(QBrush(QColor(255, 82, 82, 70)))
+                    painter.drawEllipse(QPointF(16.0, -24.0), 4.5, 4.5)
+                    painter.setBrush(QBrush(QColor(180, 180, 180, 75)))
+                    painter.drawEllipse(QPointF(21.0, -29.0), 4.0, 4.0)
                 painter.setPen(Qt.PenStyle.NoPen)
                 painter.setBrush(QBrush(badge_col))
                 badge_center = QPointF(18.0, -18.0)
@@ -1100,6 +1695,54 @@ class ComponentItem(QGraphicsObject):
                         QRectF(tx - 15.0, ty - 7.0, 30.0, 14.0),
                         Qt.AlignmentFlag.AlignCenter,
                         pin_name,
+                    )
+
+            if len(self.metadata.terminals) >= 3 and not self._pinout_overlay_enabled:
+                pin_rects = self.default_pin_label_rects()
+                if pin_rects:
+                    pin_font = QFont("Segoe UI", 7)
+                    pin_font.setBold(True)
+                    painter.setFont(pin_font)
+                    painter.setPen(
+                        QColor("#CBD5E1") if self.theme == ThemeMode.DARK else QColor("#334155")
+                    )
+                    for _tname, tag, pin_rect in pin_rects:
+                        painter.drawText(
+                            pin_rect.adjusted(-4.0, -2.0, 4.0, 2.0),
+                            Qt.AlignmentFlag.AlignCenter,
+                            tag,
+                        )
+
+            if self._pinout_overlay_enabled:
+                pkg_name, pin_map = self.package_and_pinout_labels(self.component)
+                pin_font = QFont("Segoe UI", 7)
+                pin_font.setBold(True)
+                painter.setFont(pin_font)
+                painter.setPen(QColor("#58A6FF") if self.theme == ThemeMode.DARK else QColor("#0969DA"))
+                for term in self.metadata.terminals:
+                    tag = pin_map.get(term.name, term.name)
+                    tx, ty = transform_terminal_position(
+                        term.grid_pos,
+                        (0.0, 0.0),
+                        rotation_deg=self.rotation_deg,
+                        flipped_h=self.flipped_h,
+                        grid_px=GRID_PITCH_PX,
+                    )
+                    # Position neatly just inside body away from external terminal wire
+                    ix = tx * 0.68
+                    iy = ty - 9.0 if abs(ty) < 5.0 else ty * 0.72
+                    painter.drawText(
+                        QRectF(ix - 16.0, iy - 7.0, 32.0, 14.0),
+                        Qt.AlignmentFlag.AlignCenter,
+                        tag,
+                    )
+                if pkg_name and self.component.component_type != "ground":
+                    pkg_font = QFont("Segoe UI", 6)
+                    painter.setFont(pkg_font)
+                    painter.drawText(
+                        QRectF(-28.0, 16.0, 56.0, 12.0),
+                        Qt.AlignmentFlag.AlignCenter,
+                        pkg_name,
                     )
 
             painter.restore()

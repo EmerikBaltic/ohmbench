@@ -126,6 +126,7 @@ class SymbolLibrary:
         show_terminals: bool = True,
         terminal_color: str = "#58A6FF",
         lever_angle_deg: float | None = None,
+        wiper_alpha: float | None = None,
         rotation_deg: int = 0,
         flipped_h: bool = False,
     ) -> bool:
@@ -152,6 +153,7 @@ class SymbolLibrary:
         if (
             svg_renderer is not None
             and lever_angle_deg is None
+            and wiper_alpha is None
             and state != "burned_out"
             and not use_procedural_gate
         ):
@@ -165,6 +167,7 @@ class SymbolLibrary:
                 stroke_color=stroke_color,
                 polarity_color=polarity_color,
                 lever_angle_deg=lever_angle_deg,
+                wiper_alpha=wiper_alpha,
                 rotation_deg=rotation_deg,
                 flipped_h=flipped_h,
             )
@@ -172,10 +175,22 @@ class SymbolLibrary:
         if show_terminals:
             painter.save()
             painter.setPen(Qt.PenStyle.NoPen)
-            painter.setBrush(QColor(terminal_color))
+            osc_term_colors = {
+                "CH1": "#FACC15",
+                "CH2": "#22D3EE",
+                "EXT_TRIG": "#94A3B8",
+                "GND": "#475569",
+            }
+            dot_r = 3.5 if component_id == "oscilloscope" else 3.0
             for term in meta.terminals:
+                dot_col = (
+                    osc_term_colors.get(term.name, terminal_color)
+                    if component_id == "oscilloscope"
+                    else terminal_color
+                )
+                painter.setBrush(QColor(dot_col))
                 tx, ty = term.local_px
-                painter.drawEllipse(QPointF(tx, ty), 3.0, 3.0)
+                painter.drawEllipse(QPointF(tx, ty), dot_r, dot_r)
             painter.restore()
 
         return used_svg
@@ -221,6 +236,7 @@ class SymbolLibrary:
         stroke_color: str = "#E6EDF3",
         polarity_color: str | None = None,
         lever_angle_deg: float | None = None,
+        wiper_alpha: float | None = None,
         rotation_deg: int = 0,
         flipped_h: bool = False,
     ) -> None:
@@ -237,6 +253,20 @@ class SymbolLibrary:
             painter.drawLine(QPointF(-40.0, 0.0), QPointF(-18.0, 0.0))
             painter.drawRect(QRectF(-18.0, -7.0, 36.0, 14.0))
             painter.drawLine(QPointF(18.0, 0.0), QPointF(40.0, 0.0))
+
+        elif component_id == "potentiometer":
+            # IEC resistor body with sliding wiper arrow on top lead (0, -40)
+            painter.drawLine(QPointF(-40.0, 0.0), QPointF(-18.0, 0.0))
+            painter.drawRect(QRectF(-18.0, -7.0, 36.0, 14.0))
+            painter.drawLine(QPointF(18.0, 0.0), QPointF(40.0, 0.0))
+            alpha_clamped = 0.5 if wiper_alpha is None else max(0.0, min(1.0, float(wiper_alpha)))
+            wx = -14.0 + 28.0 * (1.0 - alpha_clamped)
+            # Note: at alpha=0 (wiper near B on right), wx=+14; at alpha=1 (near A on left), wx=-14
+            painter.drawLine(QPointF(0.0, -40.0), QPointF(0.0, -18.0))
+            painter.drawLine(QPointF(0.0, -18.0), QPointF(wx, -18.0))
+            painter.drawLine(QPointF(wx, -18.0), QPointF(wx, -7.0))
+            painter.drawLine(QPointF(wx - 4.0, -12.0), QPointF(wx, -7.0))
+            painter.drawLine(QPointF(wx + 4.0, -12.0), QPointF(wx, -7.0))
 
         elif component_id == "capacitor":
             # Parallel plates at x = -4 and x = +4
@@ -291,6 +321,13 @@ class SymbolLibrary:
             sine.cubicTo(QPointF(-4.5, -10.0), QPointF(0.0, -10.0), QPointF(0.0, 0.0))
             sine.cubicTo(QPointF(0.0, 10.0), QPointF(4.5, 10.0), QPointF(9.0, 0.0))
             painter.drawPath(sine)
+
+        elif component_id == "wav_voltage":
+            painter.drawLine(QPointF(-40.0, 0.0), QPointF(-15.0, 0.0))
+            painter.drawEllipse(QPointF(0.0, 0.0), 15.0, 15.0)
+            painter.drawLine(QPointF(15.0, 0.0), QPointF(40.0, 0.0))
+            for bx, bh in ((-7.0, 4.0), (-3.5, 9.0), (0.0, 6.0), (3.5, 10.0), (7.0, 5.0)):
+                painter.drawLine(QPointF(bx, -bh), QPointF(bx, bh))
 
         elif component_id == "dc_current":
             # Circle (r = 15) with arrow pointing toward 'pos' terminal
@@ -407,6 +444,91 @@ class SymbolLibrary:
                 painter.drawLine(QPointF(11.0, -14.0), QPointF(16.0, -14.0))
                 painter.drawLine(QPointF(16.0, -9.0), QPointF(16.0, -14.0))
 
+        elif component_id == "diode":
+            painter.drawLine(QPointF(-40.0, 0.0), QPointF(-10.0, 0.0))
+            poly = QPolygonF([QPointF(-10.0, -10.0), QPointF(-10.0, 10.0), QPointF(8.0, 0.0)])
+            painter.drawPolygon(poly)
+            painter.drawLine(QPointF(8.0, -11.0), QPointF(8.0, 11.0))
+            painter.drawLine(QPointF(8.0, 0.0), QPointF(40.0, 0.0))
+
+        elif component_id == "zener_diode":
+            painter.drawLine(QPointF(-40.0, 0.0), QPointF(-10.0, 0.0))
+            poly = QPolygonF([QPointF(-10.0, -10.0), QPointF(-10.0, 10.0), QPointF(8.0, 0.0)])
+            painter.drawPolygon(poly)
+            z_bar = QPainterPath(QPointF(3.0, -13.0))
+            z_bar.lineTo(QPointF(8.0, -10.0))
+            z_bar.lineTo(QPointF(8.0, 10.0))
+            z_bar.lineTo(QPointF(13.0, 13.0))
+            painter.drawPath(z_bar)
+            painter.drawLine(QPointF(8.0, 0.0), QPointF(40.0, 0.0))
+
+        elif component_id in ("npn_bjt", "pnp_bjt"):
+            painter.drawEllipse(QPointF(2.0, 0.0), 22.0, 22.0)
+            painter.drawLine(QPointF(-40.0, 0.0), QPointF(-8.0, 0.0))
+            painter.drawLine(QPointF(-8.0, -14.0), QPointF(-8.0, 14.0))
+            # Collector leg to (40, -40)
+            painter.drawLine(QPointF(-8.0, -6.0), QPointF(16.0, -22.0))
+            painter.drawLine(QPointF(16.0, -22.0), QPointF(16.0, -40.0))
+            painter.drawLine(QPointF(16.0, -40.0), QPointF(40.0, -40.0))
+            # Emitter leg to (40, 40)
+            painter.drawLine(QPointF(-8.0, 6.0), QPointF(16.0, 22.0))
+            painter.drawLine(QPointF(16.0, 22.0), QPointF(16.0, 40.0))
+            painter.drawLine(QPointF(16.0, 40.0), QPointF(40.0, 40.0))
+            # Arrow on emitter leg
+            dx, dy = 24.0, 16.0
+            norm = math.hypot(dx, dy)
+            ux, uy = dx / norm, dy / norm
+            px, py = -uy, ux
+            if component_id == "npn_bjt":
+                tip = QPointF(14.0, 20.7)
+                ax, ay = -ux, -uy
+            else:
+                tip = QPointF(-4.0, 8.7)
+                ax, ay = ux, uy
+            painter.drawLine(tip, QPointF(tip.x() + 7.0 * ax + 4.5 * px, tip.y() + 7.0 * ay + 4.5 * py))
+            painter.drawLine(tip, QPointF(tip.x() + 7.0 * ax - 4.5 * px, tip.y() + 7.0 * ay - 4.5 * py))
+
+        elif component_id in ("nmos", "pmos"):
+            painter.drawEllipse(QPointF(2.0, 0.0), 22.0, 22.0)
+            painter.drawLine(QPointF(-40.0, 0.0), QPointF(-10.0, 0.0))
+            painter.drawLine(QPointF(-10.0, -14.0), QPointF(-10.0, 14.0))
+            # Broken enhancement channel segments
+            for cy in (-12.0, 0.0, 12.0):
+                painter.drawLine(QPointF(-3.0, cy - 3.5), QPointF(-3.0, cy + 3.5))
+            # Drain lead -> (40, -40)
+            painter.drawLine(QPointF(-3.0, -12.0), QPointF(16.0, -12.0))
+            painter.drawLine(QPointF(16.0, -12.0), QPointF(16.0, -40.0))
+            painter.drawLine(QPointF(16.0, -40.0), QPointF(40.0, -40.0))
+            # Source lead -> (40, 40)
+            painter.drawLine(QPointF(-3.0, 12.0), QPointF(16.0, 12.0))
+            painter.drawLine(QPointF(16.0, 12.0), QPointF(16.0, 40.0))
+            painter.drawLine(QPointF(16.0, 40.0), QPointF(40.0, 40.0))
+            # Substrate tie arrow (points left into channel for NMOS, right for PMOS)
+            painter.drawLine(QPointF(-3.0, 0.0), QPointF(16.0, 0.0))
+            painter.drawLine(QPointF(16.0, 0.0), QPointF(16.0, 12.0))
+            if component_id == "nmos":
+                painter.drawLine(QPointF(-1.0, 0.0), QPointF(5.0, -3.5))
+                painter.drawLine(QPointF(-1.0, 0.0), QPointF(5.0, 3.5))
+            else:
+                painter.drawLine(QPointF(10.0, 0.0), QPointF(4.0, -3.5))
+                painter.drawLine(QPointF(10.0, 0.0), QPointF(4.0, 3.5))
+
+        elif component_id in ("opamp", "comparator"):
+            painter.drawLine(QPointF(-40.0, -20.0), QPointF(-20.0, -20.0))
+            painter.drawLine(QPointF(-40.0, 20.0), QPointF(-20.0, 20.0))
+            painter.drawLine(QPointF(22.0, 0.0), QPointF(40.0, 0.0))
+            tri = QPolygonF([QPointF(-20.0, -32.0), QPointF(-20.0, 32.0), QPointF(22.0, 0.0)])
+            painter.drawPolygon(tri)
+            # '+' on in_pos (-20, -20) and '-' on in_neg (-20, 20)
+            painter.drawLine(QPointF(-15.0, -14.0), QPointF(-9.0, -14.0))
+            painter.drawLine(QPointF(-12.0, -17.0), QPointF(-12.0, -11.0))
+            painter.drawLine(QPointF(-15.0, 14.0), QPointF(-9.0, 14.0))
+            if component_id == "comparator":
+                # Step glyph inside comparator triangle
+                painter.drawLine(QPointF(-6.0, 5.0), QPointF(0.0, 5.0))
+                painter.drawLine(QPointF(0.0, 5.0), QPointF(0.0, -5.0))
+                painter.drawLine(QPointF(0.0, -5.0), QPointF(6.0, -5.0))
+
         elif component_id in ("voltmeter", "ammeter"):
             # Circle (r = 15) and leads
             painter.drawLine(QPointF(-40.0, 0.0), QPointF(-15.0, 0.0))
@@ -505,6 +627,178 @@ class SymbolLibrary:
                 one.lineTo(QPointF(4.5, 6.0))
                 painter.drawPath(one)
                 painter.drawLine(QPointF(2.0, 6.0), QPointF(7.0, 6.0))
+            painter.restore()
+
+        elif component_id == "mcu":
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            for py in (-20.0, 0.0, 20.0):
+                painter.drawLine(QPointF(-60.0, py), QPointF(-36.0, py))
+                painter.drawLine(QPointF(36.0, py), QPointF(60.0, py))
+            painter.drawRect(QRectF(-36.0, -34.0, 72.0, 68.0))
+            painter.save()
+            if rotation_deg:
+                painter.rotate(-float(rotation_deg))
+            if flipped_h:
+                painter.scale(-1.0, 1.0)
+            painter.setFont(QFont("Segoe UI", 8, QFont.Weight.Bold))
+            painter.drawText(QRectF(-34.0, -14.0, 68.0, 28.0), Qt.AlignmentFlag.AlignCenter, "MCU")
+            painter.restore()
+
+        elif component_id == "ne555":
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            painter.drawRect(QRectF(-40.0, -44.0, 80.0, 88.0))
+            # Left leads: trig (-40), thr (0), reset (+40)
+            for py in (-40.0, 0.0, 40.0):
+                painter.drawLine(QPointF(-60.0, py), QPointF(-40.0, py))
+            # Right leads: out (-20), dis (+20)
+            for py in (-20.0, 20.0):
+                painter.drawLine(QPointF(40.0, py), QPointF(60.0, py))
+            # Top/bottom leads: vcc (0, -60), gnd (0, 60)
+            painter.drawLine(QPointF(0.0, -60.0), QPointF(0.0, -44.0))
+            painter.drawLine(QPointF(0.0, 44.0), QPointF(0.0, 60.0))
+            painter.save()
+            if rotation_deg:
+                painter.rotate(-float(rotation_deg))
+            if flipped_h:
+                painter.scale(-1.0, 1.0)
+            painter.setFont(QFont("Segoe UI", 8, QFont.Weight.Bold))
+            painter.drawText(QRectF(-36.0, -14.0, 72.0, 28.0), Qt.AlignmentFlag.AlignCenter, "555")
+            painter.restore()
+
+        elif component_id == "transformer":
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            # Primary leads & winding arcs on left (x=-40..-10)
+            painter.drawLine(QPointF(-40.0, -20.0), QPointF(-16.0, -20.0))
+            painter.drawLine(QPointF(-40.0, 20.0), QPointF(-16.0, 20.0))
+            for wy in (-20.0, -7.0, 6.0):
+                painter.drawArc(QRectF(-22.0, wy, 12.0, 13.0), -90 * 16, 180 * 16)
+            # Core bars
+            painter.drawLine(QPointF(-3.0, -24.0), QPointF(-3.0, 24.0))
+            painter.drawLine(QPointF(3.0, -24.0), QPointF(3.0, 24.0))
+            # Secondary leads & winding arcs on right (x=+10..+40)
+            painter.drawLine(QPointF(16.0, -20.0), QPointF(40.0, -20.0))
+            painter.drawLine(QPointF(16.0, 20.0), QPointF(40.0, 20.0))
+            for wy in (-20.0, -7.0, 6.0):
+                painter.drawArc(QRectF(10.0, wy, 12.0, 13.0), 90 * 16, 180 * 16)
+            # Phase polarity dots near P1 and S1 terminals
+            painter.save()
+            painter.setBrush(QColor(stroke_color))
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.drawEllipse(QPointF(-24.0, -14.0), 2.3, 2.3)
+            painter.drawEllipse(QPointF(24.0, -14.0), 2.3, 2.3)
+            painter.restore()
+
+        elif component_id == "spdt_relay":
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            painter.drawRect(QRectF(-44.0, -44.0, 88.0, 88.0))
+            # Coil left leads + coil box
+            painter.drawLine(QPointF(-60.0, -20.0), QPointF(-34.0, -20.0))
+            painter.drawLine(QPointF(-60.0, 20.0), QPointF(-34.0, 20.0))
+            painter.drawRect(QRectF(-34.0, -20.0, 18.0, 40.0))
+            painter.drawLine(QPointF(-34.0, 12.0), QPointF(-16.0, -12.0))
+            # Switch right leads: NO (60,-40), COM (60,0), NC (60,40)
+            painter.drawLine(QPointF(26.0, -40.0), QPointF(60.0, -40.0))
+            painter.drawLine(QPointF(26.0, 40.0), QPointF(60.0, 40.0))
+            painter.drawLine(QPointF(6.0, 0.0), QPointF(60.0, 0.0))
+            # Dashed coupling + contact arm
+            target_y = -40.0 if state == "closed" else 40.0
+            painter.drawLine(QPointF(6.0, 0.0), QPointF(26.0, target_y))
+
+        elif component_id == "fuse":
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            painter.drawLine(QPointF(-40.0, 0.0), QPointF(-18.0, 0.0))
+            painter.drawLine(QPointF(18.0, 0.0), QPointF(40.0, 0.0))
+            if state == "blown":
+                painter.save()
+                painter.setBrush(QBrush(QColor(248, 81, 73, 38)))
+                painter.setPen(QPen(QColor("#F85149"), 1.8))
+                painter.drawRect(QRectF(-18.0, -8.0, 36.0, 16.0))
+                # Two separated broken filament stubs with an open gap in the middle
+                painter.drawLine(QPointF(-18.0, 0.0), QPointF(-8.0, -4.5))
+                painter.drawLine(QPointF(8.0, 4.5), QPointF(18.0, 0.0))
+                painter.setBrush(QBrush(QColor("#F85149")))
+                painter.setPen(Qt.PenStyle.NoPen)
+                painter.drawEllipse(QPointF(-8.0, -4.5), 1.6, 1.6)
+                painter.drawEllipse(QPointF(8.0, 4.5), 1.6, 1.6)
+                painter.restore()
+            else:
+                painter.drawRect(QRectF(-18.0, -8.0, 36.0, 16.0))
+                painter.drawLine(QPointF(-18.0, 0.0), QPointF(18.0, 0.0))
+
+        elif component_id in ("d_flipflop", "jk_flipflop", "counter_4bit"):
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            if component_id == "d_flipflop":
+                painter.drawRect(QRectF(-40.0, -52.0, 80.0, 104.0))
+                for py in (-40.0, 0.0, 40.0):
+                    painter.drawLine(QPointF(-60.0, py), QPointF(-40.0, py))
+                for py in (-20.0, 20.0):
+                    painter.drawLine(QPointF(40.0, py), QPointF(60.0, py))
+                lbl = "D-FF"
+            elif component_id == "jk_flipflop":
+                painter.drawRect(QRectF(-40.0, -72.0, 80.0, 144.0))
+                for py in (-60.0, -20.0, 20.0, 60.0):
+                    painter.drawLine(QPointF(-60.0, py), QPointF(-40.0, py))
+                for py in (-40.0, 40.0):
+                    painter.drawLine(QPointF(40.0, py), QPointF(60.0, py))
+                lbl = "JK-FF"
+            else:
+                painter.drawRect(QRectF(-40.0, -72.0, 80.0, 144.0))
+                for py in (-20.0, 20.0):
+                    painter.drawLine(QPointF(-60.0, py), QPointF(-40.0, py))
+                for py in (-60.0, -20.0, 20.0, 60.0):
+                    painter.drawLine(QPointF(40.0, py), QPointF(60.0, py))
+                lbl = "CNT4"
+            painter.save()
+            if rotation_deg:
+                painter.rotate(-float(rotation_deg))
+            if flipped_h:
+                painter.scale(-1.0, 1.0)
+            painter.setFont(QFont("Segoe UI", 8, QFont.Weight.Bold))
+            painter.drawText(QRectF(-34.0, -14.0, 68.0, 28.0), Qt.AlignmentFlag.AlignCenter, lbl)
+            painter.restore()
+
+        elif component_id == "seven_seg_display":
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            painter.drawRect(QRectF(-36.0, -70.0, 76.0, 140.0))
+            for py in (-60.0, -20.0, 20.0, 60.0):
+                painter.drawLine(QPointF(-60.0, py), QPointF(-36.0, py))
+            # Unpowered bezel outline; live glowing LED bars painted by ComponentItem
+            painter.drawRect(QRectF(-18.0, -34.0, 44.0, 68.0))
+
+        elif component_id == "oscilloscope":
+            bnc_colors = {
+                -40.0: "#FACC15",
+                -20.0: "#22D3EE",
+                20.0: "#94A3B8",
+                40.0: "#475569",
+            }
+            for py, hex_col in bnc_colors.items():
+                painter.drawLine(QPointF(-80.0, py), QPointF(-68.0, py))
+                painter.save()
+                painter.setPen(QPen(QColor(hex_col), 2.0))
+                painter.setBrush(Qt.BrushStyle.NoBrush)
+                painter.drawEllipse(QPointF(-70.0, py), 3.0, 3.0)
+                painter.restore()
+            # Outer transparent frame keeps left [-68, -18] pin labels high-contrast in both themes
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            painter.drawRoundedRect(QRectF(-68.0, -52.0, 142.0, 104.0), 5.0, 5.0)
+            # Dark miniature LCD & right front-panel knob bay
+            painter.save()
+            painter.setPen(QPen(QColor("#334155"), 1.2))
+            painter.setBrush(QColor("#0F172A"))
+            lcd_rect = QRectF(-16.0, -38.0, 58.0, 76.0)
+            painter.drawRoundedRect(lcd_rect, 3.0, 3.0)
+            painter.setPen(QPen(QColor(71, 85, 105, 130), 0.7))
+            for gx in range(1, 4):
+                x_g = lcd_rect.left() + gx * lcd_rect.width() / 4.0
+                painter.drawLine(QPointF(x_g, lcd_rect.top()), QPointF(x_g, lcd_rect.bottom()))
+            for gy in range(1, 3):
+                y_g = lcd_rect.top() + gy * lcd_rect.height() / 3.0
+                painter.drawLine(QPointF(lcd_rect.left(), y_g), QPointF(lcd_rect.right(), y_g))
+            painter.setPen(QPen(QColor("#94A3B8"), 1.2))
+            painter.setBrush(QColor("#334155"))
+            for ky in (-24.0, -4.0, 16.0, 34.0):
+                painter.drawEllipse(QPointF(58.0, ky), 5.0, 5.0)
             painter.restore()
 
         else:

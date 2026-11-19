@@ -1,0 +1,17 @@
+{
+  "id": "oscilloscope",
+  "display_name": "Oscilloscope (DSO-1062D)",
+  "category": "Instruments",
+  "style": "iec",
+  "grid_size": [8, 6],
+  "terminals": [
+    {"name": "CH1", "grid_pos": [-4, -2]},
+    {"name": "CH2", "grid_pos": [-4, -1]},
+    {"name": "EXT_TRIG", "grid_pos": [-4, 1]},
+    {"name": "GND", "grid_pos": [-4, 2]}
+  ],
+  "label_offset": [0, -3.4],
+  "value_offset": [0, 3.4],
+  "default_svg": "oscilloscope.svg",
+  "states": {}
+}

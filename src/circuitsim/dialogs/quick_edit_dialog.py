@@ -13,23 +13,52 @@ from PySide6.QtWidgets import (
     QDialog,
     QDialogButtonBox,
     QFormLayout,
+    QGroupBox,
     QHBoxLayout,
     QLabel,
     QLineEdit,
+    QPushButton,
+    QTabWidget,
     QVBoxLayout,
     QWidget,
 )
 
 from circuitsim.components.base import Component, ComponentParameter
+from circuitsim.components.inductor import Inductor
 from circuitsim.components.led import LED, LED_COLOUR_PRESETS
 from circuitsim.components.lightbulb import Lightbulb
 from circuitsim.components.logic_gate import LOGIC_FAMILY_PRESETS, LogicGate
 from circuitsim.components.meters import Ammeter, Voltmeter
+from circuitsim.components.power import Transformer
+from circuitsim.components.resistor import Resistor
+from circuitsim.components.sources import ACVoltageSource, DCVoltageSource
 from circuitsim.components.switch import Switch
 from circuitsim.dialogs.value_parser import (
+    analyze_engineering_input,
     format_engineering_value,
     parse_engineering_value,
 )
+
+
+def compute_inductor_reactance(l_h: float, f_hz: float) -> float:
+    """Return inductive reactance `X_L = 2 * pi * f * L` in Ohms."""
+    if not (math.isfinite(l_h) and math.isfinite(f_hz)) or l_h < 0.0 or f_hz < 0.0:
+        raise ValueError("Inductance and frequency must be non-negative finite values.")
+    return 2.0 * math.pi * float(f_hz) * float(l_h)
+
+
+def compute_inductor_tau(l_h: float, r_total_ohm: float) -> float:
+    """Return RL time constant `tau = L / R_total` in seconds."""
+    if not (math.isfinite(l_h) and math.isfinite(r_total_ohm)) or l_h < 0.0 or r_total_ohm <= 0.0:
+        raise ValueError("Inductance must be >= 0 and total resistance must be > 0 Ohm.")
+    return float(l_h) / float(r_total_ohm)
+
+
+def compute_inductance_from_reactance(xl_ohm: float, f_hz: float) -> float:
+    """Reverse-calculate inductance `L = X_L / (2 * pi * f)` in Henries."""
+    if not (math.isfinite(xl_ohm) and math.isfinite(f_hz)) or xl_ohm <= 0.0 or f_hz <= 0.0:
+        raise ValueError("Target reactance X_L and frequency f must be > 0.")
+    return float(xl_ohm) / (2.0 * math.pi * float(f_hz))
 
 
 class QuickValueDialog(QDialog):
@@ -98,9 +127,42 @@ class QuickValueDialog(QDialog):
         self.meter_preset_combo: QComboBox | None = None
         self.meter_loading_notice_label: QLabel | None = None
         self.meter_ideal_hint_lbl: QLabel | None = None
+        self.transformer_ideal_cb: QCheckBox | None = None
         self.gate_family_combo: QComboBox | None = None
         self.gate_initial_combo: QComboBox | None = None
         self.gate_family_hint_lbl: QLabel | None = None
+        self.source_mode_tabs: QTabWidget | None = None
+        self.source_dc_voltage_edit: QLineEdit | None = None
+        self.source_dc_r_internal_edit: QLineEdit | None = None
+        self.source_ac_amp_edit: QLineEdit | None = None
+        self.source_ac_freq_edit: QLineEdit | None = None
+        self.source_ac_offset_edit: QLineEdit | None = None
+        self.source_ac_phase_edit: QLineEdit | None = None
+        self.source_pulse_v1_edit: QLineEdit | None = None
+        self.source_pulse_v2_edit: QLineEdit | None = None
+        self.source_pulse_freq_edit: QLineEdit | None = None
+        self.source_pulse_duty_edit: QLineEdit | None = None
+        self.spice_preview_edit: QLineEdit | None = None
+        self.max_power_edit: QLineEdit | None = None
+        self.max_voltage_edit: QLineEdit | None = None
+        self.max_current_edit: QLineEdit | None = None
+        self.warning_label: QLabel | None = None
+        self.tab_widget = QTabWidget(self)
+        self.tab_widget.setObjectName("component_dialog_tabs")
+
+        params_tab = QWidget(self.tab_widget)
+        params_tab_layout = QVBoxLayout(params_tab)
+        params_tab_layout.setContentsMargins(6, 6, 6, 6)
+        params_tab_layout.setSpacing(6)
+
+        self.live_vip_label = QLabel("", params_tab)
+        self.live_vip_label.setObjectName("live_vip_label")
+        self.live_vip_label.setStyleSheet(
+            "background: rgba(88, 166, 255, 0.12); border: 1px solid rgba(88, 166, 255, 0.35); "
+            "border-radius: 4px; padding: 4px 8px; font-weight: 600; font-size: 11px;"
+        )
+        params_tab_layout.addWidget(self.live_vip_label)
+        self.refresh_live_vip_label()
 
         form = QFormLayout()
         form.setSpacing(8)
@@ -179,6 +241,17 @@ class QuickValueDialog(QDialog):
             )
             fam_vbox.addWidget(self.gate_family_hint_lbl)
             form.addRow("Logic Family:", fam_box)
+
+        if isinstance(component, Transformer):
+            self.transformer_ideal_cb = QCheckBox(
+                "Ideal Transformer (lossless, k=1)", self
+            )
+            self.transformer_ideal_cb.setObjectName("transformer_ideal_cb")
+            self.transformer_ideal_cb.setChecked(bool(component.is_ideal))
+            self.transformer_ideal_cb.toggled.connect(
+                self._on_transformer_ideal_toggled
+            )
+            form.addRow("Mode:", self.transformer_ideal_cb)
 
         for spec in self._param_specs:
             field_container = QWidget(self)
@@ -306,7 +379,14 @@ class QuickValueDialog(QDialog):
         self.bulb_burnout_cb: QCheckBox | None = None
         self.burnout_ratio_edit: QLineEdit | None = None
         self.burnout_time_edit: QLineEdit | None = None
+        self.lightbulb_r_hot_label: QLabel | None = None
         if isinstance(component, Lightbulb):
+            self.lightbulb_r_hot_label = QLabel("", self)
+            self.lightbulb_r_hot_label.setObjectName("lightbulb_r_hot_label")
+            self.lightbulb_r_hot_label.setStyleSheet("color: #3FB950; font-weight: 600; font-size: 11px;")
+            form.addRow("Hot Resistance (R_hot):", self.lightbulb_r_hot_label)
+            self._refresh_lightbulb_r_hot()
+
             self.bulb_burnout_cb = QCheckBox("Enable burn-out on overload")
             self.bulb_burnout_cb.setObjectName("bulb_burnout_cb")
             self.bulb_burnout_cb.setChecked(component.burnout_enabled)
@@ -359,7 +439,200 @@ class QuickValueDialog(QDialog):
         self.show_value_cb.setChecked(component.show_value)
         form.addRow("Display:", self.show_value_cb)
 
-        root_layout.addLayout(form)
+        if isinstance(component, Transformer) and self.transformer_ideal_cb is not None:
+            self._on_transformer_ideal_toggled(bool(component.is_ideal))
+
+        params_tab_layout.addLayout(form)
+
+        if isinstance(component, (DCVoltageSource, ACVoltageSource)):
+            self.source_mode_tabs = QTabWidget(params_tab)
+            self.source_mode_tabs.setObjectName("source_mode_tabs")
+
+            dc_page = QWidget(self.source_mode_tabs)
+            dc_form = QFormLayout(dc_page)
+            init_dc_v = (
+                component.format_parameter_value("dc_voltage")
+                if isinstance(component, DCVoltageSource)
+                else component.format_parameter_value("dc_offset")
+            )
+            init_dc_r = format_engineering_value(component.r_internal, "")
+            self.source_dc_voltage_edit = QLineEdit(init_dc_v)
+            self.source_dc_voltage_edit.setObjectName("source_dc_voltage_edit")
+            self.source_dc_r_internal_edit = QLineEdit(init_dc_r)
+            self.source_dc_r_internal_edit.setObjectName("source_dc_r_internal_edit")
+            dc_form.addRow("DC Voltage (V):", self.source_dc_voltage_edit)
+            dc_form.addRow("Series R_int (Ohm):", self.source_dc_r_internal_edit)
+            self.source_mode_tabs.addTab(dc_page, "DC")
+
+            ac_page = QWidget(self.source_mode_tabs)
+            ac_form = QFormLayout(ac_page)
+            self.source_ac_amp_edit = QLineEdit(
+                component.format_parameter_value("amplitude")
+                if isinstance(component, ACVoltageSource)
+                else "5"
+            )
+            self.source_ac_amp_edit.setObjectName("source_ac_amp_edit")
+            self.source_ac_freq_edit = QLineEdit(
+                component.format_parameter_value("frequency")
+                if isinstance(component, ACVoltageSource)
+                else "1k"
+            )
+            self.source_ac_freq_edit.setObjectName("source_ac_freq_edit")
+            self.source_ac_offset_edit = QLineEdit(
+                component.format_parameter_value("dc_offset")
+                if isinstance(component, ACVoltageSource)
+                else "0"
+            )
+            self.source_ac_offset_edit.setObjectName("source_ac_offset_edit")
+            self.source_ac_phase_edit = QLineEdit(
+                f"{getattr(component, 'phase_deg', 0.0):g}"
+            )
+            self.source_ac_phase_edit.setObjectName("source_ac_phase_edit")
+            ac_form.addRow("Amplitude (V):", self.source_ac_amp_edit)
+            ac_form.addRow("Frequency (Hz):", self.source_ac_freq_edit)
+            ac_form.addRow("DC Offset (V):", self.source_ac_offset_edit)
+            ac_form.addRow("Phase (deg):", self.source_ac_phase_edit)
+            self.source_mode_tabs.addTab(ac_page, "Sine AC")
+
+            pulse_page = QWidget(self.source_mode_tabs)
+            pulse_form = QFormLayout(pulse_page)
+            self.source_pulse_v1_edit = QLineEdit(
+                component.format_parameter_value("dc_offset")
+                if isinstance(component, ACVoltageSource)
+                else "0"
+            )
+            self.source_pulse_v1_edit.setObjectName("source_pulse_v1_edit")
+            self.source_pulse_v2_edit = QLineEdit(
+                component.format_parameter_value("amplitude")
+                if isinstance(component, ACVoltageSource)
+                else "5"
+            )
+            self.source_pulse_v2_edit.setObjectName("source_pulse_v2_edit")
+            self.source_pulse_freq_edit = QLineEdit(
+                component.format_parameter_value("frequency")
+                if isinstance(component, ACVoltageSource)
+                else "1k"
+            )
+            self.source_pulse_freq_edit.setObjectName("source_pulse_freq_edit")
+            self.source_pulse_duty_edit = QLineEdit(
+                f"{getattr(component, 'duty_cycle', 0.5):g}"
+            )
+            self.source_pulse_duty_edit.setObjectName("source_pulse_duty_edit")
+            pulse_form.addRow("Low Level V1 (V):", self.source_pulse_v1_edit)
+            pulse_form.addRow("Pulse Amp V2 (V):", self.source_pulse_v2_edit)
+            pulse_form.addRow("Frequency (Hz):", self.source_pulse_freq_edit)
+            pulse_form.addRow("Duty Cycle (0-1):", self.source_pulse_duty_edit)
+            self.source_mode_tabs.addTab(pulse_page, "Pulse")
+
+            if isinstance(component, ACVoltageSource):
+                wf = str(getattr(component.waveform, "value", component.waveform)).lower()
+                self.source_mode_tabs.setCurrentIndex(2 if wf == "pulse" else 1)
+            else:
+                self.source_mode_tabs.setCurrentIndex(0)
+
+            self.source_mode_tabs.currentChanged.connect(self._update_spice_preview)
+            for src_edit in (
+                self.source_dc_voltage_edit,
+                self.source_dc_r_internal_edit,
+                self.source_ac_amp_edit,
+                self.source_ac_freq_edit,
+                self.source_ac_offset_edit,
+                self.source_ac_phase_edit,
+                self.source_pulse_v1_edit,
+                self.source_pulse_v2_edit,
+                self.source_pulse_freq_edit,
+                self.source_pulse_duty_edit,
+            ):
+                src_edit.textChanged.connect(self._on_source_tab_field_changed)
+            params_tab_layout.addWidget(self.source_mode_tabs)
+
+        self.inductor_freq_input: QLineEdit | None = None
+        self.inductor_r_total_input: QLineEdit | None = None
+        self.inductor_xl_label: QLabel | None = None
+        self.inductor_tau_label: QLabel | None = None
+        self.inductor_target_xl_input: QLineEdit | None = None
+        self.inductor_reverse_calc_btn: QPushButton | None = None
+        if isinstance(component, Inductor):
+            ind_grp = QGroupBox("Inductor Reactance, Time Constant & Reverse Calculator", params_tab)
+            ind_form = QFormLayout(ind_grp)
+            self.inductor_freq_input = QLineEdit("1000", ind_grp)
+            self.inductor_freq_input.setObjectName("inductor_freq_input")
+            self.inductor_r_total_input = QLineEdit(
+                format_engineering_value(max(component.dcr, 100.0), ""), ind_grp
+            )
+            self.inductor_r_total_input.setObjectName("inductor_r_total_input")
+            self.inductor_xl_label = QLabel("--", ind_grp)
+            self.inductor_xl_label.setObjectName("inductor_xl_label")
+            self.inductor_xl_label.setStyleSheet("color: #3FB950; font-weight: 600;")
+            self.inductor_tau_label = QLabel("--", ind_grp)
+            self.inductor_tau_label.setObjectName("inductor_tau_label")
+            self.inductor_tau_label.setStyleSheet("color: #58A6FF; font-weight: 600;")
+            self.inductor_target_xl_input = QLineEdit("", ind_grp)
+            self.inductor_target_xl_input.setObjectName("inductor_target_xl_input")
+            self.inductor_target_xl_input.setPlaceholderText("Target X_L (e.g. 314.159)")
+            self.inductor_reverse_calc_btn = QPushButton("Calculate L from X_L && f", ind_grp)
+            self.inductor_reverse_calc_btn.setObjectName("inductor_reverse_calc_btn")
+            rev_row = QHBoxLayout()
+            rev_row.addWidget(self.inductor_target_xl_input, 1)
+            rev_row.addWidget(self.inductor_reverse_calc_btn)
+
+            ind_form.addRow("Reference f (Hz):", self.inductor_freq_input)
+            ind_form.addRow("Total Loop R (Ω):", self.inductor_r_total_input)
+            ind_form.addRow("X_L = 2πfL:", self.inductor_xl_label)
+            ind_form.addRow("τ = L / R_total:", self.inductor_tau_label)
+            ind_form.addRow("Reverse Calc:", rev_row)
+            params_tab_layout.addWidget(ind_grp)
+
+            self.inductor_freq_input.textChanged.connect(lambda _t: self._refresh_inductor_helper())
+            self.inductor_r_total_input.textChanged.connect(lambda _t: self._refresh_inductor_helper())
+            self.inductor_reverse_calc_btn.clicked.connect(self._on_inductor_reverse_calc)
+            self._refresh_inductor_helper()
+
+        # Read-only SPICE Preview line
+        spice_row = QHBoxLayout()
+        spice_row.addWidget(QLabel("SPICE Preview:"))
+        self.spice_preview_edit = QLineEdit(self)
+        self.spice_preview_edit.setObjectName("spice_preview_edit")
+        self.spice_preview_edit.setReadOnly(True)
+        spice_row.addWidget(self.spice_preview_edit, stretch=1)
+        params_tab_layout.addLayout(spice_row)
+
+        self.tab_widget.addTab(params_tab, "Parameters")
+
+        # Max Ratings tab (used by F4 stress & derating checks)
+        ratings_tab = QWidget(self.tab_widget)
+        ratings_form = QFormLayout(ratings_tab)
+        ratings_map = component.get_max_ratings()
+        self.max_power_edit = QLineEdit(
+            format_engineering_value(ratings_map["max_power"], "")
+        )
+        self.max_power_edit.setObjectName("max_power_edit")
+        self.max_voltage_edit = QLineEdit(
+            format_engineering_value(ratings_map["max_voltage"], "")
+        )
+        self.max_voltage_edit.setObjectName("max_voltage_edit")
+        self.max_current_edit = QLineEdit(
+            format_engineering_value(ratings_map["max_current"], "")
+        )
+        self.max_current_edit.setObjectName("max_current_edit")
+        ratings_form.addRow("Max Power (W):", self.max_power_edit)
+        ratings_form.addRow("Max Voltage (V):", self.max_voltage_edit)
+        ratings_form.addRow("Max Current (A):", self.max_current_edit)
+        for r_edit in (self.max_power_edit, self.max_voltage_edit, self.max_current_edit):
+            r_edit.textChanged.connect(self._refresh_warnings)
+        self.tab_widget.addTab(ratings_tab, "Max Ratings")
+
+        root_layout.addWidget(self.tab_widget)
+
+        self.warning_label = QLabel("")
+        self.warning_label.setObjectName("engineering_warning_label")
+        self.warning_label.setWordWrap(True)
+        self.warning_label.setStyleSheet(
+            "color: #E3B341; font-size: 8pt; font-weight: 500; padding: 3px;"
+        )
+        self.warning_label.setVisible(False)
+        root_layout.addWidget(self.warning_label)
+        self._update_spice_preview()
 
         # Readable error banner (hidden until an invalid input is entered)
         self.error_label = QLabel("")
@@ -547,6 +820,113 @@ class QuickValueDialog(QDialog):
                 except ValueError:
                     pass
 
+    def _on_transformer_ideal_toggled(self, checked: bool) -> None:
+        """Enable Non-Ideal winding parameters when unchecked; dim them when Ideal."""
+        for key in ("l_primary_h", "coupling_k", "r_primary_ohm", "r_secondary_ohm"):
+            le = self.inputs.get(key)
+            if le is not None:
+                le.setEnabled(not checked)
+        self._refresh_warnings()
+
+    def _refresh_warnings(self) -> None:
+        if self.warning_label is None:
+            return
+        warnings: list[str] = []
+        fields = list(self.inputs.values())
+        for extra in (self.max_power_edit, self.max_voltage_edit, self.max_current_edit):
+            if extra is not None:
+                fields.append(extra)
+        for le in fields:
+            if not le.isEnabled():
+                continue
+            txt = le.text().strip()
+            if not txt or txt.lower() == "ideal":
+                continue
+            _v, warn, _err = analyze_engineering_input(txt)
+            if warn and warn not in warnings:
+                warnings.append(warn)
+        if warnings:
+            self.warning_label.setText(" ".join(warnings))
+            self.warning_label.setVisible(True)
+        else:
+            self.warning_label.clear()
+            self.warning_label.setVisible(False)
+
+    def _on_source_tab_field_changed(self, _text: str = "") -> None:
+        if getattr(self, "_syncing_source_tabs", False):
+            return
+        self._syncing_source_tabs = True
+        try:
+            if isinstance(self.component, DCVoltageSource):
+                if self.source_dc_voltage_edit is not None and "dc_voltage" in self.inputs:
+                    self.inputs["dc_voltage"].setText(self.source_dc_voltage_edit.text())
+                if self.source_dc_r_internal_edit is not None and "r_internal" in self.inputs:
+                    self.inputs["r_internal"].setText(self.source_dc_r_internal_edit.text())
+            elif isinstance(self.component, ACVoltageSource) and self.source_mode_tabs is not None:
+                tab_idx = self.source_mode_tabs.currentIndex()
+                if tab_idx == 1:
+                    if self.source_ac_amp_edit is not None and "amplitude" in self.inputs:
+                        self.inputs["amplitude"].setText(self.source_ac_amp_edit.text())
+                    if self.source_ac_freq_edit is not None and "frequency" in self.inputs:
+                        self.inputs["frequency"].setText(self.source_ac_freq_edit.text())
+                    if self.source_ac_offset_edit is not None and "dc_offset" in self.inputs:
+                        self.inputs["dc_offset"].setText(self.source_ac_offset_edit.text())
+                elif tab_idx == 2:
+                    if self.source_pulse_v2_edit is not None and "amplitude" in self.inputs:
+                        self.inputs["amplitude"].setText(self.source_pulse_v2_edit.text())
+                    if self.source_pulse_freq_edit is not None and "frequency" in self.inputs:
+                        self.inputs["frequency"].setText(self.source_pulse_freq_edit.text())
+                    if self.source_pulse_v1_edit is not None and "dc_offset" in self.inputs:
+                        self.inputs["dc_offset"].setText(self.source_pulse_v1_edit.text())
+        finally:
+            self._syncing_source_tabs = False
+        self._update_spice_preview()
+        self._refresh_warnings()
+
+    def _update_spice_preview(self, _tab_index: int = 0) -> None:
+        if self.spice_preview_edit is None:
+            return
+        comp = self.component
+        n0 = comp.nodes[0] if len(comp.nodes) > 0 else "n1"
+        n1 = comp.nodes[1] if len(comp.nodes) > 1 else "0"
+        if isinstance(comp, (DCVoltageSource, ACVoltageSource)) and self.source_mode_tabs is not None:
+            idx = self.source_mode_tabs.currentIndex()
+            if idx == 0:
+                v_txt = (
+                    self.source_dc_voltage_edit.text().strip()
+                    if self.source_dc_voltage_edit is not None
+                    else "12"
+                )
+                expr = f"{comp.name} {n0} {n1} DC {v_txt or '0'}"
+            elif idx == 1:
+                off = (self.source_ac_offset_edit.text().strip() if self.source_ac_offset_edit else "0") or "0"
+                amp = (self.source_ac_amp_edit.text().strip() if self.source_ac_amp_edit else "5") or "5"
+                freq = (self.source_ac_freq_edit.text().strip() if self.source_ac_freq_edit else "1k") or "1k"
+                ph = (self.source_ac_phase_edit.text().strip() if self.source_ac_phase_edit else "0") or "0"
+                expr = f"{comp.name} {n0} {n1} SIN({off} {amp} {freq} 0 0 {ph})"
+            else:
+                v1 = (self.source_pulse_v1_edit.text().strip() if self.source_pulse_v1_edit else "0") or "0"
+                v2 = (self.source_pulse_v2_edit.text().strip() if self.source_pulse_v2_edit else "5") or "5"
+                freq = (self.source_pulse_freq_edit.text().strip() if self.source_pulse_freq_edit else "1k") or "1k"
+                duty = (self.source_pulse_duty_edit.text().strip() if self.source_pulse_duty_edit else "0.5") or "0.5"
+                val_f, _, _ = analyze_engineering_input(freq)
+                period_str = format_engineering_value(1.0 / val_f, "") if (val_f and val_f > 0) else "1m"
+                try:
+                    d_f = min(max(float(duty), 0.01), 0.99)
+                except ValueError:
+                    d_f = 0.5
+                pw_str = format_engineering_value(d_f / val_f, "") if (val_f and val_f > 0) else "500u"
+                expr = f"{comp.name} {n0} {n1} PULSE({v1} {v2} 0 1n 1n {pw_str} {period_str})"
+            self.spice_preview_edit.setText(expr)
+            return
+
+        if self._param_specs:
+            first_key = self._param_specs[0].key
+            first_txt = self.inputs[first_key].text().strip() if first_key in self.inputs else ""
+            self.spice_preview_edit.setText(f"{comp.name} {n0} {n1} {first_txt}")
+        else:
+            self.spice_preview_edit.setText(f"{comp.name} ({comp.component_type})")
+
     def _update_field_preview(self, spec: ComponentParameter) -> None:
         lbl = self.preview_labels.get(spec.key)
         if lbl is None:
@@ -554,25 +934,116 @@ class QuickValueDialog(QDialog):
         if isinstance(self.component, (Voltmeter, Ammeter)) and spec.key == "r_internal":
             if self.meter_preset_combo is not None and "ideal" in self.meter_preset_combo.currentText().lower():
                 lbl.setText("Ideal (no loading)" if isinstance(self.component, Voltmeter) else "Ideal (0 V branch)")
+                self._update_spice_preview()
                 return
         raw_text = self.inputs[spec.key].text().strip()
-        try:
-            val = parse_engineering_value(raw_text)
-        except ValueError as exc:
-            lbl.setText(str(exc))
+        val, _warn, err = analyze_engineering_input(raw_text)
+        if err is not None or val is None:
+            lbl.setText(err or "Invalid input")
+            self._refresh_warnings()
+            self._update_spice_preview()
             return
 
         if not spec.allow_negative and not spec.allow_zero and val <= 0.0:
             lbl.setText(f"{spec.label} must be > 0 {spec.unit}")
+            self._refresh_warnings()
             return
         if not spec.allow_negative and spec.allow_zero and val < 0.0:
             lbl.setText(f"{spec.label} cannot be negative")
+            self._refresh_warnings()
             return
 
         preview_text = f"= {format_engineering_value(val, spec.unit)}"
         if not spec.live_editable:
             preview_text += " (applies at t = 0 after Stop + Run)"
         lbl.setText(preview_text)
+        if not getattr(self, "_syncing_source_tabs", False):
+            self._syncing_source_tabs = True
+            try:
+                if isinstance(self.component, DCVoltageSource):
+                    if spec.key == "dc_voltage" and self.source_dc_voltage_edit is not None:
+                        self.source_dc_voltage_edit.setText(raw_text)
+                    elif spec.key == "r_internal" and self.source_dc_r_internal_edit is not None:
+                        self.source_dc_r_internal_edit.setText(raw_text)
+                elif isinstance(self.component, ACVoltageSource) and self.source_mode_tabs is not None:
+                    if spec.key == "amplitude":
+                        if self.source_ac_amp_edit is not None:
+                            self.source_ac_amp_edit.setText(raw_text)
+                        if self.source_pulse_v2_edit is not None:
+                            self.source_pulse_v2_edit.setText(raw_text)
+                    elif spec.key == "frequency":
+                        if self.source_ac_freq_edit is not None:
+                            self.source_ac_freq_edit.setText(raw_text)
+                        if self.source_pulse_freq_edit is not None:
+                            self.source_pulse_freq_edit.setText(raw_text)
+                    elif spec.key == "dc_offset":
+                        if self.source_ac_offset_edit is not None:
+                            self.source_ac_offset_edit.setText(raw_text)
+                        if self.source_pulse_v1_edit is not None:
+                            self.source_pulse_v1_edit.setText(raw_text)
+            finally:
+                self._syncing_source_tabs = False
+        self._refresh_warnings()
+        self._update_spice_preview()
+        self._refresh_inductor_helper()
+        self._refresh_lightbulb_r_hot()
+
+    def refresh_live_vip_label(self) -> None:
+        """Update the live solved Voltage / Current / Power readout inside the dialog."""
+        c = self.component
+        v_txt = format_engineering_value(float(getattr(c, "voltage", 0.0)), "V", sig_figs=4)
+        i_txt = format_engineering_value(float(getattr(c, "current", 0.0)), "A", sig_figs=4)
+        p_txt = format_engineering_value(float(getattr(c, "power", 0.0)), "W", sig_figs=4)
+        self.live_vip_label.setText(f"Live Operating Point:  V = {v_txt}   |   I = {i_txt}   |   P = {p_txt}")
+
+    def _refresh_lightbulb_r_hot(self) -> None:
+        if not isinstance(self.component, Lightbulb) or getattr(self, "lightbulb_r_hot_label", None) is None:
+            return
+        try:
+            p_raw = self.inputs["rated_power"].text().strip() if "rated_power" in self.inputs else str(self.component.rated_power)
+            v_raw = self.inputs["rated_voltage"].text().strip() if "rated_voltage" in self.inputs else str(self.component.rated_voltage)
+            p_val = parse_engineering_value(p_raw)
+            v_val = parse_engineering_value(v_raw)
+            if p_val <= 0.0 or v_val <= 0.0:
+                self.lightbulb_r_hot_label.setText("--")
+                return
+            r_hot = (v_val * v_val) / p_val
+            self.lightbulb_r_hot_label.setText(f"{format_engineering_value(r_hot, 'Ω', sig_figs=4)}  (= V² / P)")
+        except Exception:
+            self.lightbulb_r_hot_label.setText("--")
+
+    def _refresh_inductor_helper(self) -> None:
+        if not isinstance(self.component, Inductor) or getattr(self, "inductor_xl_label", None) is None:
+            return
+        try:
+            l_raw = self.inputs["inductance"].text().strip() if "inductance" in self.inputs else str(self.component.inductance)
+            l_val = parse_engineering_value(l_raw)
+            f_val = parse_engineering_value(self.inductor_freq_input.text().strip()) if self.inductor_freq_input else 1000.0
+            r_val = parse_engineering_value(self.inductor_r_total_input.text().strip()) if self.inductor_r_total_input else 100.0
+            xl = compute_inductor_reactance(l_val, f_val)
+            tau = compute_inductor_tau(l_val, r_val)
+            assert self.inductor_xl_label is not None and self.inductor_tau_label is not None
+            self.inductor_xl_label.setText(format_engineering_value(xl, "Ω", sig_figs=4))
+            self.inductor_tau_label.setText(format_engineering_value(tau, "s", sig_figs=4))
+        except Exception:
+            if self.inductor_xl_label is not None:
+                self.inductor_xl_label.setText("--")
+            if self.inductor_tau_label is not None:
+                self.inductor_tau_label.setText("--")
+
+    def _on_inductor_reverse_calc(self) -> None:
+        if self.inductor_target_xl_input is None or self.inductor_freq_input is None:
+            return
+        try:
+            xl_val = parse_engineering_value(self.inductor_target_xl_input.text().strip())
+            f_val = parse_engineering_value(self.inductor_freq_input.text().strip())
+            l_val = compute_inductance_from_reactance(xl_val, f_val)
+            if "inductance" in self.inputs:
+                self.inputs["inductance"].setText(format_engineering_value(l_val, "", sig_figs=6))
+            self._clear_error()
+            self._refresh_inductor_helper()
+        except Exception as exc:
+            self._show_error(f"Reverse calculator: {exc}")
 
     def validate_inputs(self) -> tuple[dict[str, object] | None, str | None]:
         """Validate all parameter fields and return `(parsed_dict, error_message)`."""
@@ -665,6 +1136,33 @@ class QuickValueDialog(QDialog):
                     self.gate_initial_combo.currentData()
                 )
 
+        if isinstance(self.component, Transformer):
+            if self.transformer_ideal_cb is not None:
+                parsed_map["is_ideal"] = bool(self.transformer_ideal_cb.isChecked())
+            np_val = float(parsed_map.get("primary_turns", self.component.primary_turns))
+            ns_val = float(parsed_map.get("secondary_turns", self.component.secondary_turns))
+            k_val = float(parsed_map.get("coupling_k", self.component.coupling_k))
+            if np_val < 1.0 or ns_val < 1.0:
+                return None, "Primary and secondary windings must each be >= 1 turn."
+            if not (0.0 < k_val <= 1.0):
+                return None, f"Coupling Factor (k) must be in (0, 1] (got {k_val:g})."
+
+        if self.max_power_edit is not None and self.max_voltage_edit is not None and self.max_current_edit is not None:
+            for key, label, edit in (
+                ("max_power", "Max Power", self.max_power_edit),
+                ("max_voltage", "Max Voltage", self.max_voltage_edit),
+                ("max_current", "Max Current", self.max_current_edit),
+            ):
+                txt = edit.text().strip()
+                val, _warn, err = analyze_engineering_input(txt)
+                if err is not None or val is None:
+                    return None, f"{label}: {err}"
+                if val <= 0.0:
+                    return None, f"{label} must be greater than 0 (got {txt!r})."
+                parsed_map[key] = val
+                if key == "max_power" and isinstance(self.component, Resistor):
+                    parsed_map["power_rating"] = val
+
         return parsed_map, None
 
     def _apply_current_inputs(self) -> bool:
@@ -702,6 +1200,7 @@ class QuickValueDialog(QDialog):
 
     def _on_apply_clicked(self) -> None:
         self._apply_current_inputs()
+        self.refresh_live_vip_label()
 
     def _on_ok_clicked(self) -> None:
         if self._apply_current_inputs():

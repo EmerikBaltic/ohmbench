@@ -96,15 +96,16 @@ CircuitSim/
 ├── pyproject.toml
 ├── src/circuitsim/
 │   ├── main.py
-│   ├── app/            main window, docks, menus, settings
-│   ├── canvas/         scene, view, wire item, component item
-│   ├── components/     resistor, capacitor, inductor, bulb, switch, meters...
-│   ├── dialogs/        properties dialog, engineering-notation value parser
-│   ├── savedparts/     saved parts bar (10 slots, JSON persistence)
+│   ├── app/            main window, docks, themes, virtual instruments (instruments_panel.py)
+│   ├── canvas/         scene, view, wire item, component item, overlays, publication export
+│   ├── components/     resistor, capacitor, inductor, diode.py, led, potentiometer, mcu.py, switch, meters...
+│   ├── dialogs/        properties dialog, value_parser.py, preferences, spice_import_dialog.py
 │   ├── scope/          scope widget, trigger, measurements, FFT
-│   ├── engine/         netlist builder, MNA matrix, integrators, Newton solver
-│   ├── io/             JSON save/load, SPICE import/export, image export
-│   └── resources/      icons, themes (QSS), example circuits
+│   ├── templates/      built-in WireGraph test jigs (test_jigs.py)
+│   ├── wiring/         immutable WireGraph, orthogonal router, netlist extractor, v2 serializer
+│   ├── engine/         netlist, solver, stress.py, overlay.py, ac_analysis.py, sweep.py, session
+│   ├── io/             circ_serializer.py, wav_signal.py, spice_import.py, share_codec.py, kicad_export.py
+│   └── resources/      icons, themes (QSS), symbols, example circuits
 └── tests/              solver tests, parser tests, saved-parts tests
 ```
 
@@ -290,3 +291,25 @@ Goal: I can run the app on a computer that has no Python installed.
 
 Start with the FIRST STEP in section 2. Do not write code until I approve
 the plan.
+
+---
+
+## 12. UI BUG RULE
+
+Every UI bug fix MUST follow this discipline:
+1. **Reproduce first with a real-input test**: write a failing offscreen Qt test (`QTest` mouse/key events sent through `CircuitView` / `MainWindow`, at multiple zoom levels where hit-testing applies) before writing the fix.
+2. **Assert on explicit model state & physics**: assert on `WireGraph` attachments (`TerminalRef`, `JunctionRef`, `FreeEnd`), component placement/selection, and solved circuit values (node voltages / branch currents derived from hand calculation), never on rendered pixels to decide connectivity (pixel checks are only for visual-rendering issues such as label overlap/themes).
+3. **Preserve Qt-free engine boundaries**: keep `circuitsim.wiring`, `circuitsim.engine`, `circuitsim.components`, and `circuitsim.io` free of Qt imports; compute terminal positions & polarities solely from the shared transform function.
+
+---
+
+## 13. PHASE H WORKBENCH EXPANSION CAPABILITIES
+- **Active Semiconductors**: `NPNBJT` (`npn_bjt`), `PNPBJT` (`pnp_bjt`), `ZenerDiode` (`zener_diode`), Level-1 `NMOS` (`nmos`) & `PMOS` (`pmos`), and rail-saturated `OpAmp` (`opamp`) with full DC/AC/transient MNA companion stamps, NR damping, pinout overlays (`F12`), stress checks (`F4`), and SPICE `.MODEL` import (`F8`).
+- **Workbench UI & Mixed-Signal**: Palette search/scrollbar/expand-collapse, `MCUFirmwareDialog` script editor + 6-row Pin Table + Serial Monitor, `SweepAnalysisDialog` (`.STEP` sweep & Monte Carlo + CSV export), Named Net Labels / Port Flags (`N`, case-insensitive MNA unification, KiCad `(label ...)`), Qt-free `compute_fft_spectrum` + FFT Spectrum / THD% tab, wire Voltage Probe Badges, rigid subcircuit group move + `Ctrl+D` Duplicate, and 18 built-in Test Jigs.
+
+---
+
+## 14. PHASE I ADVANCED WORKBENCH CAPABILITIES
+- **QoL, Diagnostics & Theme Overhaul (`I1`–`I3`)**: Full-span component collision footprint blocking overlaps/stacking and reverting colliding drags (preserving G7 voltmeter auto-wire), live stress overload/derating surfacing in `ProblemsPanel` / inspector / tooltips, matte contrast Light Theme + synced Properties shortcut guide.
+- **Mixed-Signal, Power & Sequential Models (`I4`–`I6`)**: `NE555` timer IC (`ne555`), `Comparator` (`comparator`), coupled `Transformer` (`transformer`), hysteresis `SPDTRelay` (`spdt_relay`), blowable/resettable `Fuse` (`fuse`), edge-triggered `DFlipFlop` (`d_flipflop`), `JKFlipFlop` (`jk_flipflop`), `Counter4Bit` (`counter_4bit`), and live glowing `SevenSegDisplay` (`seven_seg_display`).
+- **Engineering Analysis & Productivity Tools (`I7`–`I10`)**: Qt-free `circuitsim.engine.curve_tracer` + `CurveTracerDialog`, Qt-free `circuitsim.engine.dmm` + DMM tab & Oscilloscope X-Y Lissajous mode, Qt-free `circuitsim.io.bom_export` BOM/thermal budget + `CustomMacroBlock` hierarchical netlist flattening, undoable `align_selected`/`distribute_selected`, toggleable `160x110 px` corner Minimap, and 18 solver-ready built-in Test Jigs.

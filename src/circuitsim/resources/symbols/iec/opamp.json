@@ -1,0 +1,16 @@
+{
+  "id": "opamp",
+  "display_name": "Op-Amp",
+  "category": "Active",
+  "style": "iec",
+  "grid_size": [4, 4],
+  "terminals": [
+    {"name": "in_pos", "grid_pos": [-2, -1]},
+    {"name": "in_neg", "grid_pos": [-2, 1]},
+    {"name": "out", "grid_pos": [2, 0]}
+  ],
+  "label_offset": [0, -2.3],
+  "value_offset": [0, 2.3],
+  "default_svg": "opamp.svg",
+  "states": {}
+}

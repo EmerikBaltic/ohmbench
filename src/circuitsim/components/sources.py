@@ -201,6 +201,115 @@ class ACVoltageSource(Component):
         return -self.power
 
 
+class WavVoltageSource(ACVoltageSource):
+    """Arbitrary PCM `.wav` audio signal voltage source (`V(t)` via linear interpolation).
+
+    Inherits from `ACVoltageSource` so MNA DC, Transient, and AC solvers handle it
+    through the standard time-varying voltage-source stamps without special cases.
+    """
+
+    def __init__(
+        self,
+        name: str,
+        node_pos: str,
+        node_neg: str,
+        *,
+        wav_path: str | None = None,
+        samples: list[float] | tuple[float, ...] | object | None = None,
+        sample_rate_hz: int = 44100,
+        gain_v: float | str = 1.0,
+        dc_offset: float | str = 0.0,
+        loop: bool = False,
+        r_internal: float | str = 0.0,
+        label: str | None = None,
+        show_value: bool = True,
+        color: str = "#FFFFFF",
+    ) -> None:
+        import numpy as np
+        from circuitsim.io.wav_signal import load_wav_samples
+
+        parsed_gain = parse_engineering_value(gain_v)
+        parsed_offset = parse_engineering_value(dc_offset)
+        self.gain_v: float = parsed_gain
+        self.loop: bool = bool(loop)
+        self.wav_path: str = str(wav_path) if wav_path else ""
+
+        if wav_path:
+            wav_data = load_wav_samples(wav_path, gain_v=1.0, dc_offset_v=0.0)
+            self.sample_rate_hz: int = wav_data.sample_rate_hz
+            base = wav_data.samples_v
+        else:
+            if int(sample_rate_hz) <= 0:
+                raise ValueError(f"WavVoltageSource {name!r}: sample_rate_hz must be > 0.")
+            self.sample_rate_hz = int(sample_rate_hz)
+            if samples is None:
+                base = np.zeros(1, dtype=np.float64)
+            else:
+                base = np.asarray(samples, dtype=np.float64).reshape(-1)
+                if len(base) == 0:
+                    base = np.zeros(1, dtype=np.float64)
+                base.setflags(write=False)
+
+        self._base_samples_v = base
+        peak = float(np.max(np.abs(base))) * abs(parsed_gain) if len(base) > 0 else 0.0
+        eff_freq = float(self.sample_rate_hz) / max(len(base), 1)
+        super().__init__(
+            name=name,
+            node_pos=node_pos,
+            node_neg=node_neg,
+            amplitude=peak,
+            frequency=max(eff_freq, 1e-3),
+            dc_offset=parsed_offset,
+            r_internal=r_internal,
+            label=label,
+            show_value=show_value,
+            color=color,
+        )
+
+    @property
+    def component_type(self) -> str:
+        return "wav_voltage"
+
+    @property
+    def duration_s(self) -> float:
+        if self.sample_rate_hz <= 0 or len(self._base_samples_v) <= 1:
+            return 0.0
+        return float(len(self._base_samples_v) - 1) / float(self.sample_rate_hz)
+
+    @property
+    def samples_v(self):
+        return self._base_samples_v * self.gain_v + self.dc_offset
+
+    def load_wav(self, path: str) -> None:
+        from circuitsim.io.wav_signal import load_wav_samples
+
+        wav_data = load_wav_samples(path, gain_v=1.0, dc_offset_v=0.0)
+        self.wav_path = str(path)
+        self.sample_rate_hz = wav_data.sample_rate_hz
+        self._base_samples_v = wav_data.samples_v
+
+    def voltage_at(self, sim_time: float) -> float:
+        n = len(self._base_samples_v)
+        if n == 0 or self.sample_rate_hz <= 0:
+            return self.dc_offset
+        if sim_time <= 0.0:
+            return self.dc_offset + self.gain_v * float(self._base_samples_v[0])
+        dur = float(n) / float(self.sample_rate_hz)
+        if self.loop and dur > 0.0:
+            t_eff = sim_time % dur
+        else:
+            t_eff = sim_time
+        pos = t_eff * float(self.sample_rate_hz)
+        if pos >= n - 1:
+            idx_end = 0 if (self.loop and pos >= n) else n - 1
+            return self.dc_offset + self.gain_v * float(self._base_samples_v[idx_end])
+        idx = int(math.floor(pos))
+        frac = pos - idx
+        v0 = float(self._base_samples_v[idx])
+        v1 = float(self._base_samples_v[idx + 1])
+        return self.dc_offset + self.gain_v * (v0 + frac * (v1 - v0))
+
+
 class DCCurrentSource(Component):
     """Ideal DC current source injecting `dc_current` from `node_neg` into `node_pos`.
 

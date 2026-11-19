@@ -1,0 +1,19 @@
+{
+  "id": "jk_flipflop",
+  "display_name": "JK Flip-Flop",
+  "category": "Digital",
+  "style": "iec",
+  "grid_size": [6, 8],
+  "terminals": [
+    {"name": "J", "grid_pos": [-3, -3]},
+    {"name": "K", "grid_pos": [-3, -1]},
+    {"name": "CLK", "grid_pos": [-3, 1]},
+    {"name": "RST", "grid_pos": [-3, 3]},
+    {"name": "Q", "grid_pos": [3, -2]},
+    {"name": "Q_BAR", "grid_pos": [3, 2]}
+  ],
+  "label_offset": [0, -4.2],
+  "value_offset": [0, 4.2],
+  "default_svg": "jk_flipflop.svg",
+  "states": {}
+}

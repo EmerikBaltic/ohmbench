@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
-from PySide6.QtCore import QEvent, QPoint, QPointF, Qt, Signal
+from PySide6.QtCore import QEvent, QKeyCombination, QPoint, QPointF, QRectF, QSize, Qt, Signal
 from PySide6.QtGui import (
     QAction,
+    QColor,
     QContextMenuEvent,
     QDragEnterEvent,
     QDragLeaveEvent,
@@ -15,18 +16,91 @@ from PySide6.QtGui import (
     QKeySequence,
     QMouseEvent,
     QPainter,
+    QPen,
     QWheelEvent,
 )
-from PySide6.QtWidgets import QGraphicsView, QMenu, QToolTip
+from PySide6.QtWidgets import QApplication, QGraphicsView, QMenu, QToolTip, QWidget
 
+from circuitsim.app.settings import DEFAULT_SHORTCUTS, AppSettings
 from circuitsim.canvas.component_item import ComponentItem
 from circuitsim.canvas.scene import CircuitScene
 from circuitsim.canvas.symbol_geometry import GRID_PITCH_PX, snap_to_grid
-from circuitsim.canvas.wire_item import WireItem
+from circuitsim.canvas.wire_item import JunctionItem, WireItem
+from circuitsim.components.mcu import MCUBlock
+from circuitsim.components.oscilloscope import Oscilloscope
+from circuitsim.components.power import Fuse
 from circuitsim.components.switch import Switch
+from circuitsim.dialogs.mcu_firmware_dialog import MCUFirmwareDialog
 from circuitsim.dialogs.quick_edit_dialog import QuickValueDialog
 
 MIME_COMPONENT_ID = "application/x-circuitsim-component-id"
+
+
+class _MinimapOverlay(QWidget):
+    """Lightweight 160x110 px corner overview minimap displaying components, wires, and viewport."""
+
+    def __init__(self, view: CircuitView) -> None:
+        super().__init__(view.viewport())
+        self._view = view
+        self.setFixedSize(160, 110)
+        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+
+    def paintEvent(self, event) -> None:  # type: ignore[override]
+        _ = event
+        if not self.isVisible():
+            return
+        try:
+            import shiboken6
+
+            if not shiboken6.isValid(self) or not shiboken6.isValid(self._view):
+                return
+            scene = self._view.circuit_scene
+            if scene is None or not shiboken6.isValid(scene):
+                return
+            items = list(scene.placed_items)
+
+            painter = QPainter(self)
+            painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+            w, h = self.width(), self.height()
+            painter.fillRect(0, 0, w, h, QColor(18, 24, 31, 210))
+            painter.setPen(QPen(QColor("#3E5063"), 1.2))
+            painter.drawRect(0, 0, w - 1, h - 1)
+
+            vp_scene = self._view.mapToScene(self._view.viewport().rect()).boundingRect()
+            bounds = vp_scene
+            for it in items:
+                bounds = bounds.united(it.scene_body_rect())
+            pad = 60.0
+            bounds = bounds.adjusted(-pad, -pad, pad, pad)
+            bw = max(bounds.width(), 1.0)
+            bh = max(bounds.height(), 1.0)
+            scale = min((w - 12.0) / bw, (h - 12.0) / bh)
+            ox = 6.0 + (w - 12.0 - bw * scale) * 0.5 - bounds.left() * scale
+            oy = 6.0 + (h - 12.0 - bh * scale) * 0.5 - bounds.top() * scale
+
+            def to_mini(x: float, y: float) -> QPointF:
+                return QPointF(x * scale + ox, y * scale + oy)
+
+            painter.setPen(QPen(QColor("#58A6FF"), 1.0))
+            for wire in scene.wire_graph.wires:
+                pts = wire.points
+                for a, b in zip(pts, pts[1:]):
+                    painter.drawLine(to_mini(a[0], a[1]), to_mini(b[0], b[1]))
+
+            painter.setPen(QPen(QColor("#E6EDF3"), 1.0))
+            for it in items:
+                r = it.scene_body_rect()
+                tl = to_mini(r.left(), r.top())
+                br = to_mini(r.right(), r.bottom())
+                painter.fillRect(QRectF(tl, br), QColor("#2D3748"))
+                painter.drawRect(QRectF(tl, br))
+
+            vtl = to_mini(vp_scene.left(), vp_scene.top())
+            vbr = to_mini(vp_scene.right(), vp_scene.bottom())
+            painter.setPen(QPen(QColor("#FBBF24"), 1.3))
+            painter.drawRect(QRectF(vtl, vbr))
+        except Exception:
+            return
 
 
 class CircuitView(QGraphicsView):
@@ -34,14 +108,39 @@ class CircuitView(QGraphicsView):
 
     cursor_grid_moved = Signal(float, float, int, int)  # (x_px, y_px, gx, gy)
     zoom_changed = Signal(float)  # Zoom factor (1.0 = 100%)
+    wire_mode_changed = Signal(bool)  # Synced with toolbar Wire button
+    placement_mode_changed = Signal(str)  # Active placement component_id or ""
 
     MIN_ZOOM: float = 0.25
     MAX_ZOOM: float = 4.0
     ZOOM_STEP: float = 1.15
+    _PLACEMENT_HOTKEYS: dict[Qt.Key, str] = {
+        Qt.Key.Key_R: "resistor",
+        Qt.Key.Key_C: "capacitor",
+        Qt.Key.Key_L: "inductor",
+        Qt.Key.Key_D: "led",
+        Qt.Key.Key_V: "dc_voltage",
+        Qt.Key.Key_I: "dc_current",
+        Qt.Key.Key_G: "ground",
+    }
+    _PLACEMENT_ACTION_MAP: dict[str, str] = {
+        "place_resistor": "resistor",
+        "place_capacitor": "capacitor",
+        "place_inductor": "inductor",
+        "place_diode": "led",
+        "place_dc_voltage": "dc_voltage",
+        "place_dc_current": "dc_current",
+        "place_ground": "ground",
+        "place_voltmeter": "voltmeter",
+        "place_ammeter": "ammeter",
+    }
 
-    def __init__(self, circuit_scene: CircuitScene) -> None:
+    def __init__(
+        self, circuit_scene: CircuitScene, settings: AppSettings | None = None
+    ) -> None:
         super().__init__(circuit_scene)
         self.circuit_scene: CircuitScene = circuit_scene
+        self._settings: AppSettings | None = settings
         self._zoom_factor: float = 1.0
         self._is_panning: bool = False
         self._space_held: bool = False
@@ -49,8 +148,13 @@ class CircuitView(QGraphicsView):
         self._last_scene_pos: QPointF = QPointF(0.0, 0.0)
         self._wire_drag_active: bool = False
         self._wire_mode_enabled: bool = False
+        self._placing_component_type: str | None = None
+        self._placing_rotation_deg: int = 0
+        self._suppress_next_context_menu: bool = False
         self._pressed_switch_item: ComponentItem | None = None
         self._pressed_switch_pos: QPointF = QPointF()
+        self._pressed_fuse_item: ComponentItem | None = None
+        self._pressed_fuse_pos: QPointF = QPointF()
 
         self.setAcceptDrops(True)
         self.setMouseTracking(True)
@@ -64,10 +168,35 @@ class CircuitView(QGraphicsView):
         )
         self.setDragMode(QGraphicsView.DragMode.RubberBandDrag)
         self.setTransformationAnchor(
-            QGraphicsView.ViewportAnchor.AnchorUnderMouse
+            QGraphicsView.ViewportAnchor.AnchorViewCenter
         )
         self.setResizeAnchor(QGraphicsView.ViewportAnchor.NoAnchor)
         self.centerOn(0.0, 0.0)
+        self._minimap: _MinimapOverlay = _MinimapOverlay(self)
+        self._minimap_enabled: bool = False
+        self._minimap.hide()
+
+    def set_minimap_visible(self, visible: bool) -> None:
+        """Toggle the 160x110 px corner schematic overview minimap."""
+        self._minimap_enabled = bool(visible)
+        self._minimap.setVisible(self._minimap_enabled)
+        self._reposition_minimap()
+        if visible:
+            self._minimap.update()
+
+    def is_minimap_visible(self) -> bool:
+        return bool(self._minimap_enabled)
+
+    def _reposition_minimap(self) -> None:
+        vp = self.viewport().rect()
+        self._minimap.move(
+            max(8, vp.width() - self._minimap.width() - 10),
+            max(8, vp.height() - self._minimap.height() - 10),
+        )
+
+    def resizeEvent(self, event) -> None:  # type: ignore[override]
+        super().resizeEvent(event)
+        self._reposition_minimap()
 
     @property
     def zoom_factor(self) -> float:
@@ -77,12 +206,58 @@ class CircuitView(QGraphicsView):
     def wire_mode_enabled(self) -> bool:
         return self._wire_mode_enabled
 
+    @property
+    def placing_component_type(self) -> str | None:
+        return self._placing_component_type
+
+    def start_component_placement(self, component_id: str) -> None:
+        """Activate LTspice-style click-to-place ghost mode for `component_id`."""
+        if self._wire_mode_enabled:
+            self.set_wire_mode(False)
+        self._placing_component_type = component_id
+        self._placing_rotation_deg = 0
+        self.circuit_scene.show_ghost_preview(
+            component_id,
+            self._last_scene_pos,
+            rotation_deg=self._placing_rotation_deg,
+        )
+        self._update_cursor_for_scene_pos(self._last_scene_pos)
+        self.placement_mode_changed.emit(component_id)
+
+    def cancel_component_placement(self) -> None:
+        """Leave active component placement mode and return to normal pointer."""
+        if self._placing_component_type is None:
+            return
+        self._placing_component_type = None
+        self._placing_rotation_deg = 0
+        self.circuit_scene.hide_ghost_preview()
+        self._update_cursor_for_scene_pos(self._last_scene_pos)
+        self.placement_mode_changed.emit("")
+
+    def rotate_placement_preview(self) -> bool:
+        """Rotate active placement ghost 90 deg CW if placing a part; return True if handled."""
+        if self._placing_component_type is None:
+            return False
+        self._placing_rotation_deg = (self._placing_rotation_deg + 90) % 360
+        self.circuit_scene.show_ghost_preview(
+            self._placing_component_type,
+            self._last_scene_pos,
+            rotation_deg=self._placing_rotation_deg,
+        )
+        return True
+
     def set_wire_mode(self, enabled: bool) -> None:
         """Toggle dedicated Wire Drawing mode."""
-        self._wire_mode_enabled = bool(enabled)
-        if not self._wire_mode_enabled:
-            self.circuit_scene.cancel_wire_preview()
-        self._update_cursor_for_scene_pos(self._last_scene_pos)
+        new_val = bool(enabled)
+        if new_val and self._placing_component_type is not None:
+            self.cancel_component_placement()
+        if new_val != self._wire_mode_enabled:
+            self._wire_mode_enabled = new_val
+            if not self._wire_mode_enabled:
+                self._wire_drag_active = False
+                self.circuit_scene.cancel_wire_preview()
+            self._update_cursor_for_scene_pos(self._last_scene_pos)
+            self.wire_mode_changed.emit(self._wire_mode_enabled)
 
     def reset_zoom(self) -> None:
         """Reset viewport zoom to 100% and center on `(0, 0)`."""
@@ -102,7 +277,10 @@ class CircuitView(QGraphicsView):
         for it in items[1:]:
             rect = rect.united(it.sceneBoundingRect())
         for w in self.circuit_scene.placed_wires:
-            rect = rect.united(w.sceneBoundingRect())
+            if len(w.points) >= 2:
+                rect = rect.united(w.sceneBoundingRect())
+        for jitem in self.circuit_scene.junction_items:
+            rect = rect.united(jitem.sceneBoundingRect())
 
         rect = rect.adjusted(-margin_px, -margin_px, margin_px, margin_px)
         vp_size = self.viewport().size()
@@ -140,13 +318,48 @@ class CircuitView(QGraphicsView):
     def zoom_out(self) -> None:
         self._apply_zoom(1.0 / self.ZOOM_STEP)
 
+    def _ensure_scene_rect_covers(self, center_scene: QPointF, zoom: float) -> None:
+        """Ensure `sceneRect` is large enough around `center_scene` so scrollbars do not clamp."""
+        vp_size = self.viewport().size()
+        half_w = max(2000.0, (vp_size.width() / max(zoom, 0.05)) * 1.5)
+        half_h = max(2000.0, (vp_size.height() / max(zoom, 0.05)) * 1.5)
+        needed = QRectF(
+            center_scene.x() - half_w,
+            center_scene.y() - half_h,
+            2.0 * half_w,
+            2.0 * half_h,
+        )
+        cur = self.circuit_scene.sceneRect()
+        if not cur.contains(needed):
+            self.circuit_scene.setSceneRect(cur.united(needed))
+
     def _apply_zoom(self, factor: float) -> None:
-        new_zoom = self._zoom_factor * factor
-        if new_zoom < self.MIN_ZOOM or new_zoom > self.MAX_ZOOM:
+        new_zoom = min(max(self._zoom_factor * factor, self.MIN_ZOOM), self.MAX_ZOOM)
+        actual_factor = new_zoom / max(self._zoom_factor, 1e-12)
+        if abs(actual_factor - 1.0) < 1e-9:
             return
-        self._zoom_factor = new_zoom
-        self.scale(factor, factor)
+        vp_rect = self.viewport().rect()
+        center_scene = self.mapToScene(
+            QPoint(vp_rect.width() // 2, vp_rect.height() // 2)
+        )
+        self._ensure_scene_rect_covers(center_scene, new_zoom)
+        old_anchor = self.transformationAnchor()
+        self.setTransformationAnchor(QGraphicsView.ViewportAnchor.NoAnchor)
+        try:
+            self._zoom_factor = new_zoom
+            self.scale(actual_factor, actual_factor)
+            self.centerOn(center_scene)
+        finally:
+            self.setTransformationAnchor(old_anchor)
         self.zoom_changed.emit(self._zoom_factor)
+
+    def _item_at_is_component_or_junction(self, scene_pt: QPointF) -> bool:
+        curr = self.circuit_scene.itemAt(scene_pt, self.transform())
+        while curr is not None:
+            if isinstance(curr, (ComponentItem, JunctionItem)):
+                return True
+            curr = curr.parentItem()
+        return False
 
     def _update_cursor_for_scene_pos(self, scene_pt: QPointF) -> None:
         if self._is_panning:
@@ -155,19 +368,84 @@ class CircuitView(QGraphicsView):
         if self._space_held:
             self.setCursor(Qt.CursorShape.OpenHandCursor)
             return
+        if self.circuit_scene.is_dragging_junction:
+            self.setCursor(Qt.CursorShape.SizeAllCursor)
+            return
+        if self.circuit_scene.is_dragging_wire_endpoint:
+            self.setCursor(Qt.CursorShape.CrossCursor)
+            return
+        if self.circuit_scene.is_dragging_wire_segment:
+            orient = self.circuit_scene.active_wire_segment_orientation
+            self.setCursor(
+                Qt.CursorShape.SizeVerCursor
+                if orient == "H"
+                else Qt.CursorShape.SizeHorCursor
+            )
+            return
+        if self._placing_component_type is not None:
+            self.setCursor(Qt.CursorShape.CrossCursor)
+            return
         hovered_pt = self.circuit_scene.update_hover_highlight(scene_pt)
         if (
             self._wire_mode_enabled
             or self.circuit_scene.is_drawing_wire
             or hovered_pt is not None
+            or self.circuit_scene.hovered_wire_end_pt is not None
         ):
             self.setCursor(Qt.CursorShape.CrossCursor)
-        else:
-            self.setCursor(Qt.CursorShape.ArrowCursor)
+            return
+        if not self._item_at_is_component_or_junction(scene_pt):
+            seg_hit = self.circuit_scene.find_wire_segment_near(scene_pt)
+            if seg_hit is not None:
+                self.setCursor(
+                    Qt.CursorShape.SizeVerCursor
+                    if seg_hit[2] == "H"
+                    else Qt.CursorShape.SizeHorCursor
+                )
+                return
+        self.setCursor(Qt.CursorShape.ArrowCursor)
+
+    def open_mcu_firmware_dialog(self, item: ComponentItem) -> bool:
+        """Open the interactive `MCUFirmwareDialog` for an `MCUBlock` item."""
+        if not isinstance(item.component, MCUBlock):
+            return False
+        dlg = MCUFirmwareDialog(item, scene=self.circuit_scene, parent=self.window())
+        dlg.exec()
+        return True
+
+    def open_oscilloscope_dialog(self, item: ComponentItem) -> bool:
+        """Open the live DSO-1062D Benchtop Oscilloscope dialog for an `Oscilloscope` item."""
+        if not isinstance(item.component, Oscilloscope):
+            return False
+        self.circuit_scene.oscilloscope_open_requested.emit(item)
+        win = self.window()
+        if win is None or not hasattr(win, "open_dso_dialog_for_item"):
+            from circuitsim.app.dso_panel import DSOOscilloscopeDialog
+
+            dlg = DSOOscilloscopeDialog(
+                item,
+                circuit_provider=lambda: self.circuit_scene.extract_connectivity_result().circuit,
+                nets_provider=lambda: self.circuit_scene.extract_connectivity_result().component_nodes.get(
+                    item.component.name, {}
+                ),
+                parent=win,
+            )
+            dlg.capture_from_scene()
+            dlg.show()
+            holder = getattr(self, "_standalone_dso_dialogs", None)
+            if holder is None:
+                holder = []
+                setattr(self, "_standalone_dso_dialogs", holder)
+            holder.append(dlg)
+        return True
 
     def open_quick_edit_for_item(self, item: ComponentItem) -> bool:
-        """Open the double-click `QuickValueDialog` for `item` and apply changes live."""
+        """Open the double-click `QuickValueDialog` (or `MCUFirmwareDialog` / DSO panel) and apply changes live."""
         comp = item.component
+        if isinstance(comp, MCUBlock):
+            return self.open_mcu_firmware_dialog(item)
+        if isinstance(comp, Oscilloscope):
+            return self.open_oscilloscope_dialog(item)
         if not comp.get_editable_parameters() and not isinstance(comp, Switch):
             return False
 
@@ -200,14 +478,19 @@ class CircuitView(QGraphicsView):
                 while curr is not None and not isinstance(curr, ComponentItem) and curr.parentItem() is not None:
                     curr = curr.parentItem()
                 if isinstance(curr, ComponentItem):
-                    tip = self.circuit_scene.get_component_tooltip(curr)
+                    if QApplication.keyboardModifiers() & Qt.KeyboardModifier.AltModifier:
+                        tip = self.circuit_scene.get_alt_power_probe_text(curr)
+                    else:
+                        tip = self.circuit_scene.get_component_tooltip(curr)
                     QToolTip.showText(event.globalPos(), tip, self.viewport())
                     return True
         return super().viewportEvent(event)
 
     def wheelEvent(self, event: QWheelEvent) -> None:
-        """Zoom smoothly around the cursor using the mouse wheel."""
+        """Zoom smoothly anchored at the viewport center using the mouse wheel."""
         delta = event.angleDelta().y()
+        if delta == 0:
+            delta = event.pixelDelta().y()
         if delta > 0:
             self._apply_zoom(self.ZOOM_STEP)
         elif delta < 0:
@@ -230,25 +513,91 @@ class CircuitView(QGraphicsView):
             event.accept()
             return
 
-        # 2. Right-click while drawing a wire cancels the wire preview
-        if (
-            event.button() == Qt.MouseButton.RightButton
-            and self.circuit_scene.is_drawing_wire
-        ):
-            self._wire_drag_active = False
-            self.circuit_scene.cancel_wire_preview()
-            self._update_cursor_for_scene_pos(scene_pt)
-            event.accept()
-            return
-
-        # 3. Left-click wire drawing (either clicking a terminal, or in Wire Mode, or finishing click-to-click wire)
-        if event.button() == Qt.MouseButton.LeftButton:
+        # 2. Right-click cancels active placement, active wire drawing, or active wire segment drag
+        if event.button() == Qt.MouseButton.RightButton:
+            if self._placing_component_type is not None:
+                self._suppress_next_context_menu = True
+                self.cancel_component_placement()
+                event.accept()
+                return
             if self.circuit_scene.is_drawing_wire:
                 self._wire_drag_active = False
-                self.circuit_scene.finish_wire_preview(scene_pt)
+                self._suppress_next_context_menu = True
+                self.circuit_scene.cancel_wire_preview()
                 self._update_cursor_for_scene_pos(scene_pt)
                 event.accept()
                 return
+            if self.circuit_scene.is_dragging_junction:
+                self._suppress_next_context_menu = True
+                self.circuit_scene.cancel_junction_drag()
+                self._update_cursor_for_scene_pos(scene_pt)
+                event.accept()
+                return
+            if self.circuit_scene.is_dragging_wire_endpoint:
+                self._suppress_next_context_menu = True
+                self.circuit_scene.cancel_wire_endpoint_drag()
+                self._update_cursor_for_scene_pos(scene_pt)
+                event.accept()
+                return
+            if self.circuit_scene.is_dragging_wire_segment:
+                self._suppress_next_context_menu = True
+                self.circuit_scene.cancel_wire_segment_drag()
+                self._update_cursor_for_scene_pos(scene_pt)
+                event.accept()
+                return
+
+        # 3. Left-click placement / wire drawing / endpoint drag / segment drag / component selection
+        if event.button() == Qt.MouseButton.LeftButton:
+            if self._placing_component_type is not None:
+                placed = self.circuit_scene.place_new_component(
+                    self._placing_component_type,
+                    scene_pt,
+                    rotation_deg=self._placing_rotation_deg,
+                )
+                if placed is not None:
+                    self.circuit_scene.clearSelection()
+                    placed.setSelected(True)
+                self.circuit_scene.show_ghost_preview(
+                    self._placing_component_type,
+                    scene_pt,
+                    rotation_deg=self._placing_rotation_deg,
+                )
+                event.accept()
+                return
+            if self.circuit_scene.is_drawing_wire:
+                self._wire_drag_active = False
+                if self.circuit_scene.is_snap_target_at(scene_pt):
+                    self.circuit_scene.finish_wire_preview(scene_pt)
+                elif not self.circuit_scene.add_wire_preview_waypoint(scene_pt):
+                    self.circuit_scene.finish_wire_preview(scene_pt)
+                self._update_cursor_for_scene_pos(scene_pt)
+                event.accept()
+                return
+
+            if not self._wire_mode_enabled:
+                jitem = self.circuit_scene.find_junction_item_near(
+                    scene_pt, tolerance_px=self.circuit_scene.TERMINAL_SNAP_RADIUS_PX
+                )
+                if jitem is not None and jitem.junction_id is not None:
+                    if not (event.modifiers() & Qt.KeyboardModifier.ShiftModifier):
+                        self.circuit_scene.clearSelection()
+                    jitem.setSelected(True)
+                    self.circuit_scene.begin_junction_drag(jitem.junction_id)
+                    self._update_cursor_for_scene_pos(scene_pt)
+                    event.accept()
+                    return
+                end_hit = self.circuit_scene.find_wire_endpoint_near(
+                    scene_pt, tolerance_px=self.circuit_scene.TERMINAL_SNAP_RADIUS_PX
+                )
+                if end_hit is not None:
+                    wire_item, which_end, _end_pt = end_hit
+                    if not (event.modifiers() & Qt.KeyboardModifier.ShiftModifier):
+                        self.circuit_scene.clearSelection()
+                    wire_item.setSelected(True)
+                    self.circuit_scene.begin_wire_endpoint_drag(wire_item, which_end)
+                    self._update_cursor_for_scene_pos(scene_pt)
+                    event.accept()
+                    return
 
             term_hit = self.circuit_scene.find_terminal_near(scene_pt)
             if term_hit is not None or self._wire_mode_enabled:
@@ -258,13 +607,37 @@ class CircuitView(QGraphicsView):
                 event.accept()
                 return
 
-            # Check if clicking a Switch component body (to toggle on release if not dragged)
+            if not self._item_at_is_component_or_junction(scene_pt):
+                seg_hit = self.circuit_scene.find_wire_segment_near(scene_pt)
+                if seg_hit is not None:
+                    wire_item, seg_idx, orient = seg_hit
+                    if not (event.modifiers() & Qt.KeyboardModifier.ShiftModifier):
+                        self.circuit_scene.clearSelection()
+                    wire_item.setSelected(True)
+                    self.circuit_scene.begin_wire_segment_drag(
+                        wire_item, seg_idx, orient
+                    )
+                    self._update_cursor_for_scene_pos(scene_pt)
+                    event.accept()
+                    return
+
+            # Check if clicking a Switch component body (to toggle on release if not dragged,
+            # or hold closed for momentary pushbuttons)
             hit_item = self.circuit_scene.itemAt(scene_pt, self.transform())
             if isinstance(hit_item, ComponentItem) and isinstance(
                 hit_item.component, Switch
             ):
                 self._pressed_switch_item = hit_item
                 self._pressed_switch_pos = hit_item.pos()
+                if hit_item.component.momentary:
+                    self.circuit_scene.set_switch_item_state(hit_item, True)
+            elif (
+                isinstance(hit_item, ComponentItem)
+                and isinstance(hit_item.component, Fuse)
+                and hit_item.component.is_blown
+            ):
+                self._pressed_fuse_item = hit_item
+                self._pressed_fuse_pos = hit_item.pos()
 
             # Prepare for component selection / drag-move
             self.circuit_scene.begin_component_move_tracking()
@@ -294,8 +667,36 @@ class CircuitView(QGraphicsView):
             event.accept()
             return
 
+        if self._placing_component_type is not None:
+            self.circuit_scene.show_ghost_preview(
+                self._placing_component_type,
+                scene_pt,
+                rotation_deg=self._placing_rotation_deg,
+            )
+            self._update_cursor_for_scene_pos(scene_pt)
+            event.accept()
+            return
+
         if self.circuit_scene.is_drawing_wire:
             self.circuit_scene.update_wire_preview(scene_pt)
+            self._update_cursor_for_scene_pos(scene_pt)
+            event.accept()
+            return
+
+        if self.circuit_scene.is_dragging_junction:
+            self.circuit_scene.update_junction_drag(scene_pt)
+            self._update_cursor_for_scene_pos(scene_pt)
+            event.accept()
+            return
+
+        if self.circuit_scene.is_dragging_wire_endpoint:
+            self.circuit_scene.update_wire_endpoint_drag(scene_pt)
+            self._update_cursor_for_scene_pos(scene_pt)
+            event.accept()
+            return
+
+        if self.circuit_scene.is_dragging_wire_segment:
+            self.circuit_scene.update_wire_segment_drag(scene_pt)
             self._update_cursor_for_scene_pos(scene_pt)
             event.accept()
             return
@@ -311,6 +712,17 @@ class CircuitView(QGraphicsView):
                 event.accept()
                 return
             self._drag_threshold_reached = True
+
+        if (
+            event.modifiers() & Qt.KeyboardModifier.AltModifier
+            and not (event.buttons() & Qt.MouseButton.LeftButton)
+            and self._placing_component_type is None
+        ):
+            probe = self.circuit_scene.query_alt_power_probe_at(scene_pt)
+            if probe is not None:
+                QToolTip.showText(
+                    self.viewport().mapToGlobal(event_pos), probe, self.viewport()
+                )
 
         self._update_cursor_for_scene_pos(scene_pt)
         super().mouseMoveEvent(event)
@@ -334,31 +746,70 @@ class CircuitView(QGraphicsView):
 
         if event.button() == Qt.MouseButton.LeftButton:
             if self._wire_drag_active and self.circuit_scene.is_drawing_wire:
+                self._wire_drag_active = False
                 pts = self.circuit_scene.update_wire_preview(scene_pt)
                 if len(pts) >= 2:
-                    self._wire_drag_active = False
                     self.circuit_scene.finish_wire_preview(scene_pt)
-                    self._update_cursor_for_scene_pos(scene_pt)
-                    event.accept()
-                    return
+                self._update_cursor_for_scene_pos(scene_pt)
+                event.accept()
+                return
+
+            if self.circuit_scene.is_dragging_junction:
+                self.circuit_scene.commit_junction_drag(scene_pt)
+                self._update_cursor_for_scene_pos(scene_pt)
+                event.accept()
+                return
+
+            if self.circuit_scene.is_dragging_wire_endpoint:
+                self.circuit_scene.commit_wire_endpoint_drag(scene_pt)
+                self._update_cursor_for_scene_pos(scene_pt)
+                event.accept()
+                return
+
+            if self.circuit_scene.is_dragging_wire_segment:
+                self.circuit_scene.commit_wire_segment_drag()
+                self._update_cursor_for_scene_pos(scene_pt)
+                event.accept()
+                return
 
             super().mouseReleaseEvent(event)
             moved = self.circuit_scene.commit_component_move_tracking()
-            if (
-                not moved
-                and self._pressed_switch_item is not None
-                and self._pressed_switch_item.pos() == self._pressed_switch_pos
+            if self._pressed_switch_item is not None and isinstance(
+                self._pressed_switch_item.component, Switch
             ):
-                self.circuit_scene.toggle_switch_item(self._pressed_switch_item)
+                if self._pressed_switch_item.component.momentary:
+                    self.circuit_scene.set_switch_item_state(
+                        self._pressed_switch_item, False
+                    )
+                elif (
+                    not moved
+                    and self._pressed_switch_item.pos() == self._pressed_switch_pos
+                ):
+                    self.circuit_scene.toggle_switch_item(self._pressed_switch_item)
             self._pressed_switch_item = None
+            if (
+                self._pressed_fuse_item is not None
+                and isinstance(self._pressed_fuse_item.component, Fuse)
+                and self._pressed_fuse_item.component.is_blown
+                and not moved
+                and self._pressed_fuse_item.pos() == self._pressed_fuse_pos
+            ):
+                self.circuit_scene.reset_fuse_item(self._pressed_fuse_item)
+            self._pressed_fuse_item = None
             return
 
         super().mouseReleaseEvent(event)
 
     def mouseDoubleClickEvent(self, event: QMouseEvent) -> None:
-        """Open the Quick Value Dialog when double-clicking a component (Addition #1)."""
+        """Finish wire on double-click while drawing, otherwise open Quick Value Dialog."""
         if event.button() == Qt.MouseButton.LeftButton:
             scene_pt = self.mapToScene(event.position().toPoint())
+            if self.circuit_scene.is_drawing_wire:
+                self._wire_drag_active = False
+                self.circuit_scene.finish_wire_preview(scene_pt)
+                self._update_cursor_for_scene_pos(scene_pt)
+                event.accept()
+                return
             self._pressed_switch_item = None
             hit_item = self.circuit_scene.itemAt(scene_pt, self.transform())
             if isinstance(hit_item, ComponentItem):
@@ -369,11 +820,15 @@ class CircuitView(QGraphicsView):
 
     def contextMenuEvent(self, event: QContextMenuEvent) -> None:
         """Show right-click context menu on components, wires, or canvas (Requirement 7)."""
+        if self._suppress_next_context_menu:
+            self._suppress_next_context_menu = False
+            event.accept()
+            return
         scene_pt = self.mapToScene(event.pos())
         self._last_scene_pos = scene_pt
 
         clicked_item = self.circuit_scene.itemAt(scene_pt, self.transform())
-        if isinstance(clicked_item, (ComponentItem, WireItem)) and not clicked_item.isSelected():
+        if isinstance(clicked_item, (ComponentItem, WireItem, JunctionItem)) and not clicked_item.isSelected():
             self.circuit_scene.clearSelection()
             clicked_item.setSelected(True)
 
@@ -394,12 +849,61 @@ class CircuitView(QGraphicsView):
                 lambda: self.open_quick_edit_for_item(target_comp)
             )
             menu.addAction(act_edit)
+            if isinstance(target_comp.component, MCUBlock):
+                act_mcu_fw = QAction("Edit MCU Firmware / Serial Monitor...", menu)
+                act_mcu_fw.triggered.connect(
+                    lambda: self.open_mcu_firmware_dialog(target_comp)
+                )
+                menu.addAction(act_mcu_fw)
+            if isinstance(target_comp.component, Oscilloscope):
+                act_dso = QAction("Open DSO-1062D Oscilloscope...\tDouble-Click", menu)
+                act_dso.triggered.connect(
+                    lambda: self.open_oscilloscope_dialog(target_comp)
+                )
+                menu.addAction(act_dso)
             if isinstance(target_comp.component, Switch):
                 act_toggle_sw = QAction("Toggle Switch (ON/OFF)\tClick", menu)
                 act_toggle_sw.triggered.connect(
                     lambda: self.circuit_scene.toggle_switch_item(target_comp)
                 )
                 menu.addAction(act_toggle_sw)
+            if isinstance(target_comp.component, Fuse):
+                act_reset_fuse = QAction("Reset Fuse", menu)
+                act_reset_fuse.setEnabled(bool(target_comp.component.is_blown))
+                act_reset_fuse.triggered.connect(
+                    lambda: self.circuit_scene.reset_fuse_item(target_comp)
+                )
+                menu.addAction(act_reset_fuse)
+            menu.addSeparator()
+
+        selected_wires = [
+            it for it in self.circuit_scene.selectedItems() if isinstance(it, WireItem)
+        ]
+        selected_juncs = [
+            it
+            for it in self.circuit_scene.selectedItems()
+            if isinstance(it, JunctionItem) and it.junction_id
+        ]
+        if len(selected_wires) == 1 or len(selected_juncs) == 1:
+            target_id = (
+                selected_wires[0].wire_id
+                if len(selected_wires) == 1
+                else str(selected_juncs[0].junction_id)
+            )
+            act_net_lbl = QAction("Set Net Label...\tN", menu)
+            act_net_lbl.triggered.connect(
+                lambda tid=target_id: self.circuit_scene.prompt_set_net_label(
+                    tid, parent=self.window()
+                )
+            )
+            menu.addAction(act_net_lbl)
+            if len(selected_wires) == 1:
+                wid_probe = selected_wires[0].wire_id
+                act_probe = QAction("Toggle Voltage Probe Badge", menu)
+                act_probe.triggered.connect(
+                    lambda wp=wid_probe: self.circuit_scene.toggle_voltage_probe_badge(wp)
+                )
+                menu.addAction(act_probe)
             menu.addSeparator()
 
         act_rotate = QAction("Rotate 90° CW\tR", menu)
@@ -434,10 +938,18 @@ class CircuitView(QGraphicsView):
         act_paste.triggered.connect(self.circuit_scene.paste_clipboard)
         menu.addAction(act_paste)
 
+        act_dup = QAction("Duplicate\tCtrl+D", menu)
+        act_dup.setShortcut(QKeySequence("Ctrl+D"))
+        act_dup.setEnabled(has_sel)
+        act_dup.triggered.connect(self.circuit_scene.duplicate_selected)
+        menu.addAction(act_dup)
+
         act_delete = QAction("Delete\tDel", menu)
         act_delete.setShortcut(QKeySequence.StandardKey.Delete)
         act_delete.setEnabled(has_sel)
-        act_delete.triggered.connect(self.circuit_scene.delete_selected)
+        act_delete.triggered.connect(
+            lambda: self.circuit_scene.delete_selected(detach_unselected_wires=True)
+        )
         menu.addAction(act_delete)
 
         menu.addSeparator()
@@ -452,16 +964,66 @@ class CircuitView(QGraphicsView):
         menu.exec(event.globalPos())
         event.accept()
 
+    def set_settings(self, settings: AppSettings | None) -> None:
+        self._settings = settings
+
+    def _active_shortcuts(self) -> dict[str, str]:
+        settings = self._settings or getattr(self.circuit_scene, "settings", None)
+        if settings is not None and hasattr(settings, "shortcuts"):
+            return dict(settings.shortcuts)
+        return dict(DEFAULT_SHORTCUTS)
+
+    @staticmethod
+    def _event_matches_shortcut(event: QKeyEvent, seq_str: str) -> bool:
+        clean = seq_str.strip()
+        if not clean:
+            return False
+        key_val = event.key()
+        if key_val in (
+            int(Qt.Key.Key_Control),
+            int(Qt.Key.Key_Shift),
+            int(Qt.Key.Key_Alt),
+            int(Qt.Key.Key_Meta),
+        ):
+            return False
+        relevant_mods = event.modifiers() & (
+            Qt.KeyboardModifier.ControlModifier
+            | Qt.KeyboardModifier.AltModifier
+            | Qt.KeyboardModifier.ShiftModifier
+            | Qt.KeyboardModifier.MetaModifier
+        )
+        combo = QKeyCombination(relevant_mods, Qt.Key(key_val))
+        pressed = QKeySequence(combo).toString(
+            QKeySequence.SequenceFormat.PortableText
+        ).strip().lower()
+        target = QKeySequence(clean).toString(
+            QKeySequence.SequenceFormat.PortableText
+        ).strip().lower()
+        return bool(target) and pressed == target
+
     def keyPressEvent(self, event: QKeyEvent) -> None:
-        if event.key() == Qt.Key.Key_Space and not event.isAutoRepeat():
+        if event.isAutoRepeat():
+            event.accept()
+            return
+        if event.key() == Qt.Key.Key_Space:
             self._space_held = True
             self._update_cursor_for_scene_pos(self._last_scene_pos)
             event.accept()
             return
         if event.key() == Qt.Key.Key_Escape:
-            if self.circuit_scene.is_drawing_wire:
+            if self._placing_component_type is not None:
+                self.cancel_component_placement()
+            elif self.circuit_scene.is_dragging_junction:
+                self.circuit_scene.cancel_junction_drag()
+            elif self.circuit_scene.is_dragging_wire_endpoint:
+                self.circuit_scene.cancel_wire_endpoint_drag()
+            elif self.circuit_scene.is_dragging_wire_segment:
+                self.circuit_scene.cancel_wire_segment_drag()
+            elif self.circuit_scene.is_drawing_wire:
                 self._wire_drag_active = False
                 self.circuit_scene.cancel_wire_preview()
+                if self._wire_mode_enabled:
+                    self.set_wire_mode(False)
             elif self._wire_mode_enabled:
                 self.set_wire_mode(False)
             else:
@@ -469,24 +1031,68 @@ class CircuitView(QGraphicsView):
             self._update_cursor_for_scene_pos(self._last_scene_pos)
             event.accept()
             return
-        if event.key() == Qt.Key.Key_R and not event.modifiers():
-            self.circuit_scene.rotate_selected()
+        if event.key() == Qt.Key.Key_Backspace and self.circuit_scene.is_drawing_wire:
+            self.circuit_scene.pop_wire_preview_waypoint(self._last_scene_pos)
+            self._update_cursor_for_scene_pos(self._last_scene_pos)
             event.accept()
             return
-        if event.key() == Qt.Key.Key_F and not event.modifiers():
+        if (
+            event.key() == Qt.Key.Key_A
+            and (event.modifiers() & Qt.KeyboardModifier.ControlModifier)
+            and not (event.modifiers() & (Qt.KeyboardModifier.AltModifier | Qt.KeyboardModifier.ShiftModifier))
+        ):
+            self.circuit_scene.select_all()
+            event.accept()
+            return
+
+        if (
+            event.key() == Qt.Key.Key_D
+            and (event.modifiers() & Qt.KeyboardModifier.ControlModifier)
+            and not (event.modifiers() & (Qt.KeyboardModifier.AltModifier | Qt.KeyboardModifier.ShiftModifier))
+        ):
+            self.circuit_scene.duplicate_selected()
+            event.accept()
+            return
+
+        shortcuts = self._active_shortcuts()
+        if self._event_matches_shortcut(event, shortcuts.get("rotate", DEFAULT_SHORTCUTS["rotate"])):
+            if not self.rotate_placement_preview():
+                self.circuit_scene.rotate_selected()
+            event.accept()
+            return
+        if self._event_matches_shortcut(event, shortcuts.get("flip", DEFAULT_SHORTCUTS["flip"])):
             self.circuit_scene.flip_selected()
             event.accept()
             return
-        if event.key() == Qt.Key.Key_J and not event.modifiers():
+        if self._event_matches_shortcut(event, shortcuts.get("junction", DEFAULT_SHORTCUTS["junction"])):
             self.circuit_scene.toggle_junction_at(self._last_scene_pos)
             event.accept()
             return
-        if event.key() == Qt.Key.Key_W and not event.modifiers():
+        if (
+            event.key() == Qt.Key.Key_N
+            and not event.modifiers()
+            and self.circuit_scene.prompt_set_net_label(parent=self.window())
+        ):
+            event.accept()
+            return
+        if self._event_matches_shortcut(event, shortcuts.get("wire_mode", DEFAULT_SHORTCUTS["wire_mode"])):
             self.set_wire_mode(not self._wire_mode_enabled)
             event.accept()
             return
-        if event.key() in (Qt.Key.Key_Delete, Qt.Key.Key_Backspace):
-            self.circuit_scene.delete_selected()
+        for action_id, comp_id in self._PLACEMENT_ACTION_MAP.items():
+            if self._event_matches_shortcut(
+                event, shortcuts.get(action_id, DEFAULT_SHORTCUTS[action_id])
+            ):
+                self.start_component_placement(comp_id)
+                event.accept()
+                return
+        del_seq = shortcuts.get("delete", DEFAULT_SHORTCUTS["delete"])
+        if self._event_matches_shortcut(event, del_seq) or (
+            event.key() == Qt.Key.Key_Backspace
+            and not event.modifiers()
+            and "backspace" not in {v.strip().lower() for v in shortcuts.values()}
+        ):
+            self.circuit_scene.delete_selected(detach_unselected_wires=True)
             event.accept()
             return
         super().keyPressEvent(event)
@@ -526,7 +1132,10 @@ class CircuitView(QGraphicsView):
             comp_id = bytes(event.mimeData().data(MIME_COMPONENT_ID)).decode("utf-8")
             scene_pos = self.mapToScene(event.position().toPoint())
             self.circuit_scene.hide_ghost_preview()
-            self.circuit_scene.place_new_component(comp_id, scene_pos)
+            placed = self.circuit_scene.place_new_component(comp_id, scene_pos)
+            if placed is not None:
+                self.circuit_scene.clearSelection()
+                placed.setSelected(True)
             event.acceptProposedAction()
             self.setFocus()
             return

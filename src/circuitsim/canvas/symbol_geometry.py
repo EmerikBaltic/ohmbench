@@ -12,14 +12,26 @@ import json
 import math
 from pathlib import Path
 import re
+import sys
 import xml.etree.ElementTree as ET
 
 GRID_PITCH_PX: int = 20
 
+
+def get_resource_path(*parts: str) -> Path:
+    """Resolve a bundled resource path cleanly both from source and PyInstaller `sys._MEIPASS`."""
+    if getattr(sys, "frozen", False) and hasattr(sys, "_MEIPASS"):
+        base = Path(str(getattr(sys, "_MEIPASS")))
+        pkg_candidate = base / "circuitsim"
+        if (pkg_candidate.joinpath(*parts)).exists() or pkg_candidate.exists():
+            return pkg_candidate.joinpath(*parts)
+        return base.joinpath(*parts)
+    pkg_root = Path(__file__).resolve().parent.parent
+    return pkg_root.joinpath(*parts)
+
+
 # Default path to the built-in IEC symbols directory
-DEFAULT_IEC_SYMBOLS_DIR: Path = (
-    Path(__file__).resolve().parent.parent / "resources" / "symbols" / "iec"
-)
+DEFAULT_IEC_SYMBOLS_DIR: Path = get_resource_path("resources", "symbols", "iec")
 
 
 @dataclass(frozen=True)
@@ -717,3 +729,36 @@ def prepare_svg_for_theme(
         viewbox=(min_x, min_y, vb_w, vb_h),
         warning=None,
     )
+
+
+def passive_pin_markers(
+    center_px: tuple[float, float] = (0.0, 0.0),
+    *,
+    rotation_deg: int = 0,
+    flipped_h: bool = False,
+    grid_px: int = GRID_PITCH_PX,
+) -> dict[str, tuple[float, float]]:
+    """Return Pin 0 / Pin 1 and positive-current arrow endpoints via the shared transform.
+
+    Positive passive-sign branch current `I(X)` enters Pin 0 (`node_a`) and exits Pin 1 (`node_b`).
+    """
+    return {
+        "pin0_pos": transform_terminal_position(
+            (-2.0, 0.0), center_px, rotation_deg=rotation_deg, flipped_h=flipped_h, grid_px=grid_px
+        ),
+        "pin1_pos": transform_terminal_position(
+            (2.0, 0.0), center_px, rotation_deg=rotation_deg, flipped_h=flipped_h, grid_px=grid_px
+        ),
+        "pin0_tick": transform_terminal_position(
+            (-1.3, -0.35), center_px, rotation_deg=rotation_deg, flipped_h=flipped_h, grid_px=grid_px
+        ),
+        "pin1_tick": transform_terminal_position(
+            (1.3, -0.35), center_px, rotation_deg=rotation_deg, flipped_h=flipped_h, grid_px=grid_px
+        ),
+        "cur_tail": transform_terminal_position(
+            (-0.6, -0.65), center_px, rotation_deg=rotation_deg, flipped_h=flipped_h, grid_px=grid_px
+        ),
+        "cur_tip": transform_terminal_position(
+            (0.6, -0.65), center_px, rotation_deg=rotation_deg, flipped_h=flipped_h, grid_px=grid_px
+        ),
+    }

@@ -6,14 +6,24 @@ from collections import defaultdict, deque
 import numpy as np
 
 from circuitsim.components.base import Component
+from circuitsim.components.bjt import BJTBase
 from circuitsim.components.capacitor import Capacitor
+from circuitsim.components.custom_macro import CustomMacroBlock
 from circuitsim.components.ground import Ground
 from circuitsim.components.inductor import Inductor
 from circuitsim.components.led import LED
 from circuitsim.components.lightbulb import Lightbulb
 from circuitsim.components.logic_gate import LogicGate
+from circuitsim.components.mcu import MCUBlock
 from circuitsim.components.meters import Ammeter, Voltmeter
+from circuitsim.components.mosfet import MOSFETBase
+from circuitsim.components.ne555 import NE555
+from circuitsim.components.opamp import OpAmp
+from circuitsim.components.oscilloscope import Oscilloscope
+from circuitsim.components.potentiometer import Potentiometer
+from circuitsim.components.power import Fuse, SPDTRelay, Transformer
 from circuitsim.components.resistor import Resistor
+from circuitsim.components.sequential import DigitalSequentialBlock
 from circuitsim.components.sources import ACVoltageSource, DCCurrentSource, DCVoltageSource
 from circuitsim.components.switch import Switch
 from circuitsim.engine.errors import (
@@ -71,6 +81,27 @@ class Circuit:
     def __init__(self) -> None:
         self._components: dict[str, Component] = {}
         self.version: int = 0
+        self._flat_cache_ver: int = -1
+        self._flat_cache: list[Component] = []
+
+    def flat_components(self) -> list[Component]:
+        """Return components with any ``CustomMacroBlock`` instances recursively flattened."""
+        if self._flat_cache_ver == self.version:
+            return self._flat_cache
+        raw = list(self._components.values())
+        if not any(isinstance(c, CustomMacroBlock) for c in raw):
+            self._flat_cache = raw
+            self._flat_cache_ver = self.version
+            return raw
+        flat: list[Component] = []
+        for comp in raw:
+            if isinstance(comp, CustomMacroBlock):
+                flat.extend(comp.expand_internal_components())
+            else:
+                flat.append(comp)
+        self._flat_cache = flat
+        self._flat_cache_ver = self.version
+        return flat
 
     def add(self, component: Component) -> Component:
         """Add a component to the circuit and increment the topology version."""
@@ -113,14 +144,14 @@ class Circuit:
         """Return the set of node names explicitly connected to a Ground component."""
         return {
             comp.node
-            for comp in self._components.values()
+            for comp in self.flat_components()
             if isinstance(comp, Ground)
         }
 
     def all_nodes(self) -> set[str]:
         """Return all node names referenced by any component in the circuit."""
         nodes: set[str] = set()
-        for comp in self._components.values():
+        for comp in self.flat_components():
             nodes.update(comp.nodes)
         return nodes
 
@@ -158,7 +189,7 @@ class Circuit:
         # Voltage sources become 0 V constraints with series r_internal.
         # Any other inductor with dcr == 0 also acts as a 0 V DC short branch.
         zeroed_vs_branches: list[tuple[str, str, float]] = []
-        for comp in self._components.values():
+        for comp in self.flat_components():
             if comp.name == exclude_component or isinstance(comp, (Ground, Capacitor)):
                 continue
             if isinstance(comp, (DCVoltageSource, ACVoltageSource)):
@@ -179,7 +210,7 @@ class Circuit:
             for idx in range(n_nodes):
                 mat[idx, idx] += gmin_val
 
-            for comp in self._components.values():
+            for comp in self.flat_components():
                 if comp.name == exclude_component or isinstance(
                     comp, (Ground, Capacitor, DCVoltageSource, ACVoltageSource)
                 ):
@@ -195,9 +226,51 @@ class Circuit:
                     if io is not None:
                         mat[io, io] += comp.g_out
                     continue
+                if isinstance(comp, (MCUBlock, DigitalSequentialBlock)):
+                    for pin, p_node in zip(comp.pin_names, comp.nodes):
+                        ip = node_to_idx.get(p_node)
+                        if ip is not None:
+                            mat[ip, ip] += comp.pin_conductance(pin)
+                    continue
+                if isinstance(comp, Oscilloscope):
+                    g_mat, _ = comp.companion_stamp(
+                        gnd_wired=self.is_oscilloscope_gnd_wired(comp)
+                    )
+                    idxs = [node_to_idx.get(n) for n in comp.nodes]
+                    for r_i, ri in enumerate(idxs):
+                        if ri is not None:
+                            for c_j, cj in enumerate(idxs):
+                                if cj is not None and g_mat[r_i][c_j] != 0.0:
+                                    mat[ri, cj] += g_mat[r_i][c_j]
+                    continue
+                if isinstance(comp, (NE555, Transformer, SPDTRelay)):
+                    g_mat, _ = comp.companion_stamp()
+                    idxs = [node_to_idx.get(n) for n in comp.nodes]
+                    for r_i, ri in enumerate(idxs):
+                        if ri is not None:
+                            for c_j, cj in enumerate(idxs):
+                                if cj is not None:
+                                    mat[ri, cj] += g_mat[r_i][c_j]
+                    continue
+
+                if isinstance(comp, Potentiometer):
+                    for na, nb, g in (
+                        (comp.node_a, comp.node_w, comp.g_aw),
+                        (comp.node_w, comp.node_b, comp.g_wb),
+                    ):
+                        ia = node_to_idx.get(na)
+                        ib = node_to_idx.get(nb)
+                        if ia is not None:
+                            mat[ia, ia] += g
+                        if ib is not None:
+                            mat[ib, ib] += g
+                        if ia is not None and ib is not None:
+                            mat[ia, ib] -= g
+                            mat[ib, ia] -= g
+                    continue
 
                 g = 0.0
-                if isinstance(comp, (Resistor, Switch, Lightbulb, Voltmeter, Ammeter, LED)):
+                if isinstance(comp, (Resistor, Switch, Fuse, Lightbulb, Voltmeter, Ammeter, LED)):
                     g = comp.conductance
                 elif isinstance(comp, Inductor) and comp.dcr > 0.0:
                     g = 1.0 / comp.dcr
@@ -245,6 +318,18 @@ class Circuit:
         vb = float(sol[idx_b]) if idx_b is not None else 0.0
         return max(0.0, va - vb)
 
+    def is_oscilloscope_gnd_wired(self, osc: Oscilloscope) -> bool:
+        """Return True if the oscilloscope's `GND` terminal connects to any circuit node/part."""
+        g_node = osc.node_gnd
+        if g_node in self.grounded_nodes():
+            return True
+        if osc.nodes.count(g_node) > 1:
+            return True
+        for other in self.flat_components():
+            if other is not osc and g_node in other.nodes:
+                return True
+        return False
+
     def is_ammeter_in_parallel(self, comp: Ammeter) -> bool:
         """Return True if comp is connected in parallel across a voltage source or short."""
         if not isinstance(comp, Ammeter) or len(comp.nodes) < 2:
@@ -260,13 +345,15 @@ class Circuit:
             return True
 
         battery_dsu = _DisjointSet()
-        for c in self._components.values():
+        for c in self.flat_components():
             if isinstance(c, (DCVoltageSource, ACVoltageSource)):
                 battery_dsu.union(canonical(c.nodes[0]), canonical(c.nodes[1]))
 
         return battery_dsu.find(c_a) == battery_dsu.find(c_b)
 
-    def validate_topology(self) -> list[CircuitWarning]:
+    def validate_topology(
+        self, *, regularize_ideal_loops: bool = False
+    ) -> list[CircuitWarning]:
         """Validate the circuit graph for fatal errors and non-fatal warnings.
 
         Checks performed:
@@ -274,7 +361,8 @@ class Circuit:
             2. Every node has at least 2 terminal connections and a path to
                ground (`FloatingNodeError`).
             3. Ideal voltage sources do not form a cycle or short to ground
-               (`VoltageSourceLoopError`).
+               (`VoltageSourceLoopError`), unless `regularize_ideal_loops=True`,
+               which records `ideal_loop_regularized` warnings instead.
             4. Ammeters are not connected directly in parallel across fixed
                voltage sources or shorted nodes (`CircuitWarning`).
 
@@ -289,7 +377,7 @@ class Circuit:
             )
 
         non_ground_comps = [
-            c for c in self._components.values() if not isinstance(c, Ground)
+            c for c in self.flat_components() if not isinstance(c, Ground)
         ]
         if not non_ground_comps:
             return warnings
@@ -318,6 +406,84 @@ class Circuit:
                 terminal_degree[comp.output_node] += 2
                 adjacency[c_out].add(CANONICAL_GND)
                 adjacency[CANONICAL_GND].add(c_out)
+                continue
+            if isinstance(comp, (MCUBlock, DigitalSequentialBlock)):
+                for p_node in comp.nodes:
+                    c_pin = canonical(p_node)
+                    terminal_degree[p_node] += 2
+                    adjacency[c_pin].add(CANONICAL_GND)
+                    adjacency[CANONICAL_GND].add(c_pin)
+                continue
+            if isinstance(comp, Oscilloscope):
+                for p_node in comp.nodes:
+                    c_pin = canonical(p_node)
+                    terminal_degree[p_node] += 2
+                    adjacency[c_pin].add(CANONICAL_GND)
+                    adjacency[CANONICAL_GND].add(c_pin)
+                continue
+            if isinstance(comp, NE555):
+                cgnd = canonical(comp.node_gnd)
+                cvcc = canonical(comp.node_vcc)
+                adjacency[cgnd].add(cvcc)
+                adjacency[cvcc].add(cgnd)
+                for p_node in comp.nodes:
+                    c_pin = canonical(p_node)
+                    terminal_degree[p_node] += 1
+                    adjacency[c_pin].add(cgnd)
+                    adjacency[cgnd].add(c_pin)
+                terminal_degree[comp.node_out] += 1
+                terminal_degree[comp.node_vcc] += 1
+                terminal_degree[comp.node_gnd] += 1
+                continue
+            if isinstance(comp, Transformer):
+                cp1, cp2, cs1, cs2 = (canonical(n) for n in comp.nodes)
+                for n in comp.nodes:
+                    terminal_degree[n] += 1
+                adjacency[cp1].add(cp2)
+                adjacency[cp2].update((cp1, cs2))
+                adjacency[cs1].add(cs2)
+                adjacency[cs2].update((cs1, cp2))
+                continue
+            if isinstance(comp, SPDTRelay):
+                ccp, ccn, ccom, cno, cnc = (canonical(n) for n in comp.nodes)
+                for n in comp.nodes:
+                    terminal_degree[n] += 1
+                adjacency[ccp].add(ccn)
+                adjacency[ccn].add(ccp)
+                adjacency[ccom].update((cno, cnc))
+                adjacency[cno].add(ccom)
+                adjacency[cnc].add(ccom)
+                continue
+
+            if isinstance(comp, Potentiometer):
+                for u, v in ((comp.node_a, comp.node_w), (comp.node_w, comp.node_b)):
+                    cu, cv = canonical(u), canonical(v)
+                    terminal_degree[u] += 1
+                    terminal_degree[v] += 1
+                    adjacency[cu].add(cv)
+                    adjacency[cv].add(cu)
+                continue
+
+            if isinstance(comp, (BJTBase, MOSFETBase)):
+                c0, c1, c2 = canonical(comp.nodes[0]), canonical(comp.nodes[1]), canonical(comp.nodes[2])
+                for n in comp.nodes[:3]:
+                    terminal_degree[n] += 1
+                adjacency[c0].update((c1, c2))
+                adjacency[c1].update((c0, c2))
+                adjacency[c2].update((c0, c1))
+                continue
+
+            if isinstance(comp, OpAmp):
+                cp = canonical(comp.node_in_pos)
+                cn = canonical(comp.node_in_neg)
+                co = canonical(comp.node_out)
+                terminal_degree[comp.node_in_pos] += 1
+                terminal_degree[comp.node_in_neg] += 1
+                terminal_degree[comp.node_out] += 2
+                adjacency[cp].add(cn)
+                adjacency[cn].add(cp)
+                adjacency[co].add(CANONICAL_GND)
+                adjacency[CANONICAL_GND].add(co)
                 continue
 
             if len(comp.nodes) < 2:
@@ -365,10 +531,22 @@ class Circuit:
                         for name, na, nb in seen_ideal_vs
                         if vs_dsu.find(na) == loop_root
                     ] + [comp.name]
-                    raise VoltageSourceLoopError(
-                        sources=tuple(loop_sources),
-                        message="Voltage sources in a loop",
-                    )
+                    if regularize_ideal_loops:
+                        warnings.append(
+                            CircuitWarning(
+                                code="ideal_loop_regularized",
+                                message=(
+                                    f"Ideal voltage source loop ({', '.join(loop_sources)}) "
+                                    "regularized with small series impedance (1 uOhm)."
+                                ),
+                                component_names=tuple(loop_sources),
+                            )
+                        )
+                    else:
+                        raise VoltageSourceLoopError(
+                            sources=tuple(loop_sources),
+                            message="Voltage sources in a loop",
+                        )
                 seen_ideal_vs.append((comp.name, c_a, c_b))
 
         # 4. Check for ammeters connected directly across a rigid voltage difference.
@@ -424,9 +602,67 @@ class Circuit:
         wire_short_dsu = _DisjointSet()
 
         for comp in non_ground_comps:
+            if isinstance(comp, Potentiometer):
+                for u, v in ((comp.node_a, comp.node_w), (comp.node_w, comp.node_b)):
+                    cu, cv = canonical(u), canonical(v)
+                    external_adj[cu].add(cv)
+                    external_adj[cv].add(cu)
+                    if cu != canonical_gnd and cv != canonical_gnd:
+                        passive_signal_adj[cu].add(cv)
+                        passive_signal_adj[cv].add(cu)
+                continue
+
             if isinstance(comp, LogicGate):
                 driven_seeds.add(canonical(comp.output_node))
                 continue
+            if isinstance(comp, (MCUBlock, DigitalSequentialBlock)):
+                for pin, p_node in zip(comp.pin_names, comp.nodes):
+                    if comp.is_output_pin(pin):
+                        driven_seeds.add(canonical(p_node))
+                continue
+            if isinstance(comp, Oscilloscope):
+                continue
+            if isinstance(comp, NE555):
+                cgnd = canonical(comp.node_gnd)
+                cvcc = canonical(comp.node_vcc)
+                cout = canonical(comp.node_out)
+                cdis = canonical(comp.node_dis)
+                external_adj[cvcc].add(cgnd)
+                external_adj[cgnd].add(cvcc)
+                external_adj[cout].add(cvcc if comp.output_high else cgnd)
+                external_adj[cvcc if comp.output_high else cgnd].add(cout)
+                external_adj[cdis].add(cgnd)
+                external_adj[cgnd].add(cdis)
+                driven_seeds.add(cout)
+                continue
+            if isinstance(comp, Transformer):
+                cp1, cp2, cs1, cs2 = (canonical(n) for n in comp.nodes)
+                external_adj[cp1].add(cp2)
+                external_adj[cp2].add(cp1)
+                external_adj[cs1].add(cs2)
+                external_adj[cs2].add(cs1)
+                external_adj[cp2].add(cs2)
+                external_adj[cs2].add(cp2)
+                continue
+            if isinstance(comp, SPDTRelay):
+                ccp, ccn, ccom, cno, cnc = (canonical(n) for n in comp.nodes)
+                external_adj[ccp].add(ccn)
+                external_adj[ccn].add(ccp)
+                external_adj[ccom].update((cno, cnc))
+                external_adj[cno].add(ccom)
+                external_adj[cnc].add(ccom)
+                continue
+
+            if isinstance(comp, (BJTBase, MOSFETBase)):
+                c1, c2 = canonical(comp.nodes[1]), canonical(comp.nodes[2])
+                external_adj[c1].add(c2)
+                external_adj[c2].add(c1)
+                continue
+
+            if isinstance(comp, OpAmp):
+                driven_seeds.add(canonical(comp.node_out))
+                continue
+
             if len(comp.nodes) < 2:
                 continue
             c_a = canonical(comp.nodes[0])

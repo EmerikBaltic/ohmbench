@@ -1,5 +1,104 @@
 # Project Progress — Ohmbench (formerly CircuitSim)
 
+## PHASE I QUEUE (QOL FIXES, LIGHT THEME, 555/POWER/DIGITAL, CURVE TRACER & BOM)
+- [x] `I0` (`done`): Initialized Phase I queue in `PROGRESS.md`, verified clean `wire-redesign` tree at `checkpoint/H-done` (`312f59e`), and created `tests/test_i_advanced_workbench.py` with offscreen Qt scaffolding.
+- [x] `I1` (`done`): Fixed half-overlapping component stacking by replacing the inset body box with `_component_footprint_rect_at` / `_has_component_collision` (2 px tip inset -> 76x36 px collision span on 80x40 parts plus terminal-in-interior check), blocking overlapping interactive/drop placements (except G7 overlaid voltmeters) and reverting colliding drags in `commit_component_move_tracking()`. Updated `main_window.py` & `view.py` callers and added `test_i1_full_span_collision_blocks_overlap_allows_series_and_reverts_drag`. Note: `test_g4: spiral-offset 10 stacked clicks / snap-away drag -> block overlapping placement (count stays 1) & revert overlapping drag to start position (I1 owner rule)`.
+- [x] `I2` (`done`): Fed `StressLevel.OVERLOAD` / `StressLevel.WARNING` reports into `CircuitScene.latest_stress_diagnostics`, `ProblemsPanel` (`"Overload"` / `"Derating"` rows with part click-to-center navigation), `MainWindow.refresh_diagnostics_display` + status bar count, `MainWindow._update_info_panel` stress banner, and live `ComponentItem.toolTip()` updates (`test_i2_overload_badge_populates_problems_panel_tooltip_and_inspector`, `test_i2_stress_overload_appears_in_problems_panel`).
+- [x] `I3` (`done`): Overhaul Light Theme contrast (`LIGHT_PALETTE`, `QDockWidget::title`) and sync Properties panel shortcut help text with `AppSettings.shortcuts`.
+- [x] `I4` (`done`): Add 555 Timer IC (`ne555`) & Voltage Comparator (`comparator`) with MNA stamps, latch/astable oscillation, IEC symbols & palette entries.
+- [x] `I5` (`done`): Add Power & Protection components (`transformer`, `spdt_relay`, blowable/resettable `fuse`) with MNA stamps, hysteresis & stress/reset integration.
+- [x] `I6` (`done`): Add Sequential Digital Logic & Displays (`d_flipflop`, `jk_flipflop`, `counter_4bit`, `seven_seg_display`) with live 7-segment rendering.
+- [x] `I7` (`done`): Add Qt-free I-V Characteristic Curve Tracer (`circuitsim.engine.curve_tracer`) and `CurveTracerDialog` (`Simulation > I-V Curve Tracer...`) with CSV export.
+- [x] `I8` (`done`): Add Benchtop Digital Multimeter (DMM) tab (DC V, AC RMS, DC A, Resistance/Continuity) and Oscilloscope X-Y Lissajous mode.
+- [x] `I9` (`done`): Add automated Bill of Materials & Thermal Power Budget (`circuitsim.io.bom_export` + UI dialog) and Custom Subcircuit Macro packaging (`CustomMacroBlock`).
+- [x] `I10` (`done`): Add undoable Alignment & Distribution tools (`CircuitScene.align_selected`, `distribute_selected` + `Edit > Align & Distribute`), toggleable corner Minimap (`_MinimapOverlay` in `CircuitView` + `View > Show Minimap`), expand `BUILTIN_TEST_JIGS` to 18 circuits, and update `PROGRESS.md` & `AGENT_INSTRUCTIONS.md`. Note: `tests/test_f7_wav_and_jigs.py: len(jigs) == 12 -> len(jigs) == 18` and `tests/test_h_workbench_expansion.py::test_h10_all_twelve_test_jigs_load_validate_and_solve: len(jigs) == 12 -> len(jigs) == 18 (I10 expanded BUILTIN_TEST_JIGS from 12 to 18)`.
+- [x] `GATE I` (`done`): Gate I targeted suite (`tests/test_i_advanced_workbench.py`, `tests/test_g_qol_fixes.py`, `tests/test_problems_panel.py`, `tests/test_paint_safety_and_theme_palette.py`, `tests/test_f7_wav_and_jigs.py`, `tests/test_h_workbench_expansion.py`) passed (`44 passed in 18.37s`); verified zero Qt imports across `wiring/`, `engine/`, `components/`, `io/`, `templates/`; tagged `checkpoint/I-done`.
+
+## PHASE H QUEUE (PALETTE, ROUTER, ACTIVE SEMICONDUCTORS & WORKBENCH UI)
+- [x] `H0` (`done`): Initialized Phase H queue in `PROGRESS.md`, verified clean `wire-redesign` tree at `checkpoint/F-done` (`a451b18`), and created `tests/test_h_workbench_expansion.py` with offscreen Qt scaffolding.
+- [x] `H1` (`done`): Fixed parallel component wire routing in `circuitsim.wiring.router.route()` by removing `same_facing_pins` blocking from the 0-bend straight line bypass (still blocking backtracking or intersecting any body interior), so vertically/horizontally aligned unobstructed terminals route as straight 2-point lines without 1-unit U-loop jogs. Created `tests/test_wire_router.py` re-exporting `tests/test_wiring_router.py` + H1 parallel/obstacle tests, and added `test_h1_parallel_voltmeter_inductor_straight_2point_wires`. Note: existing `tests/test_wiring_router.py` required no assertion changes; `test_d5: QPointF(0.0, 60.0) -> QPointF(0.0, 40.0) (H1 straight wire between aligned terminals at y=40)`.
+- [x] `H2` (`done`): Added vertical `QScrollBar:vertical` / `QScrollBar::handle:vertical` QSS rules in `themes.py` (Dark & Light), `ScrollBarAsNeeded` + `ScrollPerPixel` + `setMinimumHeight(0)` in `palette_dock.py`, updated search placeholder (`"Search components (e.g. NPN, Op-Amp, 555)..."`) with auto-expand on matches & restore on clear, and compact `Expand All` / `Collapse All` buttons (`test_h2_palette_vertical_scrollbar_search_and_expand_collapse`).
+- [x] `H3` (`done`): Added `NPNBJT` (`npn_bjt`), `PNPBJT` (`pnp_bjt`), and `ZenerDiode` (`zener_diode`) in `components/bjt.py` & `components/diode.py`; registered parameters (`G1`), `factory.py`, symbol JSONs & procedural IEC symbols, `TO-92: 1-E, 2-B, 3-C` / `Anode/Cathode` pinouts (`F12`), stress checks (`F4`), Ebers-Moll/Early MNA Jacobian & Newton `pnjlim` solver stamps (`solver.py`, `netlist.py`, `ac_analysis.py`), and SPICE `.MODEL NPN`/`PNP`/`D(BV=...)` import (`spice_import.py`, `spice_import_dialog.py`). Verified with 5.1 V Zener regulator, NPN/PNP emitter followers, and SPICE import (`test_h3_zener_regulator_npn_pnp_emitter_follower_and_spice`).
+- [x] `H4` (`done`): Added Level-1 Shichman-Hodges `NMOS` (`nmos`) and `PMOS` (`pmos`) in `components/mosfet.py` and `OpAmp` (`opamp`) with smooth `tanh` rail clamping in `components/opamp.py`; added symbol JSONs & procedural IEC symbols (`symbol_renderer.py`), parameters (`G1`), `factory.py`, KiCad export mapping, topology validation (`netlist.py`), AC small-signal & DC/transient MNA Jacobian + NR limiting/telemetry stamps (`solver.py`, `ac_analysis.py`), `TO-92`/`8-Pin DIP` pinouts (`F12`), and stress checks (`F4`). Verified with NMOS/PMOS saturation, Op-Amp inverting/non-inverting/rail-clipping, and `.circ` v2 round-trip (`test_h4_nmos_pmos_saturation_and_opamp_amplifiers`).
+- [x] `H5` (`done`): Upgraded `MCUBlock` (`components/mcu.py`) with `DEFAULT_STARTER_CODE`, programmable `code` property & `set_firmware_code()` compiler, `serial_log` (`mcu.log()` bounded to 200 lines), `adc_read` alias, script execution in `evaluate_firmware()`, live pin telemetry rows, and `CodeType`-safe `__deepcopy__` + netlist mirror sync; persisted `mcu.code` via `_EXTRA_SETTINGS["mcu"]` (`circ_serializer.py`, `.circ` v2, and `ohmbench://c/` share URLs). Created `src/circuitsim/dialogs/mcu_firmware_dialog.py` (`MCUFirmwareDialog` with monospace editor, `Verify / Compile` syntax guard, 6-row live Pin Table, Serial Monitor + Clear Log) and wired double-click & context menu in `view.py` (`test_h5_mcu_firmware_dialog_editor_serial_monitor_and_share_url`).
+- [x] `H6` (`done`): Created `src/circuitsim/app/sweep_panel.py` (`SweepAnalysisDialog` with Tab 1 `.STEP` sweep curve plotter + table and Tab 2 Monte Carlo histogram + Nominal/Mean/StdDev/Min/Max + CSV exports), added parameter aliases in `src/circuitsim/engine/sweep.py`, and wired `"Parameter &Sweep & Monte Carlo..."` in `main_window.py` `Simulation` menu (`test_h6_parameter_sweep_and_monte_carlo_dialog_and_csv`).
+- [x] `H7` (`done`): Added `net_label: str = ""` to `Wire` and `Junction` (`wiring/model.py`, preserved across splits/merges/subgraphs), case-insensitive net unification & explicit MNA node naming in `wiring/netlist.py` (without false open-wire warnings on labeled stubs), pentagonal net-flag rendering on `WireItem`/`JunctionItem` (`wire_item.py`), undoable `CircuitScene.set_net_label` + hotkey `N` & context menu (`scene.py`, `view.py`), `.circ` v2 / `ohmbench://c/` share serialization (`wiring/serializer.py`), and KiCad `(label ...)` export (`kicad_export.py`) (`test_h7_named_net_labels_electrical_unification_and_serialization`).
+- [x] `H8` (`done`): Added Qt-free `src/circuitsim/engine/fft_analysis.py` (`FFTSpectrumResult`, `compute_fft_spectrum` with Hann windowing + Parseval mainlobe integration + parabolic fundamental estimation), exported in `circuitsim.engine`, added 3rd `"FFT Spectrum"` tab in `BenchtopInstrumentsDialog` (`instruments_panel.py`), and added toggleable on-canvas live Voltage/Current Probe Badges on `WireItem` (`wire_item.py`, `scene.toggle_voltage_probe_badge`, `scene.apply_solve_result`, wire context menu in `view.py`) (`test_h8_fft_spectrum_thd_and_on_canvas_probe_badge`).
+- [x] `H9` (`done`): Upgraded `CircuitScene._update_graph_for_transformed_components` (`scene.py`) so moving a multi-component subcircuit rigidly translates internal junctions, FreeEnds, and wire bends (`hints`) by exact `(dx, dy)` in one undoable `MoveComponentsCommand`; changed default `paste_clipboard()` grid offset to `(+60, +60)` preserving `net_label`; added `CircuitScene.duplicate_selected()` wired to `Ctrl+D` in `main_window.py`, `view.py`, and context menu (`test_h9_subcircuit_duplicate_copy_paste_and_rigid_group_move`).
+- [x] `H10` (`done`): Expanded `BUILTIN_TEST_JIGS` (`src/circuitsim/templates/test_jigs.py`) from 6 to 12 reference circuits (added Common-Emitter NPN Amplifier, 5.1 V Zener Regulator, NMOS Low-Side LED Driver, Op-Amp Non-Inverting Amplifier, Op-Amp RC Relaxation Oscillator, and MCU Analog Threshold LED Controller); updated `AGENT_INSTRUCTIONS.md` with Phase H summary (`test_h10_all_twelve_test_jigs_load_validate_and_solve`, `tests/test_f7_wav_and_jigs.py`). Note: `tests/test_f7_wav_and_jigs.py: len(jigs) == 6 -> len(jigs) == 12 (H10 expanded built-in Test Jigs catalog from 6 to 12)`.
+- [x] `GATE H` (`done`): Passed Gate H sequential verification on `wire-redesign`: `tests/test_h_workbench_expansion.py` + `tests/test_wire_router.py` + `tests/test_g_qol_fixes.py` -> `29 passed in 3.83s`; Phase F regression (`tests/test_f3..test_f12`) -> `44 passed in 8.26s`; verified zero `PySide6`/`PyQt` imports across `wiring`, `engine`, `components`, `io`, and `templates`. Tagged `checkpoint/H-done`.
+
+## FIX QUEUE (branch `wire-redesign`)
+- [x] `E0` (`done`): Created `tests/ui_flow_helpers.py` and `tests/test_ui_flow_bugs.py`; reproduced E1–E5 on both `wire-redesign` (`99e80b2`) and `main` (`checkpoint/A-done` `12fb46f` via worktree), marked `xfail(strict=True)`.
+  | Bug | Fails on `main` (`12fb46f`) | Fails on `wire-redesign` (`99e80b2`) | Notes / Failing Line |
+  |---|---|---|---|
+  | `E1` | no | yes | Raises `WireGraphError` in `_update_info_panel` during `DeleteItemsCommand.redo()` (`tests/test_ui_flow_bugs.py:73`) |
+  | `E2` | yes | yes | Shared zoom/snap radius & wire-on-wire (`tests/test_ui_flow_bugs.py:119`, `N3 != N1` on `main`, `N1 != N4` on `wire-redesign`) |
+  | `E3` | yes | yes | Shared drag/drop behavior onto wire (`tests/test_ui_flow_bugs.py:170`, `A1` left disconnected) |
+  | `E4` | yes | yes | Shared `themes.py` missing `QToolButton:checked`, status text, `Esc` (`tests/test_ui_flow_bugs.py:190`) |
+  | `E5` | yes | yes | Shared `ComponentItem._paint_impl` opaque plate over wire (`tests/test_ui_flow_bugs.py:261`) |
+- [x] `E1` (`done`): Fixed `Select All + Delete` crash (`DeleteItemsCommand`, `PasteItemsCommand`, `AddComponentCommand` atomically suppress `_on_selection_changed` until both `_placed_items` and `WireGraph` match; added `WireGraph.detach_component`, `CircuitScene.select_all` / `Ctrl+A`). Before fix: `tests/test_ui_flow_bugs.py:73: AssertionError: Unhandled slot exception(s) on Delete: [WireGraphError('Wire W2 is attached to missing component VM1. Wire W3 is attached to missing component VM1.'), ...]`. Delete rule: UI delete (`Del`, `Backspace`, `Ctrl+X`/context menu/Edit->Delete) passes `detach_unselected_wires=True` (selected wires removed, unselected wires attached to deleted components convert that end to `FreeEnd`); programmatic `scene.delete_selected()` defaults to `detach_unselected_wires=False` for backwards compatibility with existing unit tests.
+- [x] `E2` (`done`, resolved in `G5`): Fixed zoom-independent terminal/wire snap (`AUTO_CONNECT_TOLERANCE_PX = 12.5`), finishing clicks onto existing wire interiors/corners in `is_snap_target_at`, and `_auto_connect_graph_endpoints` T-junction splitting; removed `xfail` on `test_e2_repro_terminal_snap_zoom_and_wire_on_wire` (passes cleanly). Note: updated `tests/test_phase5_wire_tool.py` `# 8`: old test (Phase 5.1 placeholder leaving `FreeEnd` + `"junctions come in the next update"` notice when ending a wire on another wire) -> new test (auto-splits target wire into `JunctionRef` in 1 undo step per G5).
+- [x] `E3` (`done`): Fixed dropping/dragging 2-terminal parts onto straight/bent wires (`begin_component_move_tracking` snapshots `_move_start_wire_points`, `on_component_position_changed` freezes unattached wires so they never detour/flicker during drag, `_apply_component_split_on_drop` evaluates polylines excluding the dropped component's own obstacle and preserves outer bends while never tapping both terminals of a 2-terminal part in parallel; added Qt-free `find_overlapping_wire_segments` in `circuitsim.wiring.router`). Before fix: `tests/test_ui_flow_bugs.py:170: AssertionError: Ammeter A1 was left disconnected after drop onto wire!`. Tested across zooms 0.5/1.0/2.0, vertical/horizontal/bent wires, rotated/flipped parts, single-terminal tap, 24.0 mA series check, pass-over without drop, and 1-step undo (`395 passed, 1 deselected, 3 xfailed`).
+- [x] `E4` (`done`): Fixed Wire mode visibility & `Esc` behavior (`themes.py` added `QToolButton:checked` / `QToolButton:checked:hover` QSS using `selection_accent`/`ghost_tint` tokens; `main_window.py` `_on_wire_mode_changed` sets status bar `"Wire mode - click a terminal to start, Esc to leave"` and clears on exit; `view.py` `Key_Escape` cancels preview AND calls `set_wire_mode(False)`). Before fix: `tests/test_ui_flow_bugs.py:190: AssertionError: assert 'QToolButton:checked' in dark_css`. Owner-approved Phase 5.1 test update (`tests/test_phase5_wire_tool.py:131-132`): old test (`assert view.wire_mode_enabled is True` kept W mode on after `Esc` during preview) -> new test (`assert view.wire_mode_enabled is False` + `QTest.keyClick(view, Key_W)` to re-enter W mode for subsequent steps). Note: `task-10290` targeted suite passed (`19 passed, 2 xfailed`); fast suite `task-10294` had `395 passed, 2 xfailed` + 1 untouched timing flake `test_benchmark_solver_sink_overhead_under_5pct` (+5.41% vs 5.0% CPU limit).
+- [x] `E5` (`done`): Fixed label plates cutting wires (`component_item.py` fixed vertical-segment typo `rx1 <= seg_x <= ry2` -> `rx1 <= seg_x <= rx2` in `rect_intersects_segment` so `update_label_positions` label avoidance actually detects vertical wire collisions, and added `_plate_intersects_scene_wire` to omit the opaque `canvas_bg` fillRect under label/value plates whenever a scene wire crosses them while preserving z-order and empty-LED no-plate behavior; fixed `create_window_and_view` theme setter in `tests/ui_flow_helpers.py`). Before fix: `tests/test_ui_flow_bugs.py:261: AssertionError: Label plate overwrote wire at (40, 1.5) with canvas_bg #0d1117`. Tested in both Dark and Light themes (`397 passed, 1 deselected, 1 xfailed`).
+- [x] `E6` (`done`): Fixed `QFont::setPointSize: Point size <= 0 (-1)` startup warning (`themes.py` changed root `QMainWindow, QWidget` `font-size: 13px` -> `10pt` and `problems_panel.py` changed `11px` -> `8pt`, verified via `qInstallMessageHandler` test `test_e6_no_qfont_pointsize_warning_on_startup`); added `## 12. UI BUG RULE` to `AGENT_INSTRUCTIONS.md`; added `## MANUAL REGRESSION CHECKLIST` below.
+- [x] `GATE E` (`done`): Full test suite 3x sequentially (`400 passed, 1 xfailed` in `90.23s`, `90.13s`, `90.10s` via `.\.venv\Scripts\pytest.exe -q`) + `.\.venv\Scripts\python.exe -m pytest -q` (`400 passed, 1 xfailed in 90.92s`) + offscreen `MainWindow` divider smoke test (`test_gate_e_startup_divider_smoke` -> `6.666667 V`); sole xfail is owner-skipped `E2` (`reason="E2 skipped by owner"`). Tagged `checkpoint/E-done`.
+
+## MANUAL REGRESSION CHECKLIST
+Run these manual checks in the live desktop window (`.\.venv\Scripts\python.exe -m circuitsim.main`):
+1. **E1 (Select All + Delete + Undo)**: Build a divider + voltmeter/ammeter, press `Ctrl+A` then `Del` -> canvas empties cleanly without errors in terminal/crash log; press `Ctrl+Z` -> circuit returns identically and solves to expected voltages.
+2. **E2 (Wire Tool Snap & Wire-on-Wire — currently skipped in automated UI suite)**: Toggle Wire mode (`W`), zoom out (50%) and zoom in (200%), connect terminals and tap a wire onto the middle/bend of an existing wire. Verify connections conduct and undo cleanly.
+3. **E3 (Drop 2-Terminal Part onto Wire)**: Drag an ammeter over unrelated wires (verify unattached wires do not jump/flicker while dragging) and drop it directly on top of a live wire segment -> wire splits cleanly on both pins with zero overlapping segments or extra junction dots; 1 `Ctrl+Z` restores unbroken wire.
+4. **E4 (Wire Mode Visibility & Esc)**: Click toolbar `Wire` button -> button shows clear checked highlight, cursor turns to crosshair, status bar reads `"Wire mode - click a terminal to start, Esc to leave"`. Start drawing a wire, move across empty canvas, press `Esc` -> preview cancels AND Wire mode turns off (`Wire` button unchecked, arrow cursor restored, click selects normally). Test in both Dark and Light (`Ctrl+T`) themes.
+5. **E5 (Label Plates Over Wires)**: Place a voltmeter (`Rot`), wire across its readout/label region, run simulation -> wire remains cleanly visible through label/value text rather than being erased by an opaque box (check both Dark and Light themes).
+6. **E6 (Startup Console Cleanliness)**: Launch the app from PowerShell (`.\.venv\Scripts\python.exe -m circuitsim.main`) and switch Dark/Light themes -> verify zero `"QFont::setPointSize: Point size <= 0 (-1)"` warnings print to stderr.
+7. **F1–F12 Workbench Suite**: Toggle **View > Show Physical Pinout / Package Labels**, toggle **View > Voltage Colors / Current Dots / Stress Warnings**, open **Simulation > Virtual Instruments (Waveform & Bode)**, load a jig from **File > Test Jigs**, import a `.MODEL` / `.SUBCKT` via **File > Import SPICE Model / Subcircuit...**, and verify **File > Copy Share URL** / **Export as KiCad Schematic (.kicad_sch)** cleanly round-trip.
+8. **I1–I10 Advanced Workbench**: Verify Light Theme (`Ctrl+T`) matte contrast & light `Problems` dock title bar, empty-selection Properties shortcut summary reflects `Shortcuts...` edits, full-span non-overlapping placement/drag revert, overload warnings appear in Problems + Properties + Tooltips, `Simulation > I-V Curve Tracer...`, Virtual Instruments **DMM** tab & **X-Y Mode (CH1 vs CH2)**, **File > Bill of Materials & Power Report...**, **Edit > Align & Distribute**, **View > Show Minimap**, and all 18 Test Jigs.
+
+## PHASE F QUEUE (WORKBENCH UPGRADE)
+- **Baseline Gate E**: Tag `checkpoint/E-done` (`305563c` on `wire-redesign`), `400 passed, 1 xfailed` (sole xfail is owner-skipped `E2`) across all 4 Gate E runs (`pytest.exe -q` x3 + `python.exe -m pytest -q` x1).
+
+### Architecture Mapping Table
+| Layer / Package | Responsibility | Qt-Free? | Key Modules |
+|---|---|---|---|
+| `circuitsim.components` | Physical models, ratings, presets, pins (Resistors, Potentiometer, Switch, Diode/LED, Sources, MCUBlock) | Yes | `base.py`, `resistor.py`, `capacitor.py`, `inductor.py`, `diode.py` (F5), `led.py`, `sources.py` (`WavVoltageSource` F7), `switch.py`, `potentiometer.py` (F2), `mcu.py` (F11) |
+| `circuitsim.wiring` | Immutable `WireGraph`, orthogonal `router`, `netlist` extractor, v2 serializer, visual color/dot helpers | Yes | `model.py`, `router.py`, `netlist.py`, `serializer.py`, `overlay.py` (F3) |
+| `circuitsim.engine` | MNA solver, nonlinear convergence recovery, AC/Bode sweep, stress/derating, parameter/Monte-Carlo sweeps, session | Yes | `solver.py`, `netlist.py`, `simulation_session.py`, `errors.py`, `overlay.py` (F3), `stress.py` (F4), `ac_analysis.py` (F6), `sweep.py` (F10) |
+| `circuitsim.io` | `.circ` save/load, `.wav` signal I/O, `.model`/`.subckt` SPICE importer, URL codec, KiCad `.kicad_sch` exporter | Yes | `circ_serializer.py`, `wav_signal.py` (F7), `spice_import.py` (F8), `share_codec.py` (F9), `kicad_export.py` (F9) |
+| `circuitsim.templates` | Pre-built verified reference Test Jigs (`WireGraph` circuits) | Yes | `__init__.py`, `test_jigs.py` (F7) |
+| `circuitsim.scope` | Multi-channel oscilloscope capture buffer, triggers, measurements, FFT, math | Yes | `core.py`, `capture.py`, `trigger.py`, `measurements.py`, `math_fft.py` |
+| `circuitsim.canvas` | Interactive schematic scene/view, undo commands, symbol rendering, overlays, pub SVG/PNG export | Qt 6 | `scene.py`, `view.py`, `commands.py`, `component_item.py`, `wire_item.py`, `symbol_geometry.py`, `symbol_renderer.py`, `export.py` |
+| `circuitsim.dialogs` | Engineering notation value parser (`p, n, u, m, k, Meg, G`), tabbed Parameter & SPICE import dialogs | Qt 6 (parser Qt-free) | `value_parser.py` (Qt-free), `quick_edit_dialog.py`, `preferences_dialog.py`, `spice_import_dialog.py` (F8) |
+| `circuitsim.app` | Main window, dock panels, themes, live controls, virtual instrument bench, worker thread | Qt 6 | `main_window.py`, `palette_dock.py`, `problems_panel.py`, `themes.py`, `sim_worker.py`, `instruments_panel.py` (F6) |
+
+### Queue Items
+- [x] `F0` (`done`): Baseline audit (`checkpoint/E-done` `305563c`, `400 passed, 1 xfailed` at Gate E) + `PHASE F QUEUE` + architecture table + `tests/workbench_helpers.py` & `tests/test_f0_workbench_helpers.py` (`400 passed, 1 deselected, 1 xfailed`).
+- [x] `F1` (`done`): Ergonomic schematic entry — direct hotkeys (`R/C/L/D/V/I/G/W/Ctrl+R/F/Esc`), secondary `place_tb` + `&Place` menu, Qt-free `passive_pin_markers` Pin-0 tick & hovered/selected current-direction arrow inside `body_rect`, `analyze_engineering_input` (`m` vs `Meg` warning), tabbed `QuickValueDialog` (`Parameters` + `Max Ratings`, DC/Sine AC/Pulse mode tabs, read-only SPICE preview) (`405 passed, 1 deselected, 1 xfailed`).
+- [x] `F2` (`done`): Interactive controls without inspector slider (`Potentiometer` 3-terminal `a/w/b` with `alpha` in `[0.001, 0.999]`, `Switch.momentary`, live click-to-toggle & PAUSED re-solve in `SimulationSession`, procedural + SVG potentiometer symbol, no inspector `QSlider`) (`3 passed in 1.59s`).
+- [x] `F3` (`done`): Visual intuition overlay — Qt-free `map_voltage_to_rgb`, `compute_current_dot_velocity`, `estimate_wire_currents`, and `format_power_probe_text` in `circuitsim.engine.overlay` / `circuitsim.wiring.overlay`; toggleable View menu `"Voltage Colors"` and `"Current Dots"` overlays on `WireItem` / `CircuitScene`; Alt-hover instantaneous power thermometer (`tests/test_f3_visual_overlays.py` + `tests/test_g_qol_fixes.py`: `8 passed in 5.24s`).
+- [x] `F4` (`done`): Component stress, derating & overload warnings — Qt-free `evaluate_component_stress` / `StressLevel` / `StressReport` in `circuitsim.engine.stress`; `polarized` / `max_reverse_v` checks across resistors, LEDs, capacitors, bulbs; amber derating and red smoke/overload canvas badges on `ComponentItem` with View menu toggle `"Stress & Overload Warnings"` (solver continues running cleanly on overload) (`tests/test_f4_component_stress.py` + `tests/test_g_qol_fixes.py`: `8 passed in 4.25s`).
+- [x] `F5` (`done`): Solver robustness — Gmin & Source stepping convergence recovery, junction `delta V` damping, ideal loop regularization, deterministic symmetric oscillator startup perturbation (`+1 uV`), Shockley `N/I_s/R_s/V_br` diode clipping.
+- [x] `F6` (`done`): Benchtop virtual instruments — Qt-free `circuitsim.engine.ac_analysis` (`V(jw)`, dB, deg, `Z_in`, `Gamma`), multi-channel Waveform Analyzer + Bode/Z_in panel (`V_pp`, `V_rms`, `V_avg`, freq, cursors) (`tests/test_f6_instruments_and_ac.py` + `tests/test_g_qol_fixes.py` + `tests/test_design_decisions.py`: `15 passed in 3.41s`).
+- [x] `F7` (`done`): Audio `.wav` I/O (`circuitsim.io.wav_signal`, `WavVoltageSource`, resample export) + 6 built-in Test Jigs (`circuitsim.templates` + UI menu) (`tests/test_f7_wav_and_jigs.py` + `tests/test_g_qol_fixes.py`: `10 passed in 3.40s`).
+- [x] `F8` (`done`): 3rd-party SPICE `.MODEL`/`.SUBCKT` importer (`circuitsim.io.spice_import`), explicit pin-order mapper, encrypted vendor detector (`EncryptedModelError`), UI import dialog (`tests/test_f8_spice_import.py` + `tests/test_g_qol_fixes.py`: `15 passed in 3.21s`).
+- [x] `F9` (`done`): Share URL codec (`ohmbench://c/...`), KiCad `.kicad_sch` S-expression exporter, publication high-contrast light-background SVG/PNG export without UI chrome (`tests/test_f9_share_kicad_export.py` + `tests/test_g_qol_fixes.py`: `10 passed in 3.05s`).
+- [x] `F10` (`done`): Parallel parameter sweep & seeded Monte Carlo (`circuitsim.engine.sweep`) + `WireItem`/`ComponentItem` geometry cache guard for 60+ parts (`tests/test_f10_sweep_and_perf.py` + `tests/test_g_qol_fixes.py`: `10 passed in 4.98s`).
+- [x] `F11` (`done`): Mixed-signal `MCUBlock` (10 MOhm analog ADC inputs `A0/A1`, 25 Ohm Thevenin digital outputs `D0/D1/TX/RX`, local offline Python callback, `read_adc`), analog resistor ladder & 2-MCU co-simulation (`tests/test_f11_mixed_signal_mcu.py` + `tests/test_g_qol_fixes.py`: `11 passed in 3.00s`).
+- [x] `F12` (`done`): Toggleable physical package/pinout label overlay + `AGENT_INSTRUCTIONS.md` & `PROGRESS.md` final docs update (`tests/test_f12_pinout_overlay.py` + `tests/test_g_qol_fixes.py`: `8 passed in 3.21s`).
+- [x] `GATE F` (`done`): Phase F+G regression suite (`test_f3`–`test_f12` + `test_g_qol_fixes.py`: `50 passed in 12.29s`, `0 failed, 0 skipped, 0 xfailed`) verified via `.\.venv\Scripts\pytest.exe`; tagged `checkpoint/F-done`.
+
+## PHASE G QUEUE (OWNER QOL & BUG FIXES)
+- [x] `G1` (`done`): Fixed `ComponentParameter` (`min_value`, `max_value`, `description` optional defaults) crash on component instantiation and disabled blocking modal `.exec()` crash dialogs in `crash_handler.py` under pytest / `QT_QPA_PLATFORM=offscreen`.
+- [x] `G2` (`done`): Removed inspector `QSlider` widget and signal handlers from `MainWindow` / `CircuitScene`; verified `info_dock` has zero `QSlider` children.
+- [x] `G3` (`done`): Fixed `CircuitView.wheelEvent` / `_apply_zoom` to anchor strictly at true viewport center `(w//2, h//2)` with dynamic `sceneRect` coverage (`tests/test_g_qol_fixes.py: 1 passed`).
+- [x] `G4` (`done`): Ignored auto-repeat hotkey events in `CircuitView.keyPressEvent` and added `_find_nearest_free_grid_pos` non-overlapping body placement/drop guards in `CircuitScene` (`tests/test_g_qol_fixes.py: 2 passed`).
+- [x] `G5` (`done`): Added `AUTO_CONNECT_TOLERANCE_PX = 12.5` and `_auto_connect_graph_endpoints` / `_auto_connect_touching_endpoints` in `CircuitScene` across wire finish/add, component place/move, and endpoint drag; updated `is_snap_target_at` to finish clicks onto wire interiors/FreeEnds; skipped degenerate self-parallel splits (`other_att in (w_other.end_a, w_other.end_b)`) and kept explicit coordinate `add_wire(points)` at `TERMINAL_SNAP_RADIUS_PX` (`10.0 px`); removed `E2` `xfail` (`test_g_qol_fixes.py: 3 passed`, `test_e2: 1 passed`). Note: updated `tests/test_phase5_wire_tool.py` `#4d`: old test (Phase 5.1 placeholder asserting `"junctions come in the next update"` notice when dropping a `FreeEnd` onto another wire) -> new test (asserts G5 auto-junction `JunctionRef` split).
+- [x] `G6` (`done`): Updated `circuitsim.wiring.router.route()` 0-bend straight orthogonal path to route perpendicular aligned wires straight without 1-unit side jogs while preserving obstacle avoidance and opposed-terminal loops (`tests/test_g_qol_fixes.py: 4 passed`).
+- [x] `G7` (`done`): Kept `scene.wire_graph` immutable during `mouseMoveEvent` drag previews (`on_component_position_changed`), added `_find_overlaid_2terminal_target` and `_connect_voltmeter_parallel_with` for overlaid `voltmeter` auto-wiring on placement and release (`tests/test_g_qol_fixes.py: 5 passed`).
+- [x] `G8` (`done`): Added `AppSettings.shortcuts` (`DEFAULT_SHORTCUTS` for rotate/flip/wire_mode/junction/delete and all component placements), `PreferencesDialog` **"Shortcuts"** tab + standalone `ShortcutsDialog` with duplicate conflict resolution & Reset to Defaults, and live dispatch in `CircuitView` / `MainWindow` (`tests/test_g_qol_fixes.py: 6 passed`).
+- [x] `GATE G` (`done`): Verified `tests/test_g_qol_fixes.py` + `tests/test_f2_interactive_controls.py` (`9 passed in 4.31s`) and full suite on `9b406fa` (`416 passed in 137.87s` via `.\.venv\Scripts\pytest.exe -q`, plus `.\.venv\Scripts\python.exe -m pytest -q`); tagged `checkpoint/G-done`.
+
 ## FLASH QUEUE
 - Phase 1 Task 1: Housekeeping (.gitignore, switch breakdown voltage hint, label collision avoidance) - [done]
 - Phase 1 Task 2: Recent Files (File > Open Recent, 8 files, injected path, missing file handling) - [done]
@@ -23,31 +122,37 @@
 - [x] `GATE A` (`done`): Run `.\.venv\Scripts\pytest.exe -q` 3 times consecutively (`370 passed` x3, 0 failures, 0 access violations) and tag `checkpoint/A-done`.
 
 ### PART B — WIRE REDESIGN PHASE 4 (branch `wire-redesign`)
-- [ ] `B0` (`todo`): Switch to `wire-redesign`, fast-forward merge `main`, write `OLD CODE MAP`, inspect & discard `stash@{0}` without dropping stash entry.
-- [ ] `B1` (`todo`): HYDROGEN QUEUE `4.1` — `CircuitScene` owns `WireGraph`; `WireItem(wire_id)` renders routed segments & junction dots; `AddWireCommand` / `RemoveWireCommand` operate on `WireGraph`.
-- [ ] `B2` (`todo`): HYDROGEN QUEUE `4.2` — Wire drawing tool creates `TerminalAttachment` / `JunctionAttachment` / `FreeAttachment`, live preview via `route()`, Esc cancels, `DeleteSelectionCommand` handles wires + components + junctions.
-- [ ] `B3` (`todo`): HYDROGEN QUEUE `4.3` — Component move (`MoveComponentsCommand`) re-routes all incident wires and cascades through attached junctions; live reroute during drag.
-- [ ] `B4` (`todo`): HYDROGEN QUEUE `4.4` — Component rotate/flip (`RotateComponentCommand`, `FlipComponentCommand`) updates terminal positions via shared transform and re-routes incident wires.
-- [ ] `B5` (`todo`): HYDROGEN QUEUE `4.5` — Segment dragging (`EditWireRoutingCommand`) inserts/updates `locked_elbow`, live preview, double-click resets `locked_elbow=None`.
-- [ ] `B6` (`todo`): HYDROGEN QUEUE `4.6` — Simulation netlist extraction in `CircuitScene` / `MainWindow` uses `circuitsim.wiring.netlist.build_netlist`; DC/AC/transient/probes/scope work identically.
-- [ ] `GATE B` (`todo`): Full test suite + offscreen `10 V` / `1 kΩ` / `2 kΩ` voltage divider smoke test (`6.667 V`), tag `checkpoint/B-done`.
+- [x] `B0` (`done`): Switch to `wire-redesign`, fast-forward merge `main`, run fast suite (`369 passed, 1 deselected in 49.48s`), inspect & discard `stash@{0}` without dropping stash entry, inspect `backup/stash-4-1`, write `OLD CODE MAP`.
+- [x] `B1` (`done`): HYDROGEN QUEUE `4.1` — `CircuitScene` backed by `WireGraph` (`scene.wire_graph`), attachment-based & legacy `add_wire`, graph undo/redo & `MoveComponentsCommand` merge (`mergeWith`).
+- [x] `B2` (`done`): HYDROGEN QUEUE `4.2` — Display (`WireItem` using `circuitsim.wiring.router.route()`, `JunctionItem` when `junction_dot_visible(jid)` / degree >= 3, `FreeEnd` hollow marker, 10 px hit stroke).
+- [x] `B3` (`done`, `17aabda`, 373 fast): HYDROGEN QUEUE `4.3` — Netlist via `circuitsim.wiring.netlist.build_circuit` and diagnostics (including `FreeEnd` amber open-wire note).
+- [x] `B4` (`done` `c1c1820`, 375 fast): HYDROGEN QUEUE `4.4` — Move, rotate, flip, delete components/wires/junctions preserving `TerminalRef` attachments + 100 random ops + S1 + S2.
+- [x] `B5` (`done` `3040025`, 376 fast): HYDROGEN QUEUE `4.5` — Save and load schema v2 (`CircuitDocumentV2`) + v1 auto-migration in `CircuitScene` and `MainWindow` (round-trip v2 + v1 divider/12V+12V + error safety + clean undo stack).
+- [x] `B6` (`done` `f0b29dc`, 377 fast): HYDROGEN QUEUE `4.6` — Existing features that touch wires (examples, export PNG/SVG, label collision avoidance, hover tooltips, zoom-to-fit, recent/dirty/undo).
+- [x] `GATE B` (`done` `fa985b2`, 378 full): Full test suite (`378 passed in 74.18s`) + offscreen `10 V` / `1 kΩ` / `2 kΩ` voltage divider smoke test (`6.666667 V`), tagged `checkpoint/B-done`.
+
+### OLD CODE MAP (cleaned in D5)
+- `src/circuitsim/canvas/connectivity.py`: Retained `WireSpec`, `route_orthogonal_wire`, `point_on_wire`, `point_strictly_inside_wire`, `find_wires_attached_to_components`, `reroute_wires_for_updated_terminals`, and `extract_connectivity` for existing unit tests (`test_circ_io.py`, `test_connectivity_and_editing.py`, `test_wire_snapping.py`, `test_rotation_and_moving_wires.py`) and legacy `.circ` v1 serializer compatibility; removed `find_wires_attached_to_components`, `reroute_wires_for_updated_terminals`, and `route_orthogonal_wire` imports from `scene.py`.
+- `src/circuitsim/canvas/scene.py`: Removed `_move_start_terminals`, `_move_start_wires`, `_insert_wire_item`, `_remove_wire_item`, `_set_explicit_junction`, and legacy `old_wire_map`/`old_wires`/`new_wires` snapshots in move/rotate/flip; rewrote `add_routed_wire` to route via `circuitsim.wiring.router.route()` and `WireGraph`. Retained `_explicit_junctions`, `_active_junction_dots`, and `_suppress_live_reroute` where actively used by `WireGraph` visibility and move-command synchronization.
+- `src/circuitsim/canvas/wire_item.py`: Retained `WireSpec` / `to_wire_spec()` for legacy `.circ` v1 serializer compatibility.
+- `src/circuitsim/canvas/commands.py`: Removed coordinate-only `else:` branches and `old_wire_points`/`new_wire_points` dicts from `AddWireCommand`, `ToggleJunctionCommand`, `MoveComponentsCommand`, `RotateComponentsCommand`, `FlipComponentsCommand`, `DeleteItemsCommand`, and `PasteItemsCommand` (requiring `WireGraph` transitions and updating explicit junction sets directly).
 
 ### PART C — WIRE REDESIGN PHASE 5 & 6 (branch `wire-redesign`)
-- [ ] `C1` (`todo`): `5.1` — Polarity & orientation audit (all 8 orientations `(0,90,180,270) x (no-flip, h-flip)`).
-- [ ] `C2` (`todo`): `5.2` — Save/load integration (`CircuitScene.to_dict` / `from_dict` using `circuitsim.wiring.serializer` schema v2 + v1 auto-migration).
-- [ ] `C3` (`todo`): `5.3` — View & zoom stability regression tests.
-- [ ] `C4` (`todo`): `5.4` — Paint safety & theme palette regression tests for new `WireItem` & junction dot rendering.
-- [ ] `C5` (`todo`): `5.5` — Full regression & cleanup of old tests (documenting any replaced geometric-wire test in `PROGRESS.md`).
-- [ ] `C6` (`todo`): `6.1` — Documentation & `PROGRESS.md` update.
-- [ ] `GATE C` (`todo`): Full test suite + tag `checkpoint/C-done`.
+- [x] `C1` (`done` `70fe674`, 378 fast): HYDROGEN QUEUE `5.1` — Interactive wire drawing tool re-enabled (live preview via `route()`, `10 px` terminal/junction snap, `FreeEnd`, wire-on-wire notice, `Esc`/right-click cancel, 1 undo step).
+- [x] `C2` (`done` `258e8cd`, 379 fast): HYDROGEN QUEUE `5.2` — Waypoint clicks while drawing + `Backspace` removes last waypoint + double-click finish + readable zero-undo rejections (same terminal/junction, duplicate wire, zero-length wire).
+- [x] `C3` (`done` `e594c34`, 380 fast): HYDROGEN QUEUE `5.3` — Interactive wire segment dragging (parallel slide updating `hints`, live preview via `route()`, 1 undo step). Acceptance: dragging an interior/movable horizontal or vertical wire segment slides it orthogonally, updates `Wire.hints` and reroutes cleanly via `route()`, and pushes 1 undo step on release (0 if unchanged).
+- [x] `C4` (`done` `875b03f`, 381 fast): HYDROGEN QUEUE `5.4` — Editing wire ends (`Acceptance S3`: drag handle, detach, reattach to terminal/junction/wire-split/`FreeEnd`, 1 undo step) + synthetic `QTest` mouse tests.
+- [x] `C5` (`done` `4d552ec`, 382 fast): HYDROGEN QUEUE `5.5` — Update/audit existing wire tests (document any replaced coordinate-mechanism test in `PROGRESS.md`) + performance benchmark (`route()` + 50-part drag step <= ~30 ms).
+- [x] `C6` (`done` `c053c45`, 383 fast): HYDROGEN QUEUE `6.1` — Verification matrix S1–S5, golden circuit round-trips, update `PROGRESS.md` and `README.md`.
+- [x] `GATE C` (`done` `4d973a0`, 384 full x3 + MainWindow divider smoke): Full test suite + tag `checkpoint/C-done`.
 
 ### PART D — WIRE REDESIGN STEP 4B (branch `wire-redesign`)
-- [ ] `D1` (`todo`): Split-on-drop (dropping component pin onto wire segment or wire endpoint onto component pin splits wire at junction in one undo macro).
-- [ ] `D2` (`todo`): Explicit `J` key junction placement at snapped cursor on wire segment.
-- [ ] `D3` (`todo`): Junction dragging (`MoveJunctionCommand(junction_id, old_pos, new_pos)`).
-- [ ] `D4` (`todo`): Copy/paste of selections containing components, wires, and junctions (`Ctrl+C` / `Ctrl+V`).
-- [ ] `D5` (`todo`): Remove dead old wire routing/endpoint code listed in `OLD CODE MAP`.
-- [ ] `GATE D` (`todo`): Full test suite + `python -m pytest -q` + tag `checkpoint/D-done`.
+- [x] `D1` (`done` `95685c3`, 384 fast): Split-on-drop (dropping component onto wire splits inline or taps junction in one undo step).
+- [x] `D2` (`done` `00e4dca`, 385 fast): Explicit `J` key junction placement on wire at snapped cursor via `split_wire_at`.
+- [x] `D3` (`done` `ca399f3`, 386 fast): Junction dragging (`MoveJunctionCommand(junction_id, old_pos, new_pos)` updating `Junction.pos` and rerouting incident wires).
+- [x] `D4` (`done` `186ec82`, 387 fast): Copy/paste of selections containing components, wires, and junctions (`Ctrl+C` / `Ctrl+V`).
+- [x] `D5` (`done` `819b46f`, 388 fast): Remove dead old wire routing/endpoint code listed in `OLD CODE MAP`.
+- [x] `GATE D` (`done`, 389 full x3 + `python -m pytest -q`): Full test suite (`389 passed` in `83.76s`, `83.56s`, `83.20s` via `.\.venv\Scripts\pytest.exe -q`, plus `389 passed in 83.89s` via `.\.venv\Scripts\python.exe -m pytest -q`) + tag `checkpoint/D-done`.
 
 ## HYDROGEN QUEUE (Last Commit: phase-3)
 ### Phase 0: Verify
@@ -73,23 +178,32 @@
 - [x] 3e Unguarded `paint()` exception vs `test_paint_safety_guard_on_component_wire_and_junction` - *done (FAILED: exception uncaught, restored cleanly)*
 
 ### Phase 4: Wire Redesign, Step 4A-1 (branch `wire-redesign`)
-- [ ] 4.1 Scene state (`WireGraph`) and undo/redo + move merge + `add_wire` between attachments - *todo*
-- [ ] 4.2 Display (`WireItem` using `route()`, `JunctionItem` degree >= 3, `FreeEnd` hollow marker, 10 px hit stroke, wire tool notice) - *todo*
-- [ ] 4.3 Netlist (`circuitsim.wiring.netlist`) and diagnostics (including `FreeEnd` amber note) - *todo*
-- [ ] 4.4 Moving, rotating, flipping, deleting (100 random ops + S1 + S2) - *todo*
-- [ ] 4.5 Save and load schema v2 + v1 migration - *todo*
-- [ ] 4.6 Existing features that touch wires (examples, export, labels, tooltips, zoom-to-fit, recent/dirty/undo) - *todo*
-- [ ] CHECKPOINT 4A-1 DONE - *todo*
+- [x] 4.1 Scene state (`WireGraph`) and undo/redo + move merge + `add_wire` between attachments - *done*
+- [x] 4.2 Display (`WireItem` using `route()`, `JunctionItem` degree >= 3, `FreeEnd` hollow marker, 10 px hit stroke, wire tool notice) - *done*
+- [x] 4.3 Netlist (`circuitsim.wiring.netlist`) and diagnostics (including `FreeEnd` amber note) - *done*
+- [x] 4.4 Moving, rotating, flipping, deleting (100 random ops + S1 + S2) - *done (`c1c1820`, 375 fast)*
+- [x] 4.5 Save and load schema v2 + v1 migration - *done (`3040025`, 376 fast)*
+- [x] 4.6 Existing features that touch wires (examples, export, labels, tooltips, zoom-to-fit, recent/dirty/undo) - *done (377 fast)*
+- [x] CHECKPOINT 4A-1 DONE - *done (`f0b29dc`, 378 full; `checkpoint/B-done`)*
 
 ### Phase 5: Wire Tool, Step 4A-2 (branch `wire-redesign`)
-- [ ] 5.1 Wire drawing tool re-enabled (live preview, 10 px snap, `JunctionRef`, `FreeEnd`, wire-on-wire notice) - *todo*
-- [ ] 5.2 Rejections (same terminal, duplicate wire, zero-length wire) - *todo*
-- [ ] 5.3 Editing wire ends (Acceptance S3: handle, detach, reattach/free-end, 1 undo step) - *todo*
-- [ ] 5.4 Synthetic mouse tests (`QTest`, shared `qapp`) - *todo*
-- [ ] 5.5 Performance benchmark (`route()` + 50-part drag step <= ~30 ms, configurable threshold test) - *todo*
+- [x] 5.1 Wire drawing tool re-enabled (live preview, 10 px snap, `JunctionRef`, `FreeEnd`, wire-on-wire notice) - *done (`70fe674`, 378 fast)*
+- [x] 5.2 Rejections (same terminal, duplicate wire, zero-length wire) + waypoints/`Backspace` - *done (`258e8cd`, 379 fast)*
+- [x] 5.3 Interactive wire segment dragging (`hints` parallel slide, live preview via `route()`, 1 undo step) - *done (`e594c34`, 380 fast)*
+- [x] 5.4 Editing wire ends (`Acceptance S3`: handle, detach, reattach/`FreeEnd`, 1 undo step) + synthetic `QTest` mouse tests - *done (`875b03f`, 381 fast)*
+- [x] 5.5 Wire test audit (`test_wire_snapping.py` [2], `test_rotation_and_moving_wires.py` [8], `test_connectivity_and_editing.py` [9] all pass unchanged on top of `WireGraph`; supplemented by `test_phase5_wire_tool.py`) + performance benchmark (`route()` analytic <= 2 ms / A* <= 15 ms, 50-part drag step median <= 30 ms, env-configurable) - *done (`4d552ec`, 382 fast)*
 
 ### Phase 6: Documentation & Report (branch `wire-redesign`)
-- [ ] 6.1 Update `PROGRESS.md` (built, rewritten tests, next tasks S4/S5) and `README.md` if usage changed - *todo*
+- [x] 6.1 Update `PROGRESS.md` (built, audited tests, next tasks S4/S5 & Step 4B `D1`–`D5`) and `README.md` (`test_phase6_1_golden_roundtrips_and_s1_s5_matrix` S1–S5 + Schema v2 & bundled example round-trips; zero existing tests weakened or replaced) - *done (`c053c45`, 383 fast)*
+- [x] CHECKPOINT 4A-2 / GATE C DONE - *done (384 full x3, offscreen `MainWindow` divider `V_mid=6.666667 V`; `checkpoint/C-done`)*
+
+### Phase 4B: Step 4B Interactions & Cleanup (branch `wire-redesign`)
+- [x] `D1` Split-on-drop (dropping component onto wire splits inline or taps junction in 1 undo step) - *done (`95685c3`, 384 fast)*
+- [x] `D2` Explicit `J` key junction placement (`toggle_junction_at` via `split_wire_at` / `collapse_junction`) - *done (`00e4dca`, 385 fast)*
+- [x] `D3` Junction dragging (`MoveJunctionCommand` updating `Junction.pos` and rerouting incident wires) - *done (`ca399f3`, 386 fast)*
+- [x] `D4` Subgraph copy/paste (`extract_subgraph` / `paste_subgraph` with components, `hints`, and junctions via `Ctrl+C` / `Ctrl+V`) - *done (`186ec82`, 387 fast)*
+- [x] `D5` Remove dead legacy wire routing helpers and command wire dicts (`OLD CODE MAP` cleanup) - *done (`819b46f`, 388 fast)*
+- [x] CHECKPOINT 4B / GATE D DONE - *done (`389 passed` x3 in `83.76s` / `83.56s` / `83.20s` + `python -m pytest -q` `389 passed in 83.89s`; `checkpoint/D-done`)*
 
 ## Current Status: Milestone 2 & Milestone 3 Step 3A Complete, Phase 1 Quick Wins Tasks 1-10 Done, Startup & Shutdown Fixes Done, LED Lifecycle Complete, Paint Safety & Crash Handler Hardening Complete, Meter Loading & Ideal Modes Complete (289 Passing Tests)
 
@@ -561,6 +675,36 @@ When ready to perform Stage 2 (internal/package rename after Stage 1 settles):
 - **Shared-CI timing variance in `tests/test_scope_performance.py`**: **Cause**: Strict local wall-clock thresholds (`< 8.0 ms`, `< 5.0%`, `>= 12`, `< 50.0 ms`) can flake on loaded CI runners due to noisy CPU scheduling. **Fix**: Relaxed thresholds only when `os.environ.get("CI")` is set (`MAX_FRAME_TIME_MS=25.0`, `MAX_SINK_OVERHEAD_PCT=15.0`, `MIN_UI_HEARTBEATS=6`, `MAX_UI_GAP_MS=150.0`), while keeping local thresholds strict and using repeated trials + median/GC control (`7` paired trials for sink overhead, `5` trials for 4ch `produce_frame()`, warm-up + clean signal/sink disconnect in UI loop test).
 - **Intermittent Windows Qt teardown access violation (`tests/conftest.py:112`, `_qt_cleanup_and_watchdog`)**: **Cause**: Three interacting lifecycle issues: (1) `tests/conftest.py` set `widget._is_closing = True` before `widget.close()`, causing `MainWindow.closeEvent` to return early without disconnecting `undo_stack.cleanChanged`, `frame_ready`, or `circuit_scene` signals; (2) `CircuitScene` had `parent=None` in `MainWindow` plus Python reference cycles (closure lambda on `cleanChanged`, `selectionChanged` slot), so scenes with selected items survived until later cyclic GC during unrelated tests and fired `selectionChanged` during C++ destruction; (3) `SimulationWorkerController._worker` (`_SessionThreadWorker`) had no C++ parent and was moved to `self._thread` at `__init__` without returning to the main thread / `deleteLater()` before `self._thread` destruction. **Fix**: Separated `_close_cleaned_up` from `_is_closing` in `MainWindow.closeEvent` and passed `parent=self` to `CircuitScene`, replaced the `cleanChanged` lambda with `_on_undo_clean_changed`, added `CircuitScene.shutdown_scene()`, deferred `_worker.moveToThread(self._thread)` until `_ensure_thread_running()` with `cleanup_for_shutdown()` on `SimulationWorkerController.shutdown()`, and updated `_qt_cleanup_and_watchdog` in `tests/conftest.py` to shut down standalone `CircuitScene`s and run `gc.collect()` + `DeferredDelete` flush between tests.
 - **`ScopeCore.auto_set` exact-value specification (A4c)**: `ScopeCore.auto_set` docstring (`src/circuitsim/scope/core.py:355`) states only `"Automatically choose vertical scale, offset, timebase, and trigger level."` and `PROGRESS.md` does not document its `Vpp / 5.0` divisor, midpoint offset rounding, or `1-2-5` snapping tie rules; exact-value Auto Set test in `tests/test_scope_core_exact.py` was skipped and reported as instructed.
+
+---
+
+## PHASE K QUEUE (POLISH & PHYSICS FIXES — K1 TO K5 + GATE K)
+
+| Item | Description | Status | Notes / Commit |
+| --- | --- | --- | --- |
+| `K1` | Transformer Overhaul: Primary/Secondary Windings (`Np`/`Ns`), Ideal vs Non-Ideal Mode, coupled-inductor AC/Transient & DC-blocking physics, Properties dialog toggle, polarity dots, and DC info hint | `[x]` | Done |
+| `K2` | Fix 7-Segment Display Live Updates in DC & Transient Simulation (`v_threshold=2.0`, sorted segment table, telemetry sync to canvas `ComponentItem` in `SimulationSession` & `apply_solve_result`) | `[x]` | Done |
+| `K3` | Blown Fuse Visual: Broken Open Wire Gap + Animated "POP!" Spark Effect + Click-to-Reset Label | `[x]` | Done |
+| `K4` | Always-Visible Pin Labels on All Multi-Pin Components (`ComponentItem.default_pin_labels`, upright edge labels, 7-seg pinout info hint) | `[x]` | Done |
+| `K5` | Lock Problems Panel to Bottom Dock & Dynamic Palette Resizing (bottom corners owned by bottom dock, single title bar, non-floating) | `[x]` | Done |
+| `GATE K` | Targeted Gate Verification (`test_k_ui_and_transformer.py`, `test_i_advanced_workbench.py`, `test_problems_panel.py`, `test_g_qol_fixes.py`, `test_f7_wav_and_jigs.py`, `test_paint_safety_and_theme_palette.py`: `38 passed in 17.04s`) & `checkpoint/K-done` tag | `[x]` | Done |
+
+---
+
+## PHASE J QUEUE (FUSE/PIN FIXES, DSO-1062D OSCILLOSCOPE ELEMENT, SPICE EXPORT, DOCS & PACKAGING)
+
+| Item | Description | Status | Notes / Commit |
+| --- | --- | --- | --- |
+| `J0a` | Fix live `Fuse` rating edit & click/context-reset while simulation is running (`generation` counter + live worker sync) | `[x]` | Done |
+| `J0b` | Fix multi-pin default label positioning (`default_pin_label_rects`) so `P1`/`P2`/`S1`/`S2` etc. never overlap terminal dots | `[x]` | Done |
+| `J1` | Initialize Phase J Queue & run targeted Batch 1 (`48 passed`) + Batch 2 (`66 passed`) regression suites; fixed `themes.py` light checked `ghost_tint` CSS & `test_e3` non-overlapping staging pos | `[x]` | Done |
+| `J2` | Placeable `"oscilloscope"` (`OSC`) canvas component & Qt-free DSO-1062D signal/trigger/math/FFT/cursor engine (`dso_engine.py`) | `[x]` | Done |
+| `J3` | Voltcraft DSO-1062D benchtop front-panel GUI (`dso_panel.py`), double-click multi-instance launch, live sync & PNG/CSV export | `[x]` | Done |
+| `J4` | Milestone 3 Properties Dialog polish: live V/I/P banner, Inductor $X_L$/$\tau$ + reverse calculator, Lightbulb $R_{\text{hot}}$ | `[x]` | Done |
+| `J5` | Standard SPICE Netlist exporter (`spice_export.py`) with `MEG` suffixes & File > Export menu action | `[x]` | Done |
+| `J6` | Student docs (`LEARNING_NOTES.md`, `SUGGESTIONS.md`) & Windows packaging (`packaging/ohmbench.spec`, `packaging/installer.iss`, `.gitignore`, `README.md`) | `[x]` | Done |
+| `GATE J` | Targeted Gate Verification (`test_j_dso_and_release.py`, `test_k_ui_and_transformer.py`, `test_g_qol_fixes.py`: `19 passed in 4.92s`; post-sweep fixes: pure `#FFFFFF` publication export & perpendicular corner-shared collision exemption, `45 passed in 11.96s`) & `checkpoint/J-done` tag | `[x]` | Done (`45 passed`) |
+
 
 
 

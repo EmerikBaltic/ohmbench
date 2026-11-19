@@ -1,3 +1,15 @@
+# Suggestions & Ideas — Ohmbench
+
+## Post-v1.0 Prioritized Roadmap (Not Yet Implemented)
+
+1. **Multi-Core Process Isolation for Very Large Transient Runs** *(Effort: Medium)* — *Reason*: `SimulationSession` is already Qt-free and picklable; running long high-sample captures in a `multiprocessing.Process` worker would isolate GIL overhead on multi-hundred-node schematics.
+2. **Harmonic Distortion (`THD`) & Cursors-to-CSV Audit Export in DSO-1062D** *(Effort: Small)* — *Reason*: `dso_engine.py` already computes the windowed `rfft` spectrum; summing harmonic bin powers adds instant THD% lab readouts alongside peak FFT frequency.
+3. **Parametric Bode Plot Overlay from AC Sweep (.AC) Directly Inside DSO / Sweep Panel** *(Effort: Medium)* — *Reason*: Overlaying simulated frequency response ($|H(j\omega)|$ in dB and phase) with live captured DSO FFT peaks makes filter labs effortless for students.
+4. **Interactive Subcircuit Packaging Wizard (Save Selection as Custom Block)** *(Effort: Large)* — *Reason*: Wrapping a tested schematic sub-graph (e.g. an op-amp instrumentation stage or H-bridge) into a reusable multi-pin `.json` component speeds up multi-stage lab designs.
+5. **macOS `.app` & Linux AppImage Packaging Specs Alongside Windows Inno Setup** *(Effort: Small)* — *Reason*: Mirroring `packaging/ohmbench.spec` with macOS bundle metadata and a Linux desktop file completes cross-platform standalone releases.
+
+---
+
 # Suggestions & Ideas — CircuitSim
 
 Below are improvement ideas identified during **Milestones 1 & 2**. None of these will be implemented without your explicit approval.

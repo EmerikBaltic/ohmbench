@@ -134,6 +134,7 @@ def build_circuit(
         return None if isinstance(att, FreeEnd) else att
 
     wired_terminals: set[TerminalRef] = set()
+    label_keys: dict[str, list[object]] = {}
     for w in graph.wires:
         ka, kb = key(w.end_a), key(w.end_b)
         for att in (w.end_a, w.end_b):
@@ -141,6 +142,27 @@ def build_circuit(
                 wired_terminals.add(att)
         if ka is not None and kb is not None:
             uf.union(ka, kb)
+        norm_lbl = str(getattr(w, "net_label", "") or "").strip().upper()
+        if norm_lbl:
+            rep = ka if ka is not None else kb
+            if rep is not None:
+                label_keys.setdefault(norm_lbl, []).append(rep)
+
+    for junc in graph.junctions:
+        norm_lbl = str(getattr(junc, "net_label", "") or "").strip().upper()
+        if norm_lbl:
+            label_keys.setdefault(norm_lbl, []).append(JunctionRef(junc.id))
+
+    for norm_lbl, keys in label_keys.items():
+        if len(keys) >= 2:
+            first_k = keys[0]
+            for other_k in keys[1:]:
+                uf.union(first_k, other_k)
+
+    root_labels: dict[object, set[str]] = {}
+    for norm_lbl, keys in label_keys.items():
+        for k in keys:
+            root_labels.setdefault(uf.find(k), set()).add(norm_lbl)
 
     # Group terminals by net
     groups: dict[object, list[TerminalRef]] = {}
@@ -151,16 +173,30 @@ def build_circuit(
 
     ground_names = {c.name for c in components if _is_ground(c)}
     root_to_node: dict[object, str] = {}
+    used_node_names: set[str] = {GROUND_NODE}
     others: list[tuple[tuple[object, ...], object]] = []
     for root, members in groups.items():
-        if any(m.component in ground_names for m in members):
+        lbls = root_labels.get(root, set())
+        if any(m.component in ground_names for m in members) or any(
+            lbl in (GROUND_NODE, "GND") for lbl in lbls
+        ):
             root_to_node[root] = GROUND_NODE
+        elif lbls:
+            chosen = sorted(lbls)[0]
+            root_to_node[root] = chosen
+            used_node_names.add(chosen)
         else:
             first = min(members, key=lambda m: (_natural_key(m.component), m.terminal))
             others.append(((_natural_key(first.component), first.terminal), root))
     others.sort(key=lambda item: item[0])
-    for idx, (_, root) in enumerate(others, start=1):
-        root_to_node[root] = f"N{idx}"
+    next_idx = 1
+    for _, root in others:
+        while f"N{next_idx}" in used_node_names:
+            next_idx += 1
+        node_name = f"N{next_idx}"
+        next_idx += 1
+        used_node_names.add(node_name)
+        root_to_node[root] = node_name
 
     # Parts without any wire are ignored (unless nothing else is connected)
     def is_unconnected(comp: Component) -> bool:
@@ -179,6 +215,8 @@ def build_circuit(
         if is_unconnected(comp) and (has_connected_non_ground or comp.name in ground_names):
             continue
         clone = copy.deepcopy(comp)
+        if hasattr(clone, "_source_mcu"):
+            clone._source_mcu = comp
         if _is_ground(comp):
             clone.nodes = (GROUND_NODE,)
         else:

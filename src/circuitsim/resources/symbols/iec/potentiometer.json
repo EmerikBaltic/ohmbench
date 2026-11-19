@@ -1,0 +1,16 @@
+{
+  "id": "potentiometer",
+  "display_name": "Potentiometer",
+  "category": "Passive",
+  "style": "iec",
+  "grid_size": [4, 4],
+  "terminals": [
+    {"name": "a", "grid_pos": [-2, 0]},
+    {"name": "w", "grid_pos": [0, -2]},
+    {"name": "b", "grid_pos": [2, 0]}
+  ],
+  "label_offset": [0, 1.3],
+  "value_offset": [0, 2.2],
+  "default_svg": "potentiometer.svg",
+  "states": {}
+}

@@ -79,6 +79,7 @@ class LED(Component):
         color: str | None = None,
         burnout_enabled: bool = False,
         burnout_current: float | str | None = None,
+        max_reverse_v: float | str = 5.0,
         label: str | None = None,
         show_value: bool = True,
     ) -> None:
@@ -114,6 +115,7 @@ class LED(Component):
         self.forward_voltage: float = v_f
         self.rated_current: float = i_rated
         self.max_current: float = i_max
+        self.max_reverse_v: float = float(parse_engineering_value(max_reverse_v))
         self.color_name: str = color_name
         self.burnout_enabled: bool = bool(burnout_enabled)
         self.burnout_current: float = i_burn
