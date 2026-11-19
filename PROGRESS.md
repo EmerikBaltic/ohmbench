@@ -1,5 +1,19 @@
 # Project Progress — Ohmbench (formerly CircuitSim)
 
+## PHASE I QUEUE (QOL FIXES, LIGHT THEME, 555/POWER/DIGITAL, CURVE TRACER & BOM)
+- [x] `I0` (`done`): Initialized Phase I queue in `PROGRESS.md`, verified clean `wire-redesign` tree at `checkpoint/H-done` (`312f59e`), and created `tests/test_i_advanced_workbench.py` with offscreen Qt scaffolding.
+- [ ] `I1` (`todo`): Permanently fix component stacking & half-overlap (full-span footprint check, block overlapping interactive clicks/drops, revert overlapping drags).
+- [ ] `I2` (`todo`): Explain overload / stress `!` badges in Problems panel, Properties/Info panel banner, and live hover tooltips.
+- [ ] `I3` (`todo`): Overhaul Light Theme contrast (`LIGHT_PALETTE`, `QDockWidget::title`) and sync Properties panel shortcut help text with `AppSettings.shortcuts`.
+- [ ] `I4` (`todo`): Add 555 Timer IC (`ne555`) & Voltage Comparator (`comparator`) with MNA stamps, latch/astable oscillation, IEC symbols & palette entries.
+- [ ] `I5` (`todo`): Add Power & Protection components (`transformer`, `spdt_relay`, blowable/resettable `fuse`) with MNA stamps, hysteresis & stress/reset integration.
+- [ ] `I6` (`todo`): Add Sequential Digital Logic & Displays (`d_flipflop`, `jk_flipflop`, `counter_4bit`, `seven_seg_display`) with live 7-segment rendering.
+- [ ] `I7` (`todo`): Add Qt-free I-V Characteristic Curve Tracer (`circuitsim.engine.curve_tracer`) and `CurveTracerDialog` (`Simulation > I-V Curve Tracer...`) with CSV export.
+- [ ] `I8` (`todo`): Add Benchtop Digital Multimeter (DMM) tab (DC V, AC RMS, DC A, Resistance/Continuity) and Oscilloscope X-Y Lissajous mode.
+- [ ] `I9` (`todo`): Add automated Bill of Materials & Thermal Power Budget (`circuitsim.io.bom_export` + UI dialog) and Custom Subcircuit Macro packaging (`CustomMacroBlock`).
+- [ ] `I10` (`todo`): Add undoable Alignment & Distribution tools, toggleable corner Minimap, expand `BUILTIN_TEST_JIGS` to 18 circuits, and update docs.
+- [ ] `GATE I` (`todo`): Run Gate I test suites, verify Qt-free boundaries, commit, and tag `checkpoint/I-done`.
+
 ## PHASE H QUEUE (PALETTE, ROUTER, ACTIVE SEMICONDUCTORS & WORKBENCH UI)
 - [x] `H0` (`done`): Initialized Phase H queue in `PROGRESS.md`, verified clean `wire-redesign` tree at `checkpoint/F-done` (`a451b18`), and created `tests/test_h_workbench_expansion.py` with offscreen Qt scaffolding.
 - [x] `H1` (`done`): Fixed parallel component wire routing in `circuitsim.wiring.router.route()` by removing `same_facing_pins` blocking from the 0-bend straight line bypass (still blocking backtracking or intersecting any body interior), so vertically/horizontally aligned unobstructed terminals route as straight 2-point lines without 1-unit U-loop jogs. Created `tests/test_wire_router.py` re-exporting `tests/test_wiring_router.py` + H1 parallel/obstacle tests, and added `test_h1_parallel_voltmeter_inductor_straight_2point_wires`. Note: existing `tests/test_wiring_router.py` required no assertion changes; `test_d5: QPointF(0.0, 60.0) -> QPointF(0.0, 40.0) (H1 straight wire between aligned terminals at y=40)`.
