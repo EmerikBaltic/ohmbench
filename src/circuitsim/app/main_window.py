@@ -193,6 +193,7 @@ class MainWindow(QMainWindow):
         self._prev_error_count: int = 0
         self.instruments_dialog: object | None = None
         self.sweep_dialog: object | None = None
+        self._dso_dialogs: dict[str, object] = {}
 
         self._build_menus_and_toolbars()
         self._build_docks()
@@ -764,6 +765,9 @@ class MainWindow(QMainWindow):
         )
         self.circuit_scene.fuse_reset_by_user.connect(
             self._on_user_fuse_reset
+        )
+        self.circuit_scene.oscilloscope_open_requested.connect(
+            self.open_dso_dialog_for_item
         )
         self.circuit_scene.component_parameters_edited.connect(
             self._on_user_parameters_edited
@@ -1487,6 +1491,41 @@ class MainWindow(QMainWindow):
         self.refresh_diagnostics_display(frame.diagnostics)
         if self.instruments_dialog is not None:
             self.instruments_dialog.on_simulation_frame(frame)  # type: ignore[attr-defined]
+        for dlg in list(self._dso_dialogs.values()):
+            try:
+                dlg.on_simulation_frame(frame)  # type: ignore[attr-defined]
+            except RuntimeError:
+                pass
+
+    def open_dso_dialog_for_item(self, item: ComponentItem):
+        """Open (or focus) the multi-instance DSO-1062D window bound to `item`."""
+        from circuitsim.app.dso_panel import DSOOscilloscopeDialog
+
+        cname = item.component.name
+        existing = self._dso_dialogs.get(cname)
+        if isinstance(existing, DSOOscilloscopeDialog) and existing.osc_component is item.component:
+            existing.refresh_net_labels()
+            existing.capture_from_scene()
+            existing.show()
+            existing.raise_()
+            existing.activateWindow()
+            return existing
+
+        dlg = DSOOscilloscopeDialog(
+            item,
+            circuit_provider=lambda: self.circuit_scene.extract_connectivity_result().circuit,
+            nets_provider=lambda name=cname: self.circuit_scene.extract_connectivity_result().component_nodes.get(
+                name, {}
+            ),
+            parent=self,
+        )
+        self._dso_dialogs[cname] = dlg
+        dlg.refresh_net_labels()
+        dlg.capture_from_scene()
+        dlg.show()
+        dlg.raise_()
+        dlg.activateWindow()
+        return dlg
 
     def show_instruments_panel(self):
         """Open (or focus) the Benchtop Virtual Instruments panel."""
@@ -1878,6 +1917,7 @@ class MainWindow(QMainWindow):
             (self.circuit_scene.circuit_modified, self._on_circuit_modified),
             (self.circuit_scene.switch_toggled_by_user, self._on_user_switch_toggled),
             (self.circuit_scene.fuse_reset_by_user, self._on_user_fuse_reset),
+            (self.circuit_scene.oscilloscope_open_requested, self.open_dso_dialog_for_item),
             (self.circuit_scene.component_parameters_edited, self._on_user_parameters_edited),
             (self.circuit_scene.status_notice, self._on_scene_status_notice),
             (self.sim_controller.frame_ready, self._on_simulation_frame),
@@ -1892,6 +1932,12 @@ class MainWindow(QMainWindow):
                 self.instruments_dialog.close()  # type: ignore[attr-defined]
             except RuntimeError:
                 pass
+        for dlg in list(self._dso_dialogs.values()):
+            try:
+                dlg.close()  # type: ignore[attr-defined]
+            except RuntimeError:
+                pass
+        self._dso_dialogs.clear()
         if hasattr(self, "circuit_view") and self.circuit_view is not None:
             try:
                 self.circuit_view.set_minimap_visible(False)

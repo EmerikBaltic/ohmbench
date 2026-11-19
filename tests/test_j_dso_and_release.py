@@ -240,3 +240,140 @@ def test_j2_oscilloscope_component_and_dso_engine(qapp, tmp_path: Path) -> None:
     finally:
         scene.shutdown_scene()
         qapp.processEvents()
+
+
+def test_j3_dso_1062d_front_panel_gui_and_exports(qapp, tmp_path: Path) -> None:
+    """J3: Exercise Voltcraft DSO-1062D GUI menus, knobs, buttons, double-click dispatch & PNG/CSV exports."""
+    from circuitsim.app.dso_panel import DSOOscilloscopeDialog
+    from circuitsim.canvas.view import CircuitView
+
+    scene = CircuitScene(SymbolLibrary())
+    view = CircuitView(scene)
+    opened_items: list[object] = []
+    scene.oscilloscope_open_requested.connect(opened_items.append)
+    dlg: DSOOscilloscopeDialog | None = None
+
+    try:
+        v_ac = scene.place_new_component("ac_voltage", QPointF(-240.0, -120.0))
+        r1 = scene.place_new_component("resistor", QPointF(-100.0, 20.0))
+        r2 = scene.place_new_component("resistor", QPointF(-100.0, 140.0))
+        gnd = scene.place_new_component("ground", QPointF(-240.0, 240.0))
+        osc = scene.place_new_component("oscilloscope", QPointF(180.0, 0.0))
+        assert v_ac and r1 and r2 and gnd and osc
+
+        v_ac.component.amplitude = 10.0
+        v_ac.component.frequency = 1000.0
+        v_ac.component.dc_offset = 0.0
+        r1.component.resistance = 1000.0
+        r2.component.resistance = 1000.0
+
+        vac_t = v_ac.terminal_scene_positions_px()
+        r1_t = r1.terminal_scene_positions_px()
+        r2_t = r2.terminal_scene_positions_px()
+        g_t = gnd.terminal_scene_positions_px()
+        o_t = osc.terminal_scene_positions_px()
+
+        # Half-amplitude resistive divider: V_ac -> R1 -> mid(R1.b/R2.a/CH2) -> R2 -> GND
+        scene.add_routed_wire(vac_t["pos"], o_t["CH1"], prefer_horizontal_first=False)
+        scene.add_routed_wire(vac_t["pos"], r1_t["a"], prefer_horizontal_first=False)
+        scene.add_routed_wire(r1_t["b"], r2_t["a"], prefer_horizontal_first=True)
+        scene.add_routed_wire(r1_t["b"], o_t["CH2"], prefer_horizontal_first=False)
+        scene.add_routed_wire(r2_t["b"], g_t["gnd"], prefer_horizontal_first=True)
+        scene.add_routed_wire(vac_t["neg"], g_t["gnd"], prefer_horizontal_first=True)
+        scene.add_routed_wire(o_t["GND"], g_t["gnd"], prefer_horizontal_first=False)
+
+        # Verify CircuitView double-click hook emits oscilloscope_open_requested
+        assert view.open_quick_edit_for_item(osc) is True
+        assert opened_items and opened_items[0] is osc
+        for standalone in getattr(view, "_standalone_dso_dialogs", []):
+            standalone.close()
+
+        dlg = DSOOscilloscopeDialog(
+            osc,
+            circuit_provider=lambda: scene.extract_connectivity_result().circuit,
+            nets_provider=lambda: scene.extract_connectivity_result().component_nodes.get("OSC1", {}),
+        )
+        dlg.show()
+        frame = dlg.capture_from_scene()
+        assert frame is not None
+        assert frame.ch1_meas.v_pp == pytest.approx(20.0, abs=0.5)
+        assert frame.ch2_meas.v_pp == pytest.approx(10.0, abs=0.3)
+        assert len(osc.component.mini_preview_ch1) >= 8
+        assert len(osc.component.mini_preview_ch2) >= 8
+
+        # (a) Click all 11 menus & verify softkey sidebar updates + F0..F6 mutate state
+        menu_checks = [
+            (dlg.btn_ch1_menu, "CH1"),
+            (dlg.btn_ch2_menu, "CH2"),
+            (dlg.btn_math_menu, "MATH"),
+            (dlg.btn_acquire, "ACQUIRE"),
+            (dlg.btn_measure, "MEASURE"),
+            (dlg.btn_cursor, "CURSOR"),
+            (dlg.btn_display, "DISPLAY"),
+            (dlg.btn_horiz_menu, "HORIZ"),
+            (dlg.btn_trig_menu, "TRIG"),
+            (dlg.btn_save_recall, "SAVE/RECALL"),
+            (dlg.btn_utility, "UTILITY"),
+        ]
+        for btn, title in menu_checks:
+            btn.click()
+            assert dlg.screen_widget.active_menu_title == title
+            assert len(dlg.screen_widget.menu_rows) >= 4
+
+        dlg.btn_ch1_menu.click()
+        dlg.softkey_buttons[1].click()  # DC -> AC
+        assert dlg.state.ch1.coupling == "AC"
+        dlg.softkey_buttons[1].click()
+        dlg.softkey_buttons[1].click()  # GND -> DC
+        assert dlg.state.ch1.coupling == "DC"
+
+        dlg.btn_math_menu.click()
+        dlg.softkey_buttons[0].click()  # Enable Math
+        assert dlg.state.math.enabled is True
+        dlg.softkey_buttons[1].click()  # Cycle operator
+        assert dlg.state.math.operation != "CH1-CH2"
+
+        dlg.btn_cursor.click()
+        dlg.softkey_buttons[0].click()  # OFF -> VOLTAGE
+        assert dlg.state.cursors.cursor_mode == "VOLTAGE"
+
+        dlg.btn_display.click()
+        dlg.softkey_buttons[0].click()  # VECTORS -> DOTS
+        assert dlg.state.display.render_style == "DOTS"
+
+        dlg.btn_acquire.click()
+        dlg.softkey_buttons[2].click()  # 4 -> 16 averages
+        assert dlg.state.acquire.avg_count == 16
+
+        # (b) Front-panel run/trigger/default buttons
+        dlg.btn_auto_set.click()
+        assert dlg.state.running is True
+        dlg.btn_set_50.click()
+        assert abs(dlg.state.trigger.level_v) < 0.25
+        dlg.btn_force_trig.click()
+        dlg.btn_single_seq.click()
+        assert dlg.state.trigger.mode == "SINGLE"
+        dlg.btn_run_stop.click()
+        assert dlg.state.running is False
+        dlg.btn_default_setup.click()
+        assert dlg.state.math.enabled is False
+        assert dlg.state.display.render_style == "VECTORS"
+
+        # (c) PNG screenshot & CSV waveform export
+        png_path = tmp_path / "dso.png"
+        csv_path = tmp_path / "dso.csv"
+        dlg.export_screen_png(png_path)
+        dlg.export_waveform_csv(csv_path)
+
+        assert png_path.exists() and png_path.stat().st_size > 200
+        assert png_path.read_bytes().startswith(b"\x89PNG")
+        assert csv_path.exists() and csv_path.stat().st_size > 100
+        csv_lines = csv_path.read_text(encoding="utf-8").splitlines()
+        assert csv_lines[0] == "time_s,ch1_v,ch2_v,math_v"
+        assert len(csv_lines) > 20
+    finally:
+        if dlg is not None:
+            dlg.close()
+        view.close()
+        scene.shutdown_scene()
+        qapp.processEvents()

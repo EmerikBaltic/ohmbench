@@ -121,6 +121,7 @@ class CircuitScene(QGraphicsScene):
     circuit_modified = Signal()  # Emits whenever components, wires, or junctions change
     switch_toggled_by_user = Signal(str, bool)  # (switch_name, closed)
     fuse_reset_by_user = Signal(str)  # (fuse_name)
+    oscilloscope_open_requested = Signal(object)  # (ComponentItem)
     component_parameters_edited = Signal(str, object)  # (comp_name, dict[str, float])
     status_notice = Signal(str)  # Non-modal status/feedback note for the user
 
@@ -3692,6 +3693,13 @@ class CircuitScene(QGraphicsScene):
                 telem = frame.components.get(item.component.name)
                 if telem is not None:
                     item.apply_telemetry(telem)
+                    if item.component.component_type == "oscilloscope" and hasattr(item.component, "mini_preview_ch1"):
+                        hist1 = list(item.component.mini_preview_ch1)[-31:]
+                        v_norm = max(-1.0, min(1.0, float(telem.voltage) / 10.0))
+                        hist1.append(v_norm)
+                        item.component.mini_preview_ch1 = tuple(hist1)
+                        item.component.v_ch1 = float(telem.voltage)
+                        item.update()
 
         self._refresh_wire_overlays()
         self._refresh_stress_badges()

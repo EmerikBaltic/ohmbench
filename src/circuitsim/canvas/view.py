@@ -27,6 +27,7 @@ from circuitsim.canvas.scene import CircuitScene
 from circuitsim.canvas.symbol_geometry import GRID_PITCH_PX, snap_to_grid
 from circuitsim.canvas.wire_item import JunctionItem, WireItem
 from circuitsim.components.mcu import MCUBlock
+from circuitsim.components.oscilloscope import Oscilloscope
 from circuitsim.components.power import Fuse
 from circuitsim.components.switch import Switch
 from circuitsim.dialogs.mcu_firmware_dialog import MCUFirmwareDialog
@@ -412,11 +413,39 @@ class CircuitView(QGraphicsView):
         dlg.exec()
         return True
 
+    def open_oscilloscope_dialog(self, item: ComponentItem) -> bool:
+        """Open the live DSO-1062D Benchtop Oscilloscope dialog for an `Oscilloscope` item."""
+        if not isinstance(item.component, Oscilloscope):
+            return False
+        self.circuit_scene.oscilloscope_open_requested.emit(item)
+        win = self.window()
+        if win is None or not hasattr(win, "open_dso_dialog_for_item"):
+            from circuitsim.app.dso_panel import DSOOscilloscopeDialog
+
+            dlg = DSOOscilloscopeDialog(
+                item,
+                circuit_provider=lambda: self.circuit_scene.extract_connectivity_result().circuit,
+                nets_provider=lambda: self.circuit_scene.extract_connectivity_result().component_nodes.get(
+                    item.component.name, {}
+                ),
+                parent=win,
+            )
+            dlg.capture_from_scene()
+            dlg.show()
+            holder = getattr(self, "_standalone_dso_dialogs", None)
+            if holder is None:
+                holder = []
+                setattr(self, "_standalone_dso_dialogs", holder)
+            holder.append(dlg)
+        return True
+
     def open_quick_edit_for_item(self, item: ComponentItem) -> bool:
-        """Open the double-click `QuickValueDialog` (or `MCUFirmwareDialog` for MCU) and apply changes live."""
+        """Open the double-click `QuickValueDialog` (or `MCUFirmwareDialog` / DSO panel) and apply changes live."""
         comp = item.component
         if isinstance(comp, MCUBlock):
             return self.open_mcu_firmware_dialog(item)
+        if isinstance(comp, Oscilloscope):
+            return self.open_oscilloscope_dialog(item)
         if not comp.get_editable_parameters() and not isinstance(comp, Switch):
             return False
 
@@ -826,6 +855,12 @@ class CircuitView(QGraphicsView):
                     lambda: self.open_mcu_firmware_dialog(target_comp)
                 )
                 menu.addAction(act_mcu_fw)
+            if isinstance(target_comp.component, Oscilloscope):
+                act_dso = QAction("Open DSO-1062D Oscilloscope...\tDouble-Click", menu)
+                act_dso.triggered.connect(
+                    lambda: self.open_oscilloscope_dialog(target_comp)
+                )
+                menu.addAction(act_dso)
             if isinstance(target_comp.component, Switch):
                 act_toggle_sw = QAction("Toggle Switch (ON/OFF)\tClick", menu)
                 act_toggle_sw.triggered.connect(
