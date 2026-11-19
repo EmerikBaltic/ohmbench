@@ -491,3 +491,50 @@ def test_j0a_live_fuse_rating_edit_and_reset_without_stop_play(qapp, tmp_path) -
         scene.shutdown_scene()
         qapp.processEvents()
 
+
+def test_j0b_multi_pin_label_rects_clear_of_terminal_dots(qapp) -> None:
+    """J0b: Default multi-pin label bounding rects never intersect any 5 px terminal dot across all 4 rotations."""
+    import math
+    from circuitsim.canvas.symbol_geometry import GRID_PITCH_PX, transform_terminal_position
+
+    target_types = (
+        "transformer",
+        "seven_seg_display",
+        "ne555",
+        "spdt_relay",
+        "mcu",
+        "counter_4bit",
+    )
+    scene = CircuitScene(SymbolLibrary())
+    try:
+        for cid in target_types:
+            item = scene.place_new_component(cid, QPointF(0.0, 0.0))
+            assert item is not None
+            for rot in (0, 90, 180, 270):
+                item.set_rotation_deg(rot)
+                label_rects = item.default_pin_label_rects()
+                assert len(label_rects) == len(item.metadata.terminals), f"{cid} rot={rot}"
+                term_pts = [
+                    transform_terminal_position(
+                        t.grid_pos,
+                        (0.0, 0.0),
+                        rotation_deg=rot,
+                        flipped_h=item.flipped_h,
+                        grid_px=GRID_PITCH_PX,
+                    )
+                    for t in item.metadata.terminals
+                ]
+                for tname, _tag, rect in label_rects:
+                    for tx, ty in term_pts:
+                        cx = max(rect.left(), min(tx, rect.right()))
+                        cy = max(rect.top(), min(ty, rect.bottom()))
+                        dist = math.hypot(tx - cx, ty - cy)
+                        assert dist > 5.0, (
+                            f"{cid}.{tname} at rot={rot} rect {rect} overlaps terminal dot ({tx}, {ty}) (dist={dist:.2f})"
+                        )
+            scene.removeItem(item)
+            scene._placed_items.remove(item)
+    finally:
+        scene.shutdown_scene()
+        qapp.processEvents()
+

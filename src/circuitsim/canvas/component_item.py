@@ -940,6 +940,128 @@ class ComponentItem(QGraphicsObject):
             return {"a": "A", "b": "B", "out": "Y", "in0": "A", "in1": "B"}
         return {}
 
+    def default_pin_label_rects(self) -> list[tuple[str, str, QRectF]]:
+        """Return `[(terminal_name, label_text, tight_upright_rect)]` clear of all 5 px terminal dots."""
+        if len(self.metadata.terminals) < 3:
+            return []
+        pin_map = self.default_pin_labels(self.component)
+        if not pin_map:
+            return []
+
+        pin_font = QFont("Segoe UI", 7)
+        pin_font.setBold(True)
+        fm = QFontMetrics(pin_font)
+        ctype = self.component.component_type
+
+        term_centers: list[tuple[float, float]] = [
+            transform_terminal_position(
+                t.grid_pos,
+                (0.0, 0.0),
+                rotation_deg=self.rotation_deg,
+                flipped_h=self.flipped_h,
+                grid_px=GRID_PITCH_PX,
+            )
+            for t in self.metadata.terminals
+        ]
+
+        results: list[tuple[str, str, QRectF]] = []
+        for term in self.metadata.terminals:
+            tag = pin_map.get(term.name)
+            if not tag:
+                continue
+            lx0 = term.grid_pos[0] * GRID_PITCH_PX
+            ly0 = term.grid_pos[1] * GRID_PITCH_PX
+            if ctype == "transformer":
+                lx = -24.0 if lx0 < 0 else 24.0
+                ly = -33.0 if ly0 < 0 else 33.0
+            elif ctype == "seven_seg_display":
+                lx = -27.0
+                ly = ly0 * 0.9
+            elif ctype == "oscilloscope":
+                lx = -44.0 if lx0 < 0 else 44.0
+                ly = ly0
+            elif ctype == "spdt_relay":
+                if lx0 < 0:
+                    lx = -22.0
+                    ly = -33.0 if ly0 < 0 else 33.0
+                else:
+                    lx = 28.0
+                    ly = ly0 * 0.85
+            elif ctype in ("ne555", "d_flipflop", "jk_flipflop", "counter_4bit", "mcu"):
+                if abs(lx0) <= 5.0:
+                    lx = 0.0
+                    ly = -32.0 if ly0 < 0 else 32.0
+                else:
+                    lx = -23.0 if lx0 < 0 else 23.0
+                    ly = ly0 * 0.9
+            elif ctype in ("opamp", "comparator"):
+                if abs(ly0) < 5.0:
+                    lx = 24.0
+                    ly = -14.0
+                else:
+                    lx = -25.0
+                    ly = -33.0 if ly0 < 0 else 33.0
+            elif ctype in ("npn_bjt", "pnp_bjt", "nmos", "pmos"):
+                if lx0 < 0:
+                    lx, ly = -26.0, -13.0
+                else:
+                    lx = 22.0
+                    ly = -33.0 if ly0 < 0 else 33.0
+            elif ctype == "potentiometer":
+                if abs(lx0) < 5.0:
+                    lx, ly = 13.0, -27.0
+                else:
+                    lx = -26.0 if lx0 < 0 else 26.0
+                    ly = -14.0
+            elif ctype.startswith("gate_"):
+                if lx0 < 0:
+                    lx = -26.0
+                    ly = -32.0 if ly0 < 0 else 32.0
+                else:
+                    lx, ly = 26.0, -13.0
+            else:
+                lx = lx0 * 0.55
+                ly = ly0 - 13.0 if abs(ly0) < 5.0 else ly0 * 0.72
+
+            ix, iy = transform_terminal_position(
+                (lx / GRID_PITCH_PX, ly / GRID_PITCH_PX),
+                (0.0, 0.0),
+                rotation_deg=self.rotation_deg,
+                flipped_h=self.flipped_h,
+                grid_px=GRID_PITCH_PX,
+            )
+            tb = fm.boundingRect(tag)
+            w = max(float(tb.width()) + 2.0, 10.0)
+            h = max(float(tb.height()) + 2.0, 10.0)
+            rect = QRectF(ix - w / 2.0, iy - h / 2.0, w, h)
+
+            # Guarantee zero overlap with any 5.0 px terminal dot circle (+1 px safety margin)
+            min_clear = 6.0
+            for _ in range(4):
+                nudged = False
+                for tx, ty in term_centers:
+                    cx = max(rect.left(), min(tx, rect.right()))
+                    cy = max(rect.top(), min(ty, rect.bottom()))
+                    dx = cx - tx
+                    dy = cy - ty
+                    dist = math.hypot(dx, dy)
+                    if dist < min_clear:
+                        if dist > 1e-6:
+                            ux, uy = dx / dist, dy / dist
+                        else:
+                            ux = -1.0 if tx > 0 else (1.0 if tx < 0 else 0.0)
+                            uy = -1.0 if ty > 0 else (1.0 if ty < 0 else -1.0)
+                            norm = math.hypot(ux, uy) or 1.0
+                            ux, uy = ux / norm, uy / norm
+                        push = min_clear - dist + 0.5
+                        rect.translate(ux * push, uy * push)
+                        nudged = True
+                if not nudged:
+                    break
+
+            results.append((term.name, tag, rect))
+        return results
+
     @staticmethod
     def package_and_pinout_labels(comp: Component) -> tuple[str, dict[str, str]]:
         """Return `(package_name, {terminal_name: physical_pin_label})` for `comp`."""
@@ -1095,6 +1217,10 @@ class ComponentItem(QGraphicsObject):
                 kx, ky = marks["cathode_tag"]
                 rect = rect.united(QRectF(ax - 8.0, ay - 6.0, 16.0, 12.0))
                 rect = rect.united(QRectF(kx - 8.0, ky - 6.0, 16.0, 12.0))
+
+            if len(self.metadata.terminals) >= 3 and not self._pinout_overlay_enabled:
+                for _tname, _tag, pin_rect in self.default_pin_label_rects():
+                    rect = rect.united(pin_rect.adjusted(-1.0, -1.0, 1.0, 1.0))
 
             if isinstance(self.component, LogicGate) and (
                 self.isSelected() or self._is_hovered
@@ -1525,39 +1651,17 @@ class ComponentItem(QGraphicsObject):
                     )
 
             if len(self.metadata.terminals) >= 3 and not self._pinout_overlay_enabled:
-                pin_map = self.default_pin_labels(self.component)
-                if pin_map:
+                pin_rects = self.default_pin_label_rects()
+                if pin_rects:
                     pin_font = QFont("Segoe UI", 7)
                     pin_font.setBold(True)
                     painter.setFont(pin_font)
                     painter.setPen(
-                        QColor("#9BA8B8") if self.theme == ThemeMode.DARK else QColor("#3D4B5C")
+                        QColor("#CBD5E1") if self.theme == ThemeMode.DARK else QColor("#334155")
                     )
-                    ctype = self.component.component_type
-                    for term in self.metadata.terminals:
-                        tag = pin_map.get(term.name)
-                        if not tag:
-                            continue
-                        lx0 = term.grid_pos[0] * GRID_PITCH_PX
-                        ly0 = term.grid_pos[1] * GRID_PITCH_PX
-                        if ctype == "seven_seg_display":
-                            lx = -27.0
-                            ly = ly0 * 0.9
-                        elif ctype == "transformer":
-                            lx = lx0 * 0.78
-                            ly = ly0 * 1.35
-                        else:
-                            lx = lx0 * 0.62
-                            ly = ly0 - 9.0 if abs(ly0) < 5.0 else ly0 * 0.72
-                        ix, iy = transform_terminal_position(
-                            (lx / GRID_PITCH_PX, ly / GRID_PITCH_PX),
-                            (0.0, 0.0),
-                            rotation_deg=self.rotation_deg,
-                            flipped_h=self.flipped_h,
-                            grid_px=GRID_PITCH_PX,
-                        )
+                    for _tname, tag, pin_rect in pin_rects:
                         painter.drawText(
-                            QRectF(ix - 18.0, iy - 7.0, 36.0, 14.0),
+                            pin_rect.adjusted(-4.0, -2.0, 4.0, 2.0),
                             Qt.AlignmentFlag.AlignCenter,
                             tag,
                         )

@@ -696,7 +696,7 @@ When ready to perform Stage 2 (internal/package rename after Stage 1 settles):
 | Item | Description | Status | Notes / Commit |
 | --- | --- | --- | --- |
 | `J0a` | Fix live `Fuse` rating edit & click/context-reset while simulation is running (`generation` counter + live worker sync) | `[x]` | Done |
-| `J0b` | Fix multi-pin default label positioning (`default_pin_label_rects`) so `P1`/`P2`/`S1`/`S2` etc. never overlap terminal dots | `[ ]` | pending |
+| `J0b` | Fix multi-pin default label positioning (`default_pin_label_rects`) so `P1`/`P2`/`S1`/`S2` etc. never overlap terminal dots | `[x]` | Done |
 | `J1` | Initialize Phase J Queue & run targeted Batch 1 + Batch 2 legacy regression suites | `[ ]` | pending |
 | `J2` | Placeable `"oscilloscope"` (`OSC`) canvas component & Qt-free DSO-1062D signal/trigger/math/FFT/cursor engine (`dso_engine.py`) | `[ ]` | pending |
 | `J3` | Voltcraft DSO-1062D benchtop front-panel GUI (`dso_panel.py`), double-click multi-instance launch, live sync & PNG/CSV export | `[ ]` | pending |
