@@ -50,6 +50,11 @@ from circuitsim.engine.curve_tracer import (
     trace_transistor_family,
     trace_two_terminal_iv,
 )
+from circuitsim.engine.dmm import (
+    CONTINUITY_THRESHOLD_OHM,
+    DMMReading,
+    measure_dmm,
+)
 from circuitsim.engine.fft_analysis import (
     FFTSpectrumResult,
     compute_fft_spectrum,
@@ -65,11 +70,13 @@ from circuitsim.engine.sweep import (
 __all__ = [
     "ACAnalysisResult",
     "ACFrequencySample",
+    "CONTINUITY_THRESHOLD_OHM",
     "Circuit",
     "CircuitError",
     "CircuitWarning",
     "ComponentTelemetry",
     "CurveFamilyResult",
+    "DMMReading",
     "FFTSpectrumResult",
     "FloatingNodeError",
     "IVCurve",
@@ -101,6 +108,7 @@ __all__ = [
     "format_power_probe_text",
     "format_watts_si",
     "map_voltage_to_rgb",
+    "measure_dmm",
     "run_ac_sweep",
     "run_monte_carlo",
     "run_parameter_sweep",

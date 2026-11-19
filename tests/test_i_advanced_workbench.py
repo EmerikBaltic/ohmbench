@@ -514,3 +514,76 @@ def test_i7_curve_tracer_zener_npn_nmos_and_qt_free_check(qapp, tmp_path: Path) 
     res_dlg = dlg.run_trace()
     assert len(res_dlg.curves) >= 1
     dlg.close()
+
+
+def test_i8_dmm_modes_continuity_and_oscilloscope_xy_lissajous(qapp) -> None:
+    """I8: DMM DC V / AC RMS / DC A / Resistance + Continuity (<50 ohm) & Scope X-Y Lissajous mode."""
+    from circuitsim.app.instruments_panel import BenchtopInstrumentsDialog
+    from circuitsim.components import ACVoltageSource, DCVoltageSource, Ground, Resistor
+    from circuitsim.engine.dmm import measure_dmm
+    from circuitsim.engine.netlist import Circuit
+
+    # AST Qt-free boundary check for dmm.py
+    tree = ast.parse(Path("src/circuitsim/engine/dmm.py").read_text(encoding="utf-8"))
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                assert not alias.name.startswith(("PySide", "PyQt", "qtpy"))
+        elif isinstance(node, ast.ImportFrom):
+            mod = node.module or ""
+            assert not mod.startswith(("PySide", "PyQt", "qtpy"))
+
+    # (a) DMM DC V across R2 in 10 V + 1k/2k divider reads 6.667 V & DC A reads 3.333 mA
+    circ_div = Circuit()
+    circ_div.add(DCVoltageSource("V1", "vin", "0", voltage=10.0))
+    circ_div.add(Resistor("R1", "vin", "vout", resistance=1_000.0))
+    circ_div.add(Resistor("R2", "vout", "0", resistance=2_000.0))
+    circ_div.add(Ground("G1", "0"))
+
+    r_dc_v = measure_dmm(circ_div, mode="dc_v", pos_target="R2")
+    assert r_dc_v.value == pytest.approx(20.0 / 3.0, abs=1e-3)
+    r_dc_a = measure_dmm(circ_div, mode="dc_a", pos_target="R2")
+    assert r_dc_a.value == pytest.approx(10.0 / 3_000.0, abs=1e-6)
+
+    # (b) Resistance & Continuity (< 50 ohm) across 30 ohm resistor -> continuity_active == True
+    circ_ohm = Circuit()
+    circ_ohm.add(Resistor("R_LOW", "a", "0", resistance=30.0))
+    circ_ohm.add(Resistor("R_HI", "b", "0", resistance=120.0))
+    circ_ohm.add(Ground("G_OHM", "0"))
+
+    r_cont = measure_dmm(circ_ohm, mode="resistance", pos_target="R_LOW")
+    assert r_cont.value == pytest.approx(30.0, abs=1e-6)
+    assert r_cont.continuity_active is True
+
+    r_no_cont = measure_dmm(circ_ohm, mode="resistance", pos_target="R_HI")
+    assert r_no_cont.value == pytest.approx(120.0, abs=1e-6)
+    assert r_no_cont.continuity_active is False
+
+    # (c) X-Y Lissajous mode with 1V sin and 1V cos sources -> x^2 + y^2 ~ 1.0 circle
+    circ_xy = Circuit()
+    circ_xy.add(ACVoltageSource("V_SIN", "x_node", "0", amplitude=1.0, frequency=100.0, phase_deg=0.0))
+    circ_xy.add(ACVoltageSource("V_COS", "y_node", "0", amplitude=1.0, frequency=100.0, phase_deg=90.0))
+    circ_xy.add(Resistor("RX", "x_node", "0", resistance=1_000.0))
+    circ_xy.add(Resistor("RY", "y_node", "0", resistance=1_000.0))
+    circ_xy.add(Ground("G_XY", "0"))
+
+    inst = BenchtopInstrumentsDialog(circuit_provider=lambda: circ_xy)
+    try:
+        assert inst.tabs.count() == 4
+        inst.xy_mode_checkbox.setChecked(True)
+        inst.capture_transient(
+            circ_xy,
+            duration_s=10e-3,
+            dt_s=1e-4,
+            channel_nodes={"CH1": "x_node", "CH2": "y_node", "CH3": None, "CH4": None},
+        )
+        pts = inst.get_xy_points()
+        assert len(pts) >= 50
+        radii_sq = [x * x + y * y for x, y in pts[5:]]
+        assert all(math.isclose(r2, 1.0, abs_tol=0.03) for r2 in radii_sq)
+
+        dmm_res = inst.run_dmm_measurement(circ_div, mode="dc_v", pos_target="R2")
+        assert dmm_res.value == pytest.approx(20.0 / 3.0, abs=1e-3)
+        assert "V" in inst.dmm_readout_label.text()
+    finally:
+        inst.close()

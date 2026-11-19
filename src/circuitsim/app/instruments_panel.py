@@ -9,6 +9,7 @@ import numpy as np
 from PySide6.QtCore import Qt, QRectF
 from PySide6.QtGui import QColor, QFont, QPainter, QPainterPath, QPen
 from PySide6.QtWidgets import (
+    QCheckBox,
     QComboBox,
     QDialog,
     QDoubleSpinBox,
@@ -27,6 +28,7 @@ from PySide6.QtWidgets import (
 )
 
 from circuitsim.engine.ac_analysis import ACAnalysisResult, run_ac_sweep
+from circuitsim.engine.dmm import DMMReading, measure_dmm
 from circuitsim.engine.fft_analysis import FFTSpectrumResult, compute_fft_spectrum
 from circuitsim.engine.netlist import Circuit
 from circuitsim.engine.simulation_session import SimulationFrame, SimulationState
@@ -56,6 +58,22 @@ class _WaveformCanvas(QWidget):
         self._cursor_t1: float = 0.0
         self._cursor_t2: float = 0.0
         self._cursors_enabled: bool = True
+        self._xy_mode: bool = False
+
+    def set_xy_mode(self, enabled: bool) -> None:
+        self._xy_mode = bool(enabled)
+        self.update()
+
+    def get_xy_points(self) -> list[tuple[float, float]]:
+        """Return paired ``(CH1_V, CH2_V)`` sample points for X-Y Lissajous mode."""
+        t1 = self._raw_traces.get("CH1")
+        t2 = self._raw_traces.get("CH2")
+        if t1 is None or t2 is None:
+            return []
+        a1 = np.asarray(t1[1], dtype=np.float64)
+        a2 = np.asarray(t2[1], dtype=np.float64)
+        n = min(len(a1), len(a2))
+        return [(float(a1[i]), float(a2[i])) for i in range(n)]
 
     def set_capture(
         self,
@@ -102,6 +120,50 @@ class _WaveformCanvas(QWidget):
 
         times = self._raw_times
         traces = self._raw_traces
+        if self._xy_mode:
+            pts = self.get_xy_points()
+            if len(pts) < 2:
+                painter.setPen(QColor("#8CA0B3"))
+                painter.drawText(plot, Qt.AlignmentFlag.AlignCenter, "Assign CH1 (X) and CH2 (Y) and run capture for X-Y plot.")
+                return
+            xs = [p[0] for p in pts]
+            ys = [p[1] for p in pts]
+            x_min, x_max = min(xs), max(xs)
+            y_min, y_max = min(ys), max(ys)
+            if abs(x_max - x_min) < 1e-9:
+                x_min -= 1.0
+                x_max += 1.0
+            if abs(y_max - y_min) < 1e-9:
+                y_min -= 1.0
+                y_max += 1.0
+            pad_x = 0.08 * (x_max - x_min)
+            pad_y = 0.08 * (y_max - y_min)
+            x_min -= pad_x
+            x_max += pad_x
+            y_min -= pad_y
+            y_max += pad_y
+            x_span = max(x_max - x_min, 1e-12)
+            y_span = max(y_max - y_min, 1e-12)
+            path = QPainterPath()
+            stride = max(1, len(pts) // 1200)
+            for idx in range(0, len(pts), stride):
+                xv, yv = pts[idx]
+                px = plot.left() + ((xv - x_min) / x_span) * plot.width()
+                py = plot.bottom() - ((yv - y_min) / y_span) * plot.height()
+                if idx == 0:
+                    path.moveTo(px, py)
+                else:
+                    path.lineTo(px, py)
+            painter.setPen(QPen(QColor("#38BDF8"), 1.8))
+            painter.drawPath(path)
+            painter.setPen(QColor("#A9BACB"))
+            painter.setFont(QFont("Consolas", 8))
+            painter.drawText(4, int(plot.top() + 10), f"Y:{y_max:.3g}V")
+            painter.drawText(4, int(plot.bottom()), f"Y:{y_min:.3g}V")
+            painter.drawText(int(plot.left()), int(rect.bottom() - 4), f"X:{x_min:.3g}V")
+            painter.drawText(int(plot.right() - 62), int(rect.bottom() - 4), f"X:{x_max:.3g}V")
+            return
+
         if times is None or len(times) < 2 or not traces:
             painter.setPen(QColor("#8CA0B3"))
             painter.drawText(plot, Qt.AlignmentFlag.AlignCenter, "No transient waveform captured yet.")
@@ -356,6 +418,7 @@ class BenchtopInstrumentsDialog(QDialog):
         self._build_waveform_tab()
         self._build_bode_tab()
         self._build_fft_tab()
+        self._build_dmm_tab()
         self.refresh_nodes()
 
     def _build_waveform_tab(self) -> None:
@@ -418,11 +481,14 @@ class BenchtopInstrumentsDialog(QDialog):
         self.cursor_t2_spin.valueChanged.connect(self._update_cursor_readout)
 
         self.cursor_readout_label = QLabel("Cursors: dt = 4.000 ms | dV = 0.000 V")
+        self.xy_mode_checkbox = QCheckBox("X-Y Mode (CH1 vs CH2)", self)
+        self.xy_mode_checkbox.toggled.connect(self._on_xy_mode_toggled)
         cursor_row.addWidget(QLabel("T1:"))
         cursor_row.addWidget(self.cursor_t1_spin)
         cursor_row.addWidget(QLabel("T2:"))
         cursor_row.addWidget(self.cursor_t2_spin)
         cursor_row.addWidget(self.cursor_readout_label, 1)
+        cursor_row.addWidget(self.xy_mode_checkbox)
         cursor_row.addWidget(self.btn_capture_wave)
         layout.addLayout(cursor_row)
 
@@ -531,6 +597,94 @@ class BenchtopInstrumentsDialog(QDialog):
 
         self.tabs.addTab(tab, "FFT Spectrum")
 
+    def _build_dmm_tab(self) -> None:
+        """Build the 4th tab: Digital Multimeter (DC V, AC V RMS, DC A, Resistance/Continuity)."""
+        tab = QWidget(self)
+        layout = QVBoxLayout(tab)
+
+        form = QFormLayout()
+        self.dmm_mode_combo = QComboBox(self)
+        self.dmm_mode_combo.addItem("DC Voltage (V)", "dc_v")
+        self.dmm_mode_combo.addItem("AC Voltage RMS (V)", "ac_v_rms")
+        self.dmm_mode_combo.addItem("DC Current (A)", "dc_a")
+        self.dmm_mode_combo.addItem("Resistance / Continuity (Ω)", "resistance")
+
+        self.dmm_pos_combo = QComboBox(self)
+        self.dmm_neg_combo = QComboBox(self)
+        self.dmm_neg_combo.addItem("0 (GND)", "0")
+
+        form.addRow("DMM Mode:", self.dmm_mode_combo)
+        form.addRow("Red Probe (+ / Component):", self.dmm_pos_combo)
+        form.addRow("Black Probe (- Reference Node):", self.dmm_neg_combo)
+        layout.addLayout(form)
+
+        btn_row = QHBoxLayout()
+        self.btn_dmm_measure = QPushButton("Measure", self)
+        self.btn_dmm_measure.clicked.connect(self._on_dmm_measure_clicked)
+        btn_row.addWidget(self.btn_dmm_measure)
+        btn_row.addStretch(1)
+        layout.addLayout(btn_row)
+
+        read_grp = QGroupBox("Multimeter Readout", self)
+        read_lay = QVBoxLayout(read_grp)
+        self.dmm_readout_label = QLabel("0.000 V", self)
+        self.dmm_readout_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.dmm_readout_label.setFont(QFont("Consolas", 26, QFont.Weight.Bold))
+        self.dmm_readout_label.setStyleSheet(
+            "background-color: #11161C; color: #3FB950; padding: 18px; border-radius: 6px;"
+        )
+        self.dmm_continuity_label = QLabel("Continuity (< 50 Ω): Inactive", self)
+        self.dmm_continuity_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        read_lay.addWidget(self.dmm_readout_label)
+        read_lay.addWidget(self.dmm_continuity_label)
+        layout.addWidget(read_grp)
+        layout.addStretch(1)
+
+        self.latest_dmm_reading: DMMReading | None = None
+        self.tabs.addTab(tab, "Digital Multimeter (DMM)")
+
+    def _on_xy_mode_toggled(self, checked: bool) -> None:
+        self.wave_canvas.set_xy_mode(checked)
+
+    def get_xy_points(self) -> list[tuple[float, float]]:
+        """Return paired ``(CH1_V, CH2_V)`` sample points from the Waveform canvas."""
+        return self.wave_canvas.get_xy_points()
+
+    def _on_dmm_measure_clicked(self) -> None:
+        if self._circuit_provider is None:
+            return
+        self.run_dmm_measurement(self._circuit_provider())
+
+    def run_dmm_measurement(
+        self,
+        circuit: Circuit,
+        *,
+        mode: str | None = None,
+        pos_target: str | None = None,
+        neg_target: str | None = None,
+    ) -> DMMReading:
+        """Execute a DMM reading against ``circuit`` and update the DMM readout widgets."""
+        self.refresh_nodes(circuit)
+        eff_mode = mode or str(self.dmm_mode_combo.currentData() or "dc_v")
+        eff_pos = pos_target if pos_target is not None else str(self.dmm_pos_combo.currentData() or "0")
+        eff_neg = neg_target if neg_target is not None else str(self.dmm_neg_combo.currentData() or "0")
+        reading = measure_dmm(
+            circuit,
+            mode=eff_mode,
+            pos_target=eff_pos,
+            neg_target=eff_neg,
+            transient_result=self.latest_transient if eff_mode == "ac_v_rms" else None,
+        )
+        self.latest_dmm_reading = reading
+        self.dmm_readout_label.setText(reading.formatted_text)
+        if reading.continuity_active:
+            self.dmm_continuity_label.setText("CONTINUITY (< 50 Ω)")
+            self.dmm_continuity_label.setStyleSheet("color: #3FB950; font-weight: 700;")
+        else:
+            self.dmm_continuity_label.setText("Continuity (< 50 Ω): Open / Over 50 Ω")
+            self.dmm_continuity_label.setStyleSheet("")
+        return reading
+
     def refresh_nodes(self, circuit: Circuit | None = None) -> None:
         """Populate probe node selectors from the supplied or current schematic circuit."""
         if circuit is None and self._circuit_provider is not None:
@@ -576,6 +730,29 @@ class BenchtopInstrumentsDialog(QDialog):
                 self.fft_channel_combo.setCurrentText(prev_fft)
             elif nodes:
                 self.fft_channel_combo.setCurrentIndex(len(nodes) - 1)
+
+        if hasattr(self, "dmm_pos_combo"):
+            prev_pos = self.dmm_pos_combo.currentData()
+            self.dmm_pos_combo.clear()
+            for comp in circuit.components:
+                if len(comp.nodes) >= 2:
+                    self.dmm_pos_combo.addItem(f"{comp.name} (Across {comp.component_type})", comp.name)
+            for n in nodes:
+                self.dmm_pos_combo.addItem(f"Node: {n}", n)
+            if prev_pos:
+                idx = self.dmm_pos_combo.findData(prev_pos)
+                if idx >= 0:
+                    self.dmm_pos_combo.setCurrentIndex(idx)
+
+            prev_neg = self.dmm_neg_combo.currentData()
+            self.dmm_neg_combo.clear()
+            self.dmm_neg_combo.addItem("0 (GND)", "0")
+            for n in nodes:
+                self.dmm_neg_combo.addItem(f"Node: {n}", n)
+            if prev_neg:
+                idx = self.dmm_neg_combo.findData(prev_neg)
+                if idx >= 0:
+                    self.dmm_neg_combo.setCurrentIndex(idx)
 
     def _on_channel_assignment_changed(self) -> None:
         for ch_name, cmb in self.ch_combos.items():
