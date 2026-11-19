@@ -309,3 +309,69 @@ def test_k3_blown_fuse_broken_wire_visual_and_pop_animation(qapp) -> None:
         scene.shutdown_scene()
         qapp.processEvents()
 
+
+def test_k4_multi_pin_components_have_always_visible_pin_labels(qapp, tmp_path) -> None:
+    """K4: All multi-pin components have default always-visible pin labels & 7-seg inspector pinout note."""
+    from PySide6.QtCore import QRectF
+    from PySide6.QtGui import QColor, QImage, QPainter
+
+    multi_pin_types = (
+        "seven_seg_display",
+        "ne555",
+        "d_flipflop",
+        "jk_flipflop",
+        "counter_4bit",
+        "spdt_relay",
+        "opamp",
+        "comparator",
+        "npn_bjt",
+        "pnp_bjt",
+        "nmos",
+        "pmos",
+        "potentiometer",
+        "transformer",
+    )
+
+    scene = CircuitScene(SymbolLibrary())
+    try:
+        for idx, cid in enumerate(multi_pin_types):
+            item = scene.place_new_component(cid, QPointF(idx * 220.0, 0.0))
+            assert item is not None
+            labels = item.default_pin_labels(item.component)
+            assert labels, f"Expected default_pin_labels for {cid}"
+            for term in item.metadata.terminals:
+                assert term.name in labels, f"Missing label for {cid}.{term.name}"
+
+        # Render 7-seg unselected/unhovered in offscreen QImage -> left strip must have D0..D3 pixels
+        ds_item = next(it for it in scene.placed_items if it.component.component_type == "seven_seg_display")
+        assert ds_item.isSelected() is False
+        img = QImage(160, 180, QImage.Format.Format_ARGB32)
+        img.fill(QColor("#0D1117"))
+        painter = QPainter(img)
+        scene.render(painter, QRectF(0, 0, 160, 180), QRectF(-80, -90, 160, 180))
+        painter.end()
+        # Sample left inner strip around (-27, -54) in item coords -> (53, 36) in image coords
+        non_bg = 0
+        for px in range(44, 62):
+            for py in range(28, 44):
+                if QColor(img.pixel(px, py)) != QColor("#0D1117"):
+                    non_bg += 1
+        assert non_bg > 0
+    finally:
+        scene.shutdown_scene()
+        qapp.processEvents()
+
+    win = MainWindow(settings=AppSettings(data_dir=tmp_path / "settings"))
+    try:
+        ds = win.circuit_scene.place_new_component("seven_seg_display", QPointF(0.0, 0.0))
+        assert ds is not None
+        win.circuit_scene.clearSelection()
+        ds.setSelected(True)
+        qapp.processEvents()
+        info_txt = win.info_label.text()
+        assert "4-bit Hex/BCD inputs: D0(1), D1(2), D2(4), D3(8) — no GND pin needed" in info_txt
+    finally:
+        win.circuit_scene.undo_stack.setClean()
+        win.close()
+        qapp.processEvents()
+

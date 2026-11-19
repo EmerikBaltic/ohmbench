@@ -1790,6 +1790,8 @@ class MainWindow(QMainWindow):
                 extra_live += " (OVER-BRIGHT!)"
         elif comp.component_type == "transformer":
             extra_live = "\n  • Info: Transformers block steady DC; use an AC Voltage Source to transform voltage."
+        elif comp.component_type == "seven_seg_display":
+            extra_live = "\n  • Pinout: 4-bit Hex/BCD inputs: D0(1), D1(2), D2(4), D3(8) — no GND pin needed"
         if item.diagnostic_message:
             extra_live += f"\n  • Diagnostic: {item.diagnostic_message}"
 

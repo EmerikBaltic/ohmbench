@@ -900,6 +900,47 @@ class ComponentItem(QGraphicsObject):
             self.update()
 
     @staticmethod
+    def default_pin_labels(comp: Component) -> dict[str, str]:
+        """Return short, always-visible terminal pin labels for multi-pin (>=3) components."""
+        ctype = comp.component_type
+        if ctype == "seven_seg_display":
+            return {"D0": "D0", "D1": "D1", "D2": "D2", "D3": "D3"}
+        if ctype == "ne555":
+            return {
+                "vcc": "VCC",
+                "gnd": "GND",
+                "trig": "TRIG",
+                "thr": "THR",
+                "dis": "DIS",
+                "out": "OUT",
+                "reset": "RST",
+                "ctrl": "CTRL",
+            }
+        if ctype == "d_flipflop":
+            return {"D": "D", "CLK": "CLK", "RST": "RST", "Q": "Q", "Q_BAR": "Q̄"}
+        if ctype == "jk_flipflop":
+            return {"J": "J", "K": "K", "CLK": "CLK", "RST": "RST", "Q": "Q", "Q_BAR": "Q̄"}
+        if ctype == "counter_4bit":
+            return {"CLK": "CLK", "RST": "RST", "Q0": "Q0", "Q1": "Q1", "Q2": "Q2", "Q3": "Q3"}
+        if ctype == "spdt_relay":
+            return {"coil_pos": "COIL+", "coil_neg": "COIL-", "com": "COM", "no": "NO", "nc": "NC"}
+        if ctype == "mcu":
+            return {"A0": "A0", "A1": "A1", "D0": "D0", "D1": "D1", "TX": "TX", "RX": "RX"}
+        if ctype in ("opamp", "comparator"):
+            return {"in_pos": "+", "in_neg": "-", "out": "OUT"}
+        if ctype in ("npn_bjt", "pnp_bjt"):
+            return {"B": "B", "C": "C", "E": "E"}
+        if ctype in ("nmos", "pmos"):
+            return {"G": "G", "D": "D", "S": "S"}
+        if ctype == "potentiometer":
+            return {"a": "A", "w": "W", "b": "B"}
+        if ctype == "transformer":
+            return {"p1": "P1", "p2": "P2", "s1": "S1", "s2": "S2"}
+        if ctype.startswith("gate_") and ctype != "gate_not":
+            return {"a": "A", "b": "B", "out": "Y", "in0": "A", "in1": "B"}
+        return {}
+
+    @staticmethod
     def package_and_pinout_labels(comp: Component) -> tuple[str, dict[str, str]]:
         """Return `(package_name, {terminal_name: physical_pin_label})` for `comp`."""
         ctype = comp.component_type
@@ -1482,6 +1523,44 @@ class ComponentItem(QGraphicsObject):
                         Qt.AlignmentFlag.AlignCenter,
                         pin_name,
                     )
+
+            if len(self.metadata.terminals) >= 3 and not self._pinout_overlay_enabled:
+                pin_map = self.default_pin_labels(self.component)
+                if pin_map:
+                    pin_font = QFont("Segoe UI", 7)
+                    pin_font.setBold(True)
+                    painter.setFont(pin_font)
+                    painter.setPen(
+                        QColor("#9BA8B8") if self.theme == ThemeMode.DARK else QColor("#3D4B5C")
+                    )
+                    ctype = self.component.component_type
+                    for term in self.metadata.terminals:
+                        tag = pin_map.get(term.name)
+                        if not tag:
+                            continue
+                        lx0 = term.grid_pos[0] * GRID_PITCH_PX
+                        ly0 = term.grid_pos[1] * GRID_PITCH_PX
+                        if ctype == "seven_seg_display":
+                            lx = -27.0
+                            ly = ly0 * 0.9
+                        elif ctype == "transformer":
+                            lx = lx0 * 0.78
+                            ly = ly0 * 1.35
+                        else:
+                            lx = lx0 * 0.62
+                            ly = ly0 - 9.0 if abs(ly0) < 5.0 else ly0 * 0.72
+                        ix, iy = transform_terminal_position(
+                            (lx / GRID_PITCH_PX, ly / GRID_PITCH_PX),
+                            (0.0, 0.0),
+                            rotation_deg=self.rotation_deg,
+                            flipped_h=self.flipped_h,
+                            grid_px=GRID_PITCH_PX,
+                        )
+                        painter.drawText(
+                            QRectF(ix - 18.0, iy - 7.0, 36.0, 14.0),
+                            Qt.AlignmentFlag.AlignCenter,
+                            tag,
+                        )
 
             if self._pinout_overlay_enabled:
                 pkg_name, pin_map = self.package_and_pinout_labels(self.component)
