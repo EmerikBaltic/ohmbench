@@ -147,8 +147,10 @@ class ProblemsPanel(QWidget):
         layout.setSpacing(4)
 
         # Header bar with title, problem count, and 'X' close button
-        header_layout = QHBoxLayout()
-        header_layout.setContentsMargins(2, 0, 2, 0)
+        self.header_widget = QWidget(self)
+        self.header_widget.setFixedHeight(28)
+        header_layout = QHBoxLayout(self.header_widget)
+        header_layout.setContentsMargins(6, 0, 6, 0)
 
         self.title_label = QLabel("Problems")
         title_font = QFont("Segoe UI", 9, QFont.Weight.Bold)
@@ -161,11 +163,11 @@ class ProblemsPanel(QWidget):
 
         header_layout.addStretch()
 
-        self.close_btn = ProblemsCloseButton(self)
+        self.close_btn = ProblemsCloseButton(self.header_widget)
         self.close_btn.clicked.connect(self.close_requested.emit)
         header_layout.addWidget(self.close_btn)
 
-        layout.addLayout(header_layout)
+        layout.addWidget(self.header_widget)
 
         # Tree widget listing diagnostics
         self.tree = QTreeWidget(self)
@@ -246,10 +248,11 @@ class ProblemsDock(QDockWidget):
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__("Problems", parent)
         self.setObjectName("ProblemsDock")
-        self.setAllowedAreas(
-            Qt.DockWidgetArea.BottomDockWidgetArea | Qt.DockWidgetArea.TopDockWidgetArea
-        )
+        self.setFloating(False)
+        self.setAllowedAreas(Qt.DockWidgetArea.BottomDockWidgetArea)
+        self.setFeatures(QDockWidget.DockWidgetFeature.DockWidgetClosable)
         self.panel = ProblemsPanel(self)
+        self.setTitleBarWidget(self.panel.header_widget)
         self.setWidget(self.panel)
         self.panel.close_requested.connect(self.close)
 

@@ -375,3 +375,43 @@ def test_k4_multi_pin_components_have_always_visible_pin_labels(qapp, tmp_path) 
         win.close()
         qapp.processEvents()
 
+
+def test_k5_problems_dock_locked_to_bottom_and_resizes_palette(qapp, tmp_path) -> None:
+    """K5: ProblemsDock is locked to bottom dock area, spans full width, and shrinks Component Palette without overlapping."""
+    from PySide6.QtWidgets import QDockWidget
+
+    win = MainWindow(settings=AppSettings(data_dir=tmp_path / "settings"))
+    try:
+        win.resize(1200, 800)
+        win.show()
+        qapp.processEvents()
+
+        # Verify dock lock & non-floating properties + single title bar widget
+        assert win.problems_dock.isFloating() is False
+        assert win.problems_dock.allowedAreas() == Qt.DockWidgetArea.BottomDockWidgetArea
+        assert win.problems_dock.features() == QDockWidget.DockWidgetFeature.DockWidgetClosable
+        assert win.problems_dock.titleBarWidget() is win.problems_dock.panel.header_widget
+
+        h_closed = win.palette_dock.height()
+
+        # Open Problems Panel -> palette shrinks cleanly above Problems dock with no vertical overlap
+        win.action_view_problems.trigger()
+        qapp.processEvents()
+        assert win.problems_dock.isVisible() is True
+        assert win.problems_dock.isFloating() is False
+
+        h_open = win.palette_dock.height()
+        assert h_open < h_closed
+        assert win.palette_dock.geometry().bottom() <= win.problems_dock.geometry().top() + 2
+        assert win.problems_dock.width() >= win.palette_dock.width() + win.circuit_view.width()
+
+        # Close Problems Panel -> palette expands back down
+        win.problems_dock.panel.close_btn.click()
+        qapp.processEvents()
+        assert win.problems_dock.isVisible() is False
+        assert win.palette_dock.height() == h_closed
+    finally:
+        win.circuit_scene.undo_stack.setClean()
+        win.close()
+        qapp.processEvents()
+

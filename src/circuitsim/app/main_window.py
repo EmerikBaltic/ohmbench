@@ -703,8 +703,11 @@ class MainWindow(QMainWindow):
         self.info_dock.setWidget(self.info_scroll)
         self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self.info_dock)
 
-        # 3. Bottom Dock: Problems Panel
+        # 3. Bottom Dock: Problems Panel (owns bottom corners so it spans full width & shrinks side docks)
+        self.setCorner(Qt.Corner.BottomLeftCorner, Qt.DockWidgetArea.BottomDockWidgetArea)
+        self.setCorner(Qt.Corner.BottomRightCorner, Qt.DockWidgetArea.BottomDockWidgetArea)
         self.problems_dock = ProblemsDock(self)
+        self.problems_dock.setFloating(False)
         self.addDockWidget(Qt.DockWidgetArea.BottomDockWidgetArea, self.problems_dock)
         self.resizeDocks([self.problems_dock], [120], Qt.Orientation.Vertical)
         self.problems_dock.hide()
@@ -1433,6 +1436,7 @@ class MainWindow(QMainWindow):
         curr_error_count = len(errors)
         if curr_error_count > self._prev_error_count:
             if not self._user_closed_problems_panel and hasattr(self, "problems_dock"):
+                self.problems_dock.setFloating(False)
                 self.problems_dock.show()
                 if hasattr(self, "action_view_problems"):
                     self.action_view_problems.setChecked(True)
@@ -1601,6 +1605,8 @@ class MainWindow(QMainWindow):
             new_visible = bool(checked)
         if not new_visible and self._sim_state == SimulationState.RUNNING:
             self._user_closed_problems_panel = True
+        if new_visible:
+            self.problems_dock.setFloating(False)
         self.problems_dock.setVisible(new_visible)
         if hasattr(self, "action_view_problems"):
             self.action_view_problems.setChecked(new_visible)
