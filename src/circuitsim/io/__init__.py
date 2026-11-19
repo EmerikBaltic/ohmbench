@@ -1,5 +1,12 @@
 """JSON project save/load, SPICE netlist import/export, WAV I/O, and image export."""
 
+from circuitsim.io.bom_export import (
+    BOMLineItem,
+    BOMReport,
+    export_bom_csv,
+    export_bom_markdown,
+    generate_bom_report,
+)
 from circuitsim.io.kicad_export import export_to_kicad_sch
 from circuitsim.io.share_codec import (
     SHARE_URL_PREFIX,
@@ -31,6 +38,8 @@ from circuitsim.io.wav_signal import (
 )
 
 __all__ = [
+    "BOMLineItem",
+    "BOMReport",
     "EncryptedModelError",
     "SHARE_URL_PREFIX",
     "SHARE_URL_SCHEME",
@@ -44,8 +53,11 @@ __all__ = [
     "decode_circuit_share_url",
     "detect_encrypted_spice",
     "encode_circuit_share_url",
+    "export_bom_csv",
+    "export_bom_markdown",
     "export_to_kicad_sch",
     "export_waveform_to_wav",
+    "generate_bom_report",
     "instantiate_diode_model",
     "instantiate_subckt_elements",
     "load_wav_samples",

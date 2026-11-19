@@ -587,3 +587,69 @@ def test_i8_dmm_modes_continuity_and_oscilloscope_xy_lissajous(qapp) -> None:
         assert "V" in inst.dmm_readout_label.text()
     finally:
         inst.close()
+
+
+def test_i9_bom_power_report_and_custom_subcircuit_macro(tmp_path: Path) -> None:
+    """I9: BOM grouping & exact passive power sum (36 mW) + CustomMacroBlock hierarchical flattening."""
+    from circuitsim.components import (
+        CustomMacroBlock,
+        DCVoltageSource,
+        Ground,
+        Resistor,
+        package_subcircuit_macro,
+    )
+    from circuitsim.engine.netlist import Circuit
+    from circuitsim.engine.solver import MNASolver
+    from circuitsim.io.bom_export import (
+        export_bom_csv,
+        export_bom_markdown,
+        generate_bom_report,
+    )
+
+    # AST Qt-free boundary checks for bom_export.py & custom_macro.py
+    for mod_path in ("src/circuitsim/io/bom_export.py", "src/circuitsim/components/custom_macro.py"):
+        tree = ast.parse(Path(mod_path).read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                for alias in node.names:
+                    assert not alias.name.startswith(("PySide", "PyQt", "qtpy"))
+            elif isinstance(node, ast.ImportFrom):
+                mod = node.module or ""
+                assert not mod.startswith(("PySide", "PyQt", "qtpy"))
+
+    # (a) BOM on 12 V series R1(1k) + R2(1k) + R3(2k): I=3mA -> 9 + 9 + 18 = 36.0 mW total
+    circ_bom = Circuit()
+    circ_bom.add(DCVoltageSource("V1", "vin", "0", voltage=12.0))
+    circ_bom.add(Resistor("R1", "vin", "n1", resistance=1_000.0))
+    circ_bom.add(Resistor("R2", "n1", "n2", resistance=1_000.0))
+    circ_bom.add(Resistor("R3", "n2", "0", resistance=2_000.0))
+    circ_bom.add(Ground("G_BOM", "0"))
+    res_bom = MNASolver(circ_bom).solve_dc()
+
+    report = generate_bom_report(circ_bom, res_bom)
+    r_1k_rows = [
+        it for it in report.items if it.component_type == "resistor" and it.quantity == 2
+    ]
+    assert len(r_1k_rows) == 1
+    assert r_1k_rows[0].designators == ("R1", "R2")
+    assert r_1k_rows[0].total_power_mw == pytest.approx(18.0, rel=1e-3)
+    assert report.total_power_mw == pytest.approx(36.0, rel=1e-3)
+
+    csv_path = tmp_path / "bom.csv"
+    md_path = tmp_path / "bom.md"
+    csv_txt = export_bom_csv(report, csv_path)
+    md_txt = export_bom_markdown(report, md_path)
+    assert csv_path.exists() and "R1, R2" in csv_txt
+    assert md_path.exists() and "36.000 mW" in md_txt
+
+    # (b) Package 1k/2k divider into "DividerMacro" (IN, OUT, GND) -> 9 V on IN gives 6.000 V on OUT
+    r_top = Resistor("R_TOP", "IN", "OUT", resistance=1_000.0)
+    r_bot = Resistor("R_BOT", "OUT", "GND", resistance=2_000.0)
+    macro_def = package_subcircuit_macro("DividerMacro", ["IN", "OUT", "GND"], [r_top, r_bot])
+
+    parent = Circuit()
+    parent.add(DCVoltageSource("V_IN", "n_in", "0", voltage=9.0))
+    parent.add(CustomMacroBlock("U_DIV", macro_def, ("n_in", "n_out", "0")))
+    parent.add(Ground("G_P", "0"))
+    res_macro = MNASolver(parent).solve_dc()
+    assert res_macro.node_voltages["n_out"] == pytest.approx(6.0, abs=1e-3)

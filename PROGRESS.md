@@ -10,7 +10,7 @@
 - [x] `I6` (`done`): Add Sequential Digital Logic & Displays (`d_flipflop`, `jk_flipflop`, `counter_4bit`, `seven_seg_display`) with live 7-segment rendering.
 - [x] `I7` (`done`): Add Qt-free I-V Characteristic Curve Tracer (`circuitsim.engine.curve_tracer`) and `CurveTracerDialog` (`Simulation > I-V Curve Tracer...`) with CSV export.
 - [x] `I8` (`done`): Add Benchtop Digital Multimeter (DMM) tab (DC V, AC RMS, DC A, Resistance/Continuity) and Oscilloscope X-Y Lissajous mode.
-- [ ] `I9` (`todo`): Add automated Bill of Materials & Thermal Power Budget (`circuitsim.io.bom_export` + UI dialog) and Custom Subcircuit Macro packaging (`CustomMacroBlock`).
+- [x] `I9` (`done`): Add automated Bill of Materials & Thermal Power Budget (`circuitsim.io.bom_export` + UI dialog) and Custom Subcircuit Macro packaging (`CustomMacroBlock`).
 - [ ] `I10` (`todo`): Add undoable Alignment & Distribution tools, toggleable corner Minimap, expand `BUILTIN_TEST_JIGS` to 18 circuits, and update docs.
 - [ ] `GATE I` (`todo`): Run Gate I test suites, verify Qt-free boundaries, commit, and tag `checkpoint/I-done`.
 

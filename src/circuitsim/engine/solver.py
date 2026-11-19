@@ -221,7 +221,7 @@ class MNASolver:
     def _ensure_component_buckets(self) -> None:
         """Partition circuit components once per topology version to keep inner loops free of ABC checks."""
         circ_ver = self.circuit.version
-        raw_comps = self.circuit._components.values()
+        raw_comps = self.circuit.flat_components()
         if self._buckets_version == circ_ver and self._buckets_len == len(raw_comps):
             return
 
@@ -400,7 +400,7 @@ class MNASolver:
         inductances: list[float] = []
         capacitances: list[float] = []
 
-        for comp in self.circuit.components:
+        for comp in self.circuit.flat_components():
             if isinstance(comp, ACVoltageSource) and comp.frequency > 0.0:
                 candidates.append(1.0 / (100.0 * comp.frequency))
             elif isinstance(comp, Inductor):
@@ -483,7 +483,7 @@ class MNASolver:
     def _voltage_sources(self) -> list[DCVoltageSource | ACVoltageSource | Ammeter]:
         return [
             comp
-            for comp in self.circuit.components
+            for comp in self.circuit.flat_components()
             if isinstance(comp, (DCVoltageSource, ACVoltageSource))
             or (isinstance(comp, Ammeter) and comp.is_ideal)
         ]
@@ -492,7 +492,7 @@ class MNASolver:
         self, *, extra_gmin: float = 0.0, loop_reg_r: float = 0.0
     ) -> tuple[float, ...]:
         sig: list[float] = [max(self.gmin, extra_gmin), loop_reg_r]
-        for comp in self.circuit.components:
+        for comp in self.circuit.flat_components():
             if isinstance(comp, (Resistor, Switch, Fuse, Lightbulb, Voltmeter, Ammeter, LED)):
                 if isinstance(comp, (Voltmeter, Ammeter)) and comp.is_ideal:
                     sig.append(0.0)
@@ -611,7 +611,7 @@ class MNASolver:
             matrix_a[idx, idx] += eff_gmin
 
         # 2. Stamp conductive and companion two-terminal components.
-        for comp in self.circuit.components:
+        for comp in self.circuit.flat_components():
             if isinstance(comp, Ground):
                 continue
             if isinstance(comp, (Resistor, Fuse, Lightbulb, Voltmeter, Ammeter)):
@@ -799,7 +799,7 @@ class MNASolver:
         dim = len(self._node_to_idx) + len(self._vs_to_idx)
         rhs_b = np.zeros(dim, dtype=np.float64)
 
-        for comp in self.circuit.components:
+        for comp in self.circuit.flat_components():
             if isinstance(comp, DCCurrentSource):
                 idx_pos = self._node_to_idx.get(comp.nodes[0])
                 idx_neg = self._node_to_idx.get(comp.nodes[1])
@@ -1107,8 +1107,8 @@ class MNASolver:
         for mcu in mcus:
             mcu.reset_state()
 
-        capacitors = [c for c in self.circuit.components if isinstance(c, Capacitor)]
-        inductors = [c for c in self.circuit.components if isinstance(c, Inductor)]
+        capacitors = [c for c in self.circuit.flat_components() if isinstance(c, Capacitor)]
+        inductors = [c for c in self.circuit.flat_components() if isinstance(c, Inductor)]
         non_gnd_nodes = self.circuit.non_ground_nodes()
         node_to_idx = {node: idx for idx, node in enumerate(non_gnd_nodes)}
         voltage_sources = self._voltage_sources()
@@ -1132,7 +1132,7 @@ class MNASolver:
         for idx in range(n_nodes):
             mat[idx, idx] += max(self.gmin, 1e-15)
 
-        for comp in self.circuit.components:
+        for comp in self.circuit.flat_components():
             if isinstance(comp, (Resistor, Switch, Lightbulb, Voltmeter, Ammeter)):
                 if isinstance(comp, (Voltmeter, Ammeter)) and getattr(comp, "is_ideal", False):
                     continue
@@ -1332,17 +1332,17 @@ class MNASolver:
         if self._startup_perturbation_applied or self.startup_perturbation_uv == 0.0:
             return
         caps = sorted(
-            (c for c in self.circuit.components if isinstance(c, Capacitor)),
+            (c for c in self.circuit.flat_components() if isinstance(c, Capacitor)),
             key=lambda c: c.name,
         )
         if not caps:
             return
-        inds = [c for c in self.circuit.components if isinstance(c, Inductor)]
-        gates = [c for c in self.circuit.components if isinstance(c, LogicGate)]
-        has_ac = any(isinstance(c, ACVoltageSource) for c in self.circuit.components)
-        has_diode = any(isinstance(c, Diode) for c in self.circuit.components)
+        inds = [c for c in self.circuit.flat_components() if isinstance(c, Inductor)]
+        gates = [c for c in self.circuit.flat_components() if isinstance(c, LogicGate)]
+        has_ac = any(isinstance(c, ACVoltageSource) for c in self.circuit.flat_components())
+        has_diode = any(isinstance(c, Diode) for c in self.circuit.flat_components())
         has_active_nl = any(
-            isinstance(c, (BJTBase, MOSFETBase, OpAmp)) for c in self.circuit.components
+            isinstance(c, (BJTBase, MOSFETBase, OpAmp)) for c in self.circuit.flat_components()
         )
         all_zero_ic = all(abs(c.initial_voltage) == 0.0 for c in caps) and all(
             abs(i.initial_current) == 0.0 for i in inds
@@ -2026,7 +2026,7 @@ class MNASolver:
                 warnings.append(w)
 
         branch_currents: dict[str, float] = {}
-        for comp in self.circuit.components:
+        for comp in self.circuit.flat_components():
             if isinstance(comp, Ground):
                 comp.voltage = 0.0
                 comp.current = 0.0
@@ -2178,7 +2178,7 @@ class MNASolver:
 
             branch_currents[comp.name] = i_ab
 
-        for comp in self.circuit.components:
+        for comp in self.circuit.flat_components():
             if isinstance(comp, Voltmeter):
                 self._update_voltmeter_loading(comp)
 
@@ -2208,8 +2208,8 @@ class MNASolver:
             probe error, preserving exact energy conservation and 2nd-order convergence
             for Trapezoidal integration from step 0.
         """
-        capacitors = [c for c in self.circuit.components if isinstance(c, Capacitor)]
-        inductors = [c for c in self.circuit.components if isinstance(c, Inductor)]
+        capacitors = [c for c in self.circuit.flat_components() if isinstance(c, Capacitor)]
+        inductors = [c for c in self.circuit.flat_components() if isinstance(c, Inductor)]
         if not capacitors and not inductors:
             return
 
@@ -2230,7 +2230,7 @@ class MNASolver:
         for idx in range(n_nodes):
             mat[idx, idx] += max(self.gmin, 1e-15)
 
-        for comp in self.circuit.components:
+        for comp in self.circuit.flat_components():
             if isinstance(comp, (Resistor, Switch, Fuse, Lightbulb, Voltmeter, Ammeter)):
                 g = comp.conductance
                 ia = node_to_idx.get(comp.nodes[0])
@@ -2899,7 +2899,7 @@ class MNASolver:
             self._be_steps_remaining = 0
 
         all_nodes = sorted(self.circuit.all_nodes())
-        comp_names = [c.name for c in self.circuit.components]
+        comp_names = [c.name for c in self.circuit.flat_components()]
 
         times = np.zeros(n_steps + 1, dtype=np.float64)
         node_history: dict[str, np.ndarray] = {
@@ -2919,7 +2919,7 @@ class MNASolver:
             for n, v in self._t0_node_voltages.items():
                 if n in node_history:
                     node_history[n][0] = v
-        for comp in self.circuit.components:
+        for comp in self.circuit.flat_components():
             curr_history[comp.name][0] = comp.current
             volt_history[comp.name][0] = comp.voltage
             if not self._t0_node_voltages and not isinstance(comp, Ground) and len(comp.nodes) >= 2:
@@ -2950,7 +2950,7 @@ class MNASolver:
             times[k] = res.sim_time
             for n, v in res.node_voltages.items():
                 node_history[n][k] = v
-            for comp in self.circuit.components:
+            for comp in self.circuit.flat_components():
                 curr_history[comp.name][k] = comp.current
                 volt_history[comp.name][k] = comp.voltage
             for w in res.warnings:

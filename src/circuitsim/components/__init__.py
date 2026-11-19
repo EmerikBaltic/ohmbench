@@ -4,6 +4,11 @@ from circuitsim.components.base import Component, ComponentParameter
 from circuitsim.components.bjt import BJTBase, NPNBJT, PNPBJT
 from circuitsim.components.capacitor import Capacitor
 from circuitsim.components.comparator import Comparator
+from circuitsim.components.custom_macro import (
+    CustomMacroBlock,
+    SubcircuitMacroDef,
+    package_subcircuit_macro,
+)
 from circuitsim.components.diode import Diode, ZenerDiode
 from circuitsim.components.factory import (
     KNOWN_COMPONENT_TYPES,
@@ -54,6 +59,7 @@ __all__ = [
     "Component",
     "ComponentParameter",
     "Counter4Bit",
+    "CustomMacroBlock",
     "DCCurrentSource",
     "DCVoltageSource",
     "DFlipFlop",
@@ -84,6 +90,7 @@ __all__ = [
     "Resistor",
     "SPDTRelay",
     "SevenSegDisplay",
+    "SubcircuitMacroDef",
     "Switch",
     "Transformer",
     "Voltmeter",
@@ -93,4 +100,5 @@ __all__ = [
     "create_default_component_model",
     "evaluate_gate_boolean",
     "normalize_logic_family",
+    "package_subcircuit_macro",
 ]

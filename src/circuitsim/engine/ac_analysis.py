@@ -260,7 +260,7 @@ def run_ac_sweep(
         for idx in range(n_nodes):
             mat_y[idx, idx] += eff_gmin
 
-        for comp in circuit.components:
+        for comp in circuit.flat_components():
             if isinstance(comp, Ground) or isinstance(comp, DCCurrentSource):
                 continue
             if isinstance(comp, (Resistor, Fuse, Lightbulb, Voltmeter, Ammeter)):

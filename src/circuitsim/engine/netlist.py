@@ -8,6 +8,7 @@ import numpy as np
 from circuitsim.components.base import Component
 from circuitsim.components.bjt import BJTBase
 from circuitsim.components.capacitor import Capacitor
+from circuitsim.components.custom_macro import CustomMacroBlock
 from circuitsim.components.ground import Ground
 from circuitsim.components.inductor import Inductor
 from circuitsim.components.led import LED
@@ -79,6 +80,27 @@ class Circuit:
     def __init__(self) -> None:
         self._components: dict[str, Component] = {}
         self.version: int = 0
+        self._flat_cache_ver: int = -1
+        self._flat_cache: list[Component] = []
+
+    def flat_components(self) -> list[Component]:
+        """Return components with any ``CustomMacroBlock`` instances recursively flattened."""
+        if self._flat_cache_ver == self.version:
+            return self._flat_cache
+        raw = list(self._components.values())
+        if not any(isinstance(c, CustomMacroBlock) for c in raw):
+            self._flat_cache = raw
+            self._flat_cache_ver = self.version
+            return raw
+        flat: list[Component] = []
+        for comp in raw:
+            if isinstance(comp, CustomMacroBlock):
+                flat.extend(comp.expand_internal_components())
+            else:
+                flat.append(comp)
+        self._flat_cache = flat
+        self._flat_cache_ver = self.version
+        return flat
 
     def add(self, component: Component) -> Component:
         """Add a component to the circuit and increment the topology version."""
@@ -121,14 +143,14 @@ class Circuit:
         """Return the set of node names explicitly connected to a Ground component."""
         return {
             comp.node
-            for comp in self._components.values()
+            for comp in self.flat_components()
             if isinstance(comp, Ground)
         }
 
     def all_nodes(self) -> set[str]:
         """Return all node names referenced by any component in the circuit."""
         nodes: set[str] = set()
-        for comp in self._components.values():
+        for comp in self.flat_components():
             nodes.update(comp.nodes)
         return nodes
 
@@ -166,7 +188,7 @@ class Circuit:
         # Voltage sources become 0 V constraints with series r_internal.
         # Any other inductor with dcr == 0 also acts as a 0 V DC short branch.
         zeroed_vs_branches: list[tuple[str, str, float]] = []
-        for comp in self._components.values():
+        for comp in self.flat_components():
             if comp.name == exclude_component or isinstance(comp, (Ground, Capacitor)):
                 continue
             if isinstance(comp, (DCVoltageSource, ACVoltageSource)):
@@ -187,7 +209,7 @@ class Circuit:
             for idx in range(n_nodes):
                 mat[idx, idx] += gmin_val
 
-            for comp in self._components.values():
+            for comp in self.flat_components():
                 if comp.name == exclude_component or isinstance(
                     comp, (Ground, Capacitor, DCVoltageSource, ACVoltageSource)
                 ):
@@ -299,7 +321,7 @@ class Circuit:
             return True
 
         battery_dsu = _DisjointSet()
-        for c in self._components.values():
+        for c in self.flat_components():
             if isinstance(c, (DCVoltageSource, ACVoltageSource)):
                 battery_dsu.union(canonical(c.nodes[0]), canonical(c.nodes[1]))
 
@@ -331,7 +353,7 @@ class Circuit:
             )
 
         non_ground_comps = [
-            c for c in self._components.values() if not isinstance(c, Ground)
+            c for c in self.flat_components() if not isinstance(c, Ground)
         ]
         if not non_ground_comps:
             return warnings

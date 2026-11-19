@@ -294,6 +294,11 @@ class MainWindow(QMainWindow):
         self.act_open_share_url.triggered.connect(self._on_open_share_url)
         file_menu.addAction(self.act_open_share_url)
 
+        self.act_bom_report = QAction("Bill of &Materials && Power Report...", self)
+        self.act_bom_report.setToolTip("Inspect grouped BOM, thermal power budget, and export CSV/Markdown")
+        self.act_bom_report.triggered.connect(self.show_bom_report_dialog)
+        file_menu.addAction(self.act_bom_report)
+
         file_menu.addSeparator()
         act_exit = QAction("E&xit", self)
         act_exit.setShortcut(QKeySequence.StandardKey.Quit)
@@ -406,6 +411,11 @@ class MainWindow(QMainWindow):
         self.act_shortcuts.setToolTip("Configure keyboard shortcuts")
         self.act_shortcuts.triggered.connect(self._open_shortcuts_dialog)
         edit_menu.addAction(self.act_shortcuts)
+
+        self.act_create_macro = QAction("Create Custom &Macro from Scene...", self)
+        self.act_create_macro.setToolTip("Package current schematic subcircuit with Net Labels into a CustomMacroBlock")
+        self.act_create_macro.triggered.connect(self.create_custom_macro_from_scene)
+        edit_menu.addAction(self.act_create_macro)
 
         # View menu
         self.view_menu = menu_bar.addMenu("&View")
@@ -1487,6 +1497,74 @@ class MainWindow(QMainWindow):
         dlg.raise_()
         dlg.activateWindow()
         return dlg
+
+    def show_bom_report_dialog(self):
+        """Display the grouped Bill of Materials & Thermal Power Budget report with CSV/MD export."""
+        from PySide6.QtWidgets import QDialog, QFileDialog, QHBoxLayout, QPushButton, QTextEdit, QVBoxLayout
+        from circuitsim.io.bom_export import export_bom_csv, export_bom_markdown, generate_bom_report
+
+        conn = self.circuit_scene.extract_connectivity_result()
+        report = generate_bom_report(conn.circuit)
+        md_text = export_bom_markdown(report)
+
+        dlg = QDialog(self)
+        dlg.setWindowTitle("Bill of Materials & Power Budget Report")
+        dlg.resize(680, 440)
+        lay = QVBoxLayout(dlg)
+        txt = QTextEdit(dlg)
+        txt.setReadOnly(True)
+        txt.setPlainText(md_text)
+        lay.addWidget(txt, 1)
+        row = QHBoxLayout()
+        btn_csv = QPushButton("Export CSV...", dlg)
+        btn_md = QPushButton("Export Markdown...", dlg)
+        btn_close = QPushButton("Close", dlg)
+        row.addWidget(btn_csv)
+        row.addWidget(btn_md)
+        row.addStretch(1)
+        row.addWidget(btn_close)
+        lay.addLayout(row)
+
+        def _save_csv() -> None:
+            p, _ = QFileDialog.getSaveFileName(dlg, "Export BOM CSV", "bom_report.csv", "CSV Files (*.csv)")
+            if p:
+                export_bom_csv(report, p)
+
+        def _save_md() -> None:
+            p, _ = QFileDialog.getSaveFileName(dlg, "Export BOM Markdown", "bom_report.md", "Markdown Files (*.md)")
+            if p:
+                export_bom_markdown(report, p)
+
+        btn_csv.clicked.connect(_save_csv)
+        btn_md.clicked.connect(_save_md)
+        btn_close.clicked.connect(dlg.accept)
+        dlg.show()
+        return report
+
+    def create_custom_macro_from_scene(self, macro_name: str | None = None):
+        """Package current schematic components + labeled nets into a reusable SubcircuitMacroDef."""
+        from circuitsim.components.custom_macro import package_subcircuit_macro
+
+        conn = self.circuit_scene.extract_connectivity_result()
+        pins: list[str] = []
+        seen_pins: set[str] = set()
+        for w in self.circuit_scene.wire_graph.wires:
+            if w.net_label and w.net_label.strip() and w.net_label.strip() not in seen_pins:
+                seen_pins.add(w.net_label.strip())
+                pins.append(w.net_label.strip())
+        for j in self.circuit_scene.wire_graph.junctions:
+            if j.net_label and j.net_label.strip() and j.net_label.strip() not in seen_pins:
+                seen_pins.add(j.net_label.strip())
+                pins.append(j.net_label.strip())
+        if not pins:
+            pins = ["IN", "OUT", "GND"]
+        name = (macro_name or "CustomMacro").strip() or "CustomMacro"
+        macro_def = package_subcircuit_macro(name, pins, conn.circuit.components)
+        if not hasattr(self, "custom_macros"):
+            self.custom_macros = {}
+        self.custom_macros[name] = macro_def
+        self.statusBar().showMessage(f"Created macro '{name}' with pins {pins}", 4000)
+        return macro_def
 
     def _toggle_problems_panel(self, checked: bool | None = None) -> None:
         if checked is None:
