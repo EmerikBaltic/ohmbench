@@ -377,3 +377,64 @@ def test_j3_dso_1062d_front_panel_gui_and_exports(qapp, tmp_path: Path) -> None:
         view.close()
         scene.shutdown_scene()
         qapp.processEvents()
+
+
+def test_j4_properties_dialog_vip_inductor_and_lightbulb_helpers(qapp) -> None:
+    """J4: Verify live V/I/P banner, Inductor X_L/tau & reverse calc, and Lightbulb R_hot in QuickValueDialog."""
+    from circuitsim.components import Inductor, Lightbulb
+    from circuitsim.dialogs.quick_edit_dialog import (
+        QuickValueDialog,
+        compute_inductance_from_reactance,
+        compute_inductor_reactance,
+        compute_inductor_tau,
+    )
+    from circuitsim.dialogs.value_parser import parse_engineering_value
+
+    assert compute_inductor_reactance(0.01, 1000.0) == pytest.approx(62.831853, rel=1e-4)
+    assert compute_inductor_tau(0.01, 100.0) == pytest.approx(100e-6, rel=1e-6)
+    assert compute_inductance_from_reactance(314.159265, 1000.0) == pytest.approx(0.05, rel=1e-4)
+
+    ind = Inductor("L1", "n1", "0", inductance=0.01, dcr=0.5)
+    ind.voltage = 5.0
+    ind.current = 0.25
+    ind.power = 1.25
+    dlg_ind = QuickValueDialog(ind)
+    try:
+        vip_txt = dlg_ind.live_vip_label.text()
+        assert "5 V" in vip_txt
+        assert "250 mA" in vip_txt
+        assert "1.25 W" in vip_txt
+
+        assert dlg_ind.inductor_freq_input is not None
+        assert dlg_ind.inductor_r_total_input is not None
+        assert dlg_ind.inductor_xl_label is not None
+        assert dlg_ind.inductor_tau_label is not None
+        assert dlg_ind.inductor_target_xl_input is not None
+        assert dlg_ind.inductor_reverse_calc_btn is not None
+
+        dlg_ind.inductor_freq_input.setText("1000")
+        dlg_ind.inductor_r_total_input.setText("100")
+        assert "62.83" in dlg_ind.inductor_xl_label.text()
+        assert "100" in dlg_ind.inductor_tau_label.text()
+
+        dlg_ind.inductor_target_xl_input.setText("314.159265")
+        dlg_ind.inductor_reverse_calc_btn.click()
+        l_parsed = parse_engineering_value(dlg_ind.inputs["inductance"].text())
+        assert l_parsed == pytest.approx(0.05, rel=1e-4)
+    finally:
+        dlg_ind.close()
+
+    bulb = Lightbulb("B1", "n1", "0", rated_power=60.0, rated_voltage=120.0)
+    bulb.voltage = 120.0
+    bulb.current = 0.5
+    bulb.power = 60.0
+    dlg_bulb = QuickValueDialog(bulb)
+    try:
+        assert "rated_power" in dlg_bulb.inputs
+        assert "rated_voltage" in dlg_bulb.inputs
+        assert dlg_bulb.lightbulb_r_hot_label is not None
+        assert "240" in dlg_bulb.lightbulb_r_hot_label.text()
+        assert "60 W" in dlg_bulb.live_vip_label.text()
+    finally:
+        dlg_bulb.close()
+        qapp.processEvents()

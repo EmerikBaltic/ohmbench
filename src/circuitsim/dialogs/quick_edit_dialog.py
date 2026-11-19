@@ -13,15 +13,18 @@ from PySide6.QtWidgets import (
     QDialog,
     QDialogButtonBox,
     QFormLayout,
+    QGroupBox,
     QHBoxLayout,
     QLabel,
     QLineEdit,
+    QPushButton,
     QTabWidget,
     QVBoxLayout,
     QWidget,
 )
 
 from circuitsim.components.base import Component, ComponentParameter
+from circuitsim.components.inductor import Inductor
 from circuitsim.components.led import LED, LED_COLOUR_PRESETS
 from circuitsim.components.lightbulb import Lightbulb
 from circuitsim.components.logic_gate import LOGIC_FAMILY_PRESETS, LogicGate
@@ -35,6 +38,27 @@ from circuitsim.dialogs.value_parser import (
     format_engineering_value,
     parse_engineering_value,
 )
+
+
+def compute_inductor_reactance(l_h: float, f_hz: float) -> float:
+    """Return inductive reactance `X_L = 2 * pi * f * L` in Ohms."""
+    if not (math.isfinite(l_h) and math.isfinite(f_hz)) or l_h < 0.0 or f_hz < 0.0:
+        raise ValueError("Inductance and frequency must be non-negative finite values.")
+    return 2.0 * math.pi * float(f_hz) * float(l_h)
+
+
+def compute_inductor_tau(l_h: float, r_total_ohm: float) -> float:
+    """Return RL time constant `tau = L / R_total` in seconds."""
+    if not (math.isfinite(l_h) and math.isfinite(r_total_ohm)) or l_h < 0.0 or r_total_ohm <= 0.0:
+        raise ValueError("Inductance must be >= 0 and total resistance must be > 0 Ohm.")
+    return float(l_h) / float(r_total_ohm)
+
+
+def compute_inductance_from_reactance(xl_ohm: float, f_hz: float) -> float:
+    """Reverse-calculate inductance `L = X_L / (2 * pi * f)` in Henries."""
+    if not (math.isfinite(xl_ohm) and math.isfinite(f_hz)) or xl_ohm <= 0.0 or f_hz <= 0.0:
+        raise ValueError("Target reactance X_L and frequency f must be > 0.")
+    return float(xl_ohm) / (2.0 * math.pi * float(f_hz))
 
 
 class QuickValueDialog(QDialog):
@@ -130,6 +154,15 @@ class QuickValueDialog(QDialog):
         params_tab_layout = QVBoxLayout(params_tab)
         params_tab_layout.setContentsMargins(6, 6, 6, 6)
         params_tab_layout.setSpacing(6)
+
+        self.live_vip_label = QLabel("", params_tab)
+        self.live_vip_label.setObjectName("live_vip_label")
+        self.live_vip_label.setStyleSheet(
+            "background: rgba(88, 166, 255, 0.12); border: 1px solid rgba(88, 166, 255, 0.35); "
+            "border-radius: 4px; padding: 4px 8px; font-weight: 600; font-size: 11px;"
+        )
+        params_tab_layout.addWidget(self.live_vip_label)
+        self.refresh_live_vip_label()
 
         form = QFormLayout()
         form.setSpacing(8)
@@ -346,7 +379,14 @@ class QuickValueDialog(QDialog):
         self.bulb_burnout_cb: QCheckBox | None = None
         self.burnout_ratio_edit: QLineEdit | None = None
         self.burnout_time_edit: QLineEdit | None = None
+        self.lightbulb_r_hot_label: QLabel | None = None
         if isinstance(component, Lightbulb):
+            self.lightbulb_r_hot_label = QLabel("", self)
+            self.lightbulb_r_hot_label.setObjectName("lightbulb_r_hot_label")
+            self.lightbulb_r_hot_label.setStyleSheet("color: #3FB950; font-weight: 600; font-size: 11px;")
+            form.addRow("Hot Resistance (R_hot):", self.lightbulb_r_hot_label)
+            self._refresh_lightbulb_r_hot()
+
             self.bulb_burnout_cb = QCheckBox("Enable burn-out on overload")
             self.bulb_burnout_cb.setObjectName("bulb_burnout_cb")
             self.bulb_burnout_cb.setChecked(component.burnout_enabled)
@@ -505,6 +545,48 @@ class QuickValueDialog(QDialog):
             ):
                 src_edit.textChanged.connect(self._on_source_tab_field_changed)
             params_tab_layout.addWidget(self.source_mode_tabs)
+
+        self.inductor_freq_input: QLineEdit | None = None
+        self.inductor_r_total_input: QLineEdit | None = None
+        self.inductor_xl_label: QLabel | None = None
+        self.inductor_tau_label: QLabel | None = None
+        self.inductor_target_xl_input: QLineEdit | None = None
+        self.inductor_reverse_calc_btn: QPushButton | None = None
+        if isinstance(component, Inductor):
+            ind_grp = QGroupBox("Inductor Reactance, Time Constant & Reverse Calculator", params_tab)
+            ind_form = QFormLayout(ind_grp)
+            self.inductor_freq_input = QLineEdit("1000", ind_grp)
+            self.inductor_freq_input.setObjectName("inductor_freq_input")
+            self.inductor_r_total_input = QLineEdit(
+                format_engineering_value(max(component.dcr, 100.0), ""), ind_grp
+            )
+            self.inductor_r_total_input.setObjectName("inductor_r_total_input")
+            self.inductor_xl_label = QLabel("--", ind_grp)
+            self.inductor_xl_label.setObjectName("inductor_xl_label")
+            self.inductor_xl_label.setStyleSheet("color: #3FB950; font-weight: 600;")
+            self.inductor_tau_label = QLabel("--", ind_grp)
+            self.inductor_tau_label.setObjectName("inductor_tau_label")
+            self.inductor_tau_label.setStyleSheet("color: #58A6FF; font-weight: 600;")
+            self.inductor_target_xl_input = QLineEdit("", ind_grp)
+            self.inductor_target_xl_input.setObjectName("inductor_target_xl_input")
+            self.inductor_target_xl_input.setPlaceholderText("Target X_L (e.g. 314.159)")
+            self.inductor_reverse_calc_btn = QPushButton("Calculate L from X_L && f", ind_grp)
+            self.inductor_reverse_calc_btn.setObjectName("inductor_reverse_calc_btn")
+            rev_row = QHBoxLayout()
+            rev_row.addWidget(self.inductor_target_xl_input, 1)
+            rev_row.addWidget(self.inductor_reverse_calc_btn)
+
+            ind_form.addRow("Reference f (Hz):", self.inductor_freq_input)
+            ind_form.addRow("Total Loop R (Ω):", self.inductor_r_total_input)
+            ind_form.addRow("X_L = 2πfL:", self.inductor_xl_label)
+            ind_form.addRow("τ = L / R_total:", self.inductor_tau_label)
+            ind_form.addRow("Reverse Calc:", rev_row)
+            params_tab_layout.addWidget(ind_grp)
+
+            self.inductor_freq_input.textChanged.connect(lambda _t: self._refresh_inductor_helper())
+            self.inductor_r_total_input.textChanged.connect(lambda _t: self._refresh_inductor_helper())
+            self.inductor_reverse_calc_btn.clicked.connect(self._on_inductor_reverse_calc)
+            self._refresh_inductor_helper()
 
         # Read-only SPICE Preview line
         spice_row = QHBoxLayout()
@@ -903,6 +985,65 @@ class QuickValueDialog(QDialog):
                 self._syncing_source_tabs = False
         self._refresh_warnings()
         self._update_spice_preview()
+        self._refresh_inductor_helper()
+        self._refresh_lightbulb_r_hot()
+
+    def refresh_live_vip_label(self) -> None:
+        """Update the live solved Voltage / Current / Power readout inside the dialog."""
+        c = self.component
+        v_txt = format_engineering_value(float(getattr(c, "voltage", 0.0)), "V", sig_figs=4)
+        i_txt = format_engineering_value(float(getattr(c, "current", 0.0)), "A", sig_figs=4)
+        p_txt = format_engineering_value(float(getattr(c, "power", 0.0)), "W", sig_figs=4)
+        self.live_vip_label.setText(f"Live Operating Point:  V = {v_txt}   |   I = {i_txt}   |   P = {p_txt}")
+
+    def _refresh_lightbulb_r_hot(self) -> None:
+        if not isinstance(self.component, Lightbulb) or getattr(self, "lightbulb_r_hot_label", None) is None:
+            return
+        try:
+            p_raw = self.inputs["rated_power"].text().strip() if "rated_power" in self.inputs else str(self.component.rated_power)
+            v_raw = self.inputs["rated_voltage"].text().strip() if "rated_voltage" in self.inputs else str(self.component.rated_voltage)
+            p_val = parse_engineering_value(p_raw)
+            v_val = parse_engineering_value(v_raw)
+            if p_val <= 0.0 or v_val <= 0.0:
+                self.lightbulb_r_hot_label.setText("--")
+                return
+            r_hot = (v_val * v_val) / p_val
+            self.lightbulb_r_hot_label.setText(f"{format_engineering_value(r_hot, 'Ω', sig_figs=4)}  (= V² / P)")
+        except Exception:
+            self.lightbulb_r_hot_label.setText("--")
+
+    def _refresh_inductor_helper(self) -> None:
+        if not isinstance(self.component, Inductor) or getattr(self, "inductor_xl_label", None) is None:
+            return
+        try:
+            l_raw = self.inputs["inductance"].text().strip() if "inductance" in self.inputs else str(self.component.inductance)
+            l_val = parse_engineering_value(l_raw)
+            f_val = parse_engineering_value(self.inductor_freq_input.text().strip()) if self.inductor_freq_input else 1000.0
+            r_val = parse_engineering_value(self.inductor_r_total_input.text().strip()) if self.inductor_r_total_input else 100.0
+            xl = compute_inductor_reactance(l_val, f_val)
+            tau = compute_inductor_tau(l_val, r_val)
+            assert self.inductor_xl_label is not None and self.inductor_tau_label is not None
+            self.inductor_xl_label.setText(format_engineering_value(xl, "Ω", sig_figs=4))
+            self.inductor_tau_label.setText(format_engineering_value(tau, "s", sig_figs=4))
+        except Exception:
+            if self.inductor_xl_label is not None:
+                self.inductor_xl_label.setText("--")
+            if self.inductor_tau_label is not None:
+                self.inductor_tau_label.setText("--")
+
+    def _on_inductor_reverse_calc(self) -> None:
+        if self.inductor_target_xl_input is None or self.inductor_freq_input is None:
+            return
+        try:
+            xl_val = parse_engineering_value(self.inductor_target_xl_input.text().strip())
+            f_val = parse_engineering_value(self.inductor_freq_input.text().strip())
+            l_val = compute_inductance_from_reactance(xl_val, f_val)
+            if "inductance" in self.inputs:
+                self.inputs["inductance"].setText(format_engineering_value(l_val, "", sig_figs=6))
+            self._clear_error()
+            self._refresh_inductor_helper()
+        except Exception as exc:
+            self._show_error(f"Reverse calculator: {exc}")
 
     def validate_inputs(self) -> tuple[dict[str, object] | None, str | None]:
         """Validate all parameter fields and return `(parsed_dict, error_message)`."""
@@ -1059,6 +1200,7 @@ class QuickValueDialog(QDialog):
 
     def _on_apply_clicked(self) -> None:
         self._apply_current_inputs()
+        self.refresh_live_vip_label()
 
     def _on_ok_clicked(self) -> None:
         if self._apply_current_inputs():

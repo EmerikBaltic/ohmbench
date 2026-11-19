@@ -700,7 +700,7 @@ When ready to perform Stage 2 (internal/package rename after Stage 1 settles):
 | `J1` | Initialize Phase J Queue & run targeted Batch 1 (`48 passed`) + Batch 2 (`66 passed`) regression suites; fixed `themes.py` light checked `ghost_tint` CSS & `test_e3` non-overlapping staging pos | `[x]` | Done |
 | `J2` | Placeable `"oscilloscope"` (`OSC`) canvas component & Qt-free DSO-1062D signal/trigger/math/FFT/cursor engine (`dso_engine.py`) | `[x]` | Done |
 | `J3` | Voltcraft DSO-1062D benchtop front-panel GUI (`dso_panel.py`), double-click multi-instance launch, live sync & PNG/CSV export | `[x]` | Done |
-| `J4` | Milestone 3 Properties Dialog polish: live V/I/P banner, Inductor $X_L$/$\tau$ + reverse calculator, Lightbulb $R_{\text{hot}}$ | `[ ]` | pending |
+| `J4` | Milestone 3 Properties Dialog polish: live V/I/P banner, Inductor $X_L$/$\tau$ + reverse calculator, Lightbulb $R_{\text{hot}}$ | `[x]` | Done |
 | `J5` | Standard SPICE Netlist exporter (`spice_export.py`) with `MEG` suffixes & File > Export menu action | `[ ]` | pending |
 | `J6` | Student docs (`LEARNING_NOTES.md`, `SUGGESTIONS.md`) & Windows packaging (`packaging/ohmbench.spec`, `packaging/installer.iss`, `.gitignore`, `README.md`) | `[ ]` | pending |
 | `GATE J` | Targeted Gate Verification (`test_j_dso_and_release.py`, `test_k_ui_and_transformer.py`, `test_g_qol_fixes.py`) & `checkpoint/J-done` tag | `[ ]` | pending |
