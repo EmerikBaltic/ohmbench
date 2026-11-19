@@ -323,6 +323,8 @@ class ComponentItem(QGraphicsObject):
         if isinstance(self.component, LED):
             led = self.component
             lines: list[str] = []
+            if self.stress_level in ("overload", "warning") and self.stress_reason:
+                lines.append(f"{self.stress_level.upper()}: {self.stress_reason}")
             if self.diagnostic_message:
                 lines.append(f"Problem: {self.diagnostic_message}")
             lines.append(f"Name: {led.name}")
@@ -349,6 +351,8 @@ class ComponentItem(QGraphicsObject):
             return "\n".join(lines)
 
         lines: list[str] = []
+        if self.stress_level in ("overload", "warning") and self.stress_reason:
+            lines.append(f"{self.stress_level.upper()}: {self.stress_reason}")
         if self.diagnostic_message:
             lines.append(f"Problem: {self.diagnostic_message}")
         lines.append(f"Name: {self.component.name}")
@@ -477,6 +481,11 @@ class ComponentItem(QGraphicsObject):
         if warnings_enabled is not None:
             self.stress_warnings_enabled = bool(warnings_enabled)
         if changed:
+            self.setToolTip(
+                self.get_live_tooltip(
+                    is_running=(self.live_display_value is not None or norm_level != "normal")
+                )
+            )
             self.update()
 
     def reset_live_telemetry(self) -> None:

@@ -57,10 +57,12 @@ from circuitsim.components.switch import Switch
 from circuitsim.dialogs.value_parser import format_engineering_value
 from circuitsim.engine.netlist import Circuit
 from circuitsim.engine.simulation_session import (
+    ProblemDiagnostic,
     SimulationFrame,
     SimulationState,
 )
 from circuitsim.engine.stress import (
+    StressLevel,
     StressReport,
     evaluate_component_stress,
 )
@@ -204,6 +206,7 @@ class CircuitScene(QGraphicsScene):
         self.pinout_labels_enabled: bool = False
         self.probe_wire_ids: set[str] = set()
         self.latest_stress_reports: dict[str, StressReport] = {}
+        self.latest_stress_diagnostics: list[ProblemDiagnostic] = []
         self.last_power_probe_text: str = ""
         self._dot_anim_timer = QTimer(self)
         self._dot_anim_timer.setInterval(50)
@@ -3465,12 +3468,27 @@ class CircuitScene(QGraphicsScene):
             wire.set_diagnostic(None, "")
 
     def apply_solve_result(self, result: object) -> None:
-        """Apply telemetry from a direct `SolveResult` onto canvas overlays and probe badges."""
+        """Apply telemetry from a direct `SolveResult` onto canvas overlays, tooltips, and stress diagnostics."""
         self.latest_node_voltages = dict(getattr(result, "node_voltages", {}) or {})
         self._last_branch_currents = dict(getattr(result, "branch_currents", {}) or {})
         self.is_simulation_running = bool(self.latest_node_voltages)
         self._last_sim_frame = None
+        if self.is_simulation_running:
+            conn = self.extract_connectivity_result()
+            for item in self._placed_items:
+                comp = item.component
+                cname = comp.name
+                node_map = conn.component_nodes.get(cname, {})
+                if len(comp.nodes) >= 2 and node_map:
+                    t0, t1 = item.metadata.terminals[0].name, item.metadata.terminals[1].name
+                    va = self.latest_node_voltages.get(node_map.get(t0, ""), 0.0)
+                    vb = self.latest_node_voltages.get(node_map.get(t1, ""), 0.0)
+                    comp.voltage = float(va - vb)
+                if cname in self._last_branch_currents:
+                    comp.current = float(self._last_branch_currents[cname])
+                    comp.power = float(comp.voltage * comp.current)
         self._refresh_wire_overlays()
+        self._refresh_stress_badges(solve_proxy=result)
 
     def toggle_voltage_probe_badge(self, wire_id: str) -> bool:
         """Toggle an on-canvas live voltage/current probe badge on `wire_id`."""
@@ -3596,9 +3614,11 @@ class CircuitScene(QGraphicsScene):
             item.set_pinout_overlay_enabled(self.pinout_labels_enabled)
         self.update()
 
-    def _refresh_stress_badges(self) -> None:
-        if not self.is_simulation_running or self._last_sim_frame is None:
+    def _refresh_stress_badges(self, solve_proxy: object | None = None) -> None:
+        solution_obj = self._last_sim_frame if self._last_sim_frame is not None else solve_proxy
+        if not self.is_simulation_running or solution_obj is None:
             self.latest_stress_reports = {}
+            self.latest_stress_diagnostics = []
             for item in self._placed_items:
                 item.set_stress_state(
                     "normal", "", 0.0, warnings_enabled=self.stress_warnings_enabled
@@ -3606,11 +3626,13 @@ class CircuitScene(QGraphicsScene):
             return
         comp_map = {item.component.name: item.component for item in self._placed_items}
         reports = evaluate_component_stress(
-            self._wire_graph, self._last_sim_frame, components=comp_map
+            self._wire_graph, solution_obj, components=comp_map
         )
         self.latest_stress_reports = reports
+        stress_diags: list[ProblemDiagnostic] = []
         for item in self._placed_items:
-            rep = reports.get(item.component.name)
+            cname = item.component.name
+            rep = reports.get(cname)
             if rep is not None:
                 item.set_stress_state(
                     rep.level.value,
@@ -3618,10 +3640,29 @@ class CircuitScene(QGraphicsScene):
                     rep.utilization_pct,
                     warnings_enabled=self.stress_warnings_enabled,
                 )
+                if rep.level == StressLevel.OVERLOAD:
+                    stress_diags.append(
+                        ProblemDiagnostic(
+                            code="component_overload",
+                            severity="error",
+                            message=f"{rep.reason}. Double-click {cname} to raise Max Rating or reduce load.",
+                            component_names=(cname,),
+                        )
+                    )
+                elif rep.level == StressLevel.WARNING:
+                    stress_diags.append(
+                        ProblemDiagnostic(
+                            code="component_derating",
+                            severity="warning",
+                            message=f"{rep.reason}. Double-click {cname} to inspect ratings.",
+                            component_names=(cname,),
+                        )
+                    )
             else:
                 item.set_stress_state(
                     "normal", "", 0.0, warnings_enabled=self.stress_warnings_enabled
                 )
+        self.latest_stress_diagnostics = stress_diags
 
     def _refresh_wire_overlays(self) -> None:
         self.probe_wire_ids.intersection_update(self._wire_items_by_id.keys())

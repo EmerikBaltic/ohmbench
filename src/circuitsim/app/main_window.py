@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from typing import Mapping, Sequence
 
 from PySide6.QtCore import QByteArray, QPointF, Qt, QUrl
 from PySide6.QtGui import QAction, QCloseEvent, QDesktopServices, QKeySequence
@@ -1322,11 +1323,57 @@ class MainWindow(QMainWindow):
                 for k, v in param_map.items():
                     self.sim_controller.update_component_parameter(comp_name, k, v)
 
+    def refresh_diagnostics_display(self, frame_diagnostics: Sequence[object] = ()) -> None:
+        """Merge simulation/topology diagnostics with component stress diagnostics into Problems & status bar."""
+        combined = list(frame_diagnostics)
+        seen = {(getattr(d, "code", ""), tuple(getattr(d, "component_names", ()))) for d in combined}
+        for sd in getattr(self.circuit_scene, "latest_stress_diagnostics", ()):
+            key = (sd.code, tuple(sd.component_names))
+            if key not in seen:
+                combined.append(sd)
+                seen.add(key)
+
+        errors = [d for d in combined if getattr(d, "severity", "") == "error"]
+        if combined:
+            n_prob = len(combined)
+            prob_str = "1 problem" if n_prob == 1 else f"{n_prob} problems"
+            if errors:
+                self.status_warnings.setStyleSheet("color: #FF6B6B; font-weight: 600;")
+            else:
+                self.status_warnings.setStyleSheet("color: #FFA726; font-weight: 600;")
+            full_txt = " ; ".join(str(getattr(d, "message", "")) for d in combined)
+            self.status_warnings.setText(DiagnosticStatusText(prob_str, full_txt))
+        else:
+            self.status_warnings.setStyleSheet("")
+            if self._sim_state == SimulationState.RUNNING or self.circuit_scene.is_simulation_running:
+                self.status_warnings.setText(DiagnosticStatusText("0 problems", "Simulation Running (OK)", ok_state=True))
+            else:
+                self._refresh_warnings_display()
+
+        if hasattr(self, "problems_dock"):
+            self.problems_dock.panel.update_diagnostics(combined)  # type: ignore[arg-type]
+
+        curr_error_count = len(errors)
+        if curr_error_count > self._prev_error_count:
+            if not self._user_closed_problems_panel and hasattr(self, "problems_dock"):
+                self.problems_dock.show()
+                if hasattr(self, "action_view_problems"):
+                    self.action_view_problems.setChecked(True)
+        self._prev_error_count = curr_error_count
+
     def _on_simulation_frame(self, frame: SimulationFrame) -> None:
         self._sim_state = frame.state
         self.circuit_scene.apply_simulation_frame(frame)
 
-        errors = [d for d in frame.diagnostics if d.severity == "error"]
+        combined = list(frame.diagnostics)
+        seen = {(d.code, tuple(d.component_names)) for d in combined}
+        for sd in getattr(self.circuit_scene, "latest_stress_diagnostics", ()):
+            key = (sd.code, tuple(sd.component_names))
+            if key not in seen:
+                combined.append(sd)
+                seen.add(key)
+
+        errors = [d for d in combined if d.severity == "error"]
         err_msg = errors[0].message if errors else ""
         self._apply_transport_controls_ui(frame.state, error_reason=err_msg)
 
@@ -1345,38 +1392,7 @@ class MainWindow(QMainWindow):
         else:
             self.status_sim.setText("Sim: Stopped (t = 0 s)")
 
-        if frame.diagnostics:
-            n_prob = len(frame.diagnostics)
-            prob_str = "1 problem" if n_prob == 1 else f"{n_prob} problems"
-            if errors:
-                self.status_warnings.setStyleSheet(
-                    "color: #FF6B6B; font-weight: 600;"
-                )
-            else:
-                self.status_warnings.setStyleSheet(
-                    "color: #FFA726; font-weight: 600;"
-                )
-            full_txt = " ; ".join(str(d.message) for d in frame.diagnostics)
-            self.status_warnings.setText(DiagnosticStatusText(prob_str, full_txt))
-        else:
-            self.status_warnings.setStyleSheet("")
-            if frame.state == SimulationState.RUNNING:
-                self.status_warnings.setText(DiagnosticStatusText("0 problems", "Simulation Running (OK)", ok_state=True))
-            else:
-                self._refresh_warnings_display()
-
-        # Update Problems Panel diagnostics
-        if hasattr(self, "problems_dock"):
-            self.problems_dock.panel.update_diagnostics(frame.diagnostics)
-
-        # Auto-open Problems panel on new error unless closed during current run
-        curr_error_count = len(errors)
-        if curr_error_count > self._prev_error_count:
-            if not self._user_closed_problems_panel and hasattr(self, "problems_dock"):
-                self.problems_dock.show()
-                if hasattr(self, "action_view_problems"):
-                    self.action_view_problems.setChecked(True)
-        self._prev_error_count = curr_error_count
+        self.refresh_diagnostics_display(frame.diagnostics)
         if self.instruments_dialog is not None:
             self.instruments_dialog.on_simulation_frame(frame)  # type: ignore[attr-defined]
 
@@ -1609,7 +1625,14 @@ class MainWindow(QMainWindow):
         if item.diagnostic_message:
             extra_live += f"\n  • Diagnostic: {item.diagnostic_message}"
 
+        stress_banner = ""
+        if item.stress_level == "overload" and item.stress_reason:
+            stress_banner = f"⚠️ OVERLOAD: {item.stress_reason}\n\n"
+        elif item.stress_level == "warning" and item.stress_reason:
+            stress_banner = f"⚠️ DERATING WARNING: {item.stress_reason}\n\n"
+
         self.info_label.setText(
+            f"{stress_banner}"
             f"Name: {comp.name}\n"
             f"Type: {meta.display_name} ({comp.component_type})\n"
             f"Category: {meta.category}\n"

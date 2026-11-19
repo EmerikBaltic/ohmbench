@@ -198,7 +198,12 @@ class ProblemsPanel(QWidget):
         }
 
         for diag in diagnostics:
-            sev_word = diag.severity.capitalize()
+            if diag.code == "component_overload":
+                sev_word = "Overload"
+            elif diag.code == "component_derating":
+                sev_word = "Derating"
+            else:
+                sev_word = diag.severity.capitalize()
             parts_str = ", ".join(diag.component_names) if diag.component_names else "--"
             icon = icons.get(diag.severity.lower(), icons["info"])
 
