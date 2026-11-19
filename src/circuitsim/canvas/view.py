@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
-from PySide6.QtCore import QEvent, QKeyCombination, QPoint, QPointF, QRectF, Qt, Signal
+from PySide6.QtCore import QEvent, QKeyCombination, QPoint, QPointF, QRectF, QSize, Qt, Signal
 from PySide6.QtGui import (
     QAction,
+    QColor,
     QContextMenuEvent,
     QDragEnterEvent,
     QDragLeaveEvent,
@@ -15,9 +16,10 @@ from PySide6.QtGui import (
     QKeySequence,
     QMouseEvent,
     QPainter,
+    QPen,
     QWheelEvent,
 )
-from PySide6.QtWidgets import QApplication, QGraphicsView, QMenu, QToolTip
+from PySide6.QtWidgets import QApplication, QGraphicsView, QMenu, QToolTip, QWidget
 
 from circuitsim.app.settings import DEFAULT_SHORTCUTS, AppSettings
 from circuitsim.canvas.component_item import ComponentItem
@@ -31,6 +33,73 @@ from circuitsim.dialogs.mcu_firmware_dialog import MCUFirmwareDialog
 from circuitsim.dialogs.quick_edit_dialog import QuickValueDialog
 
 MIME_COMPONENT_ID = "application/x-circuitsim-component-id"
+
+
+class _MinimapOverlay(QWidget):
+    """Lightweight 160x110 px corner overview minimap displaying components, wires, and viewport."""
+
+    def __init__(self, view: CircuitView) -> None:
+        super().__init__(view.viewport())
+        self._view = view
+        self.setFixedSize(160, 110)
+        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+
+    def paintEvent(self, event) -> None:  # type: ignore[override]
+        _ = event
+        if not self.isVisible():
+            return
+        try:
+            import shiboken6
+
+            if not shiboken6.isValid(self) or not shiboken6.isValid(self._view):
+                return
+            scene = self._view.circuit_scene
+            if scene is None or not shiboken6.isValid(scene):
+                return
+            items = list(scene.placed_items)
+
+            painter = QPainter(self)
+            painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+            w, h = self.width(), self.height()
+            painter.fillRect(0, 0, w, h, QColor(18, 24, 31, 210))
+            painter.setPen(QPen(QColor("#3E5063"), 1.2))
+            painter.drawRect(0, 0, w - 1, h - 1)
+
+            vp_scene = self._view.mapToScene(self._view.viewport().rect()).boundingRect()
+            bounds = vp_scene
+            for it in items:
+                bounds = bounds.united(it.scene_body_rect())
+            pad = 60.0
+            bounds = bounds.adjusted(-pad, -pad, pad, pad)
+            bw = max(bounds.width(), 1.0)
+            bh = max(bounds.height(), 1.0)
+            scale = min((w - 12.0) / bw, (h - 12.0) / bh)
+            ox = 6.0 + (w - 12.0 - bw * scale) * 0.5 - bounds.left() * scale
+            oy = 6.0 + (h - 12.0 - bh * scale) * 0.5 - bounds.top() * scale
+
+            def to_mini(x: float, y: float) -> QPointF:
+                return QPointF(x * scale + ox, y * scale + oy)
+
+            painter.setPen(QPen(QColor("#58A6FF"), 1.0))
+            for wire in scene.wire_graph.wires:
+                pts = wire.points
+                for a, b in zip(pts, pts[1:]):
+                    painter.drawLine(to_mini(a[0], a[1]), to_mini(b[0], b[1]))
+
+            painter.setPen(QPen(QColor("#E6EDF3"), 1.0))
+            for it in items:
+                r = it.scene_body_rect()
+                tl = to_mini(r.left(), r.top())
+                br = to_mini(r.right(), r.bottom())
+                painter.fillRect(QRectF(tl, br), QColor("#2D3748"))
+                painter.drawRect(QRectF(tl, br))
+
+            vtl = to_mini(vp_scene.left(), vp_scene.top())
+            vbr = to_mini(vp_scene.right(), vp_scene.bottom())
+            painter.setPen(QPen(QColor("#FBBF24"), 1.3))
+            painter.drawRect(QRectF(vtl, vbr))
+        except Exception:
+            return
 
 
 class CircuitView(QGraphicsView):
@@ -102,6 +171,31 @@ class CircuitView(QGraphicsView):
         )
         self.setResizeAnchor(QGraphicsView.ViewportAnchor.NoAnchor)
         self.centerOn(0.0, 0.0)
+        self._minimap: _MinimapOverlay = _MinimapOverlay(self)
+        self._minimap_enabled: bool = False
+        self._minimap.hide()
+
+    def set_minimap_visible(self, visible: bool) -> None:
+        """Toggle the 160x110 px corner schematic overview minimap."""
+        self._minimap_enabled = bool(visible)
+        self._minimap.setVisible(self._minimap_enabled)
+        self._reposition_minimap()
+        if visible:
+            self._minimap.update()
+
+    def is_minimap_visible(self) -> bool:
+        return bool(self._minimap_enabled)
+
+    def _reposition_minimap(self) -> None:
+        vp = self.viewport().rect()
+        self._minimap.move(
+            max(8, vp.width() - self._minimap.width() - 10),
+            max(8, vp.height() - self._minimap.height() - 10),
+        )
+
+    def resizeEvent(self, event) -> None:  # type: ignore[override]
+        super().resizeEvent(event)
+        self._reposition_minimap()
 
     @property
     def zoom_factor(self) -> float:

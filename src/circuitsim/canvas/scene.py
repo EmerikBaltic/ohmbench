@@ -2903,6 +2903,130 @@ class CircuitScene(QGraphicsScene):
         )
         return True
 
+    def align_selected(self, mode: str) -> bool:
+        """Align >= 2 selected components (left/right/top/bottom/center_x/center_y) in one undo step."""
+        selected = [it for it in self.selectedItems() if isinstance(it, ComponentItem)]
+        if len(selected) < 2:
+            return False
+
+        norm = str(mode or "").strip().lower()
+        old_positions = {it: (float(it.pos().x()), float(it.pos().y())) for it in selected}
+        rects = {it: it.scene_body_rect() for it in selected}
+
+        if norm == "left":
+            target = min(r.left() for r in rects.values())
+            new_positions = {
+                it: (
+                    float(snap_to_grid(old_positions[it][0] + (target - rects[it].left()), 0.0, GRID_PITCH_PX)[0]),
+                    old_positions[it][1],
+                )
+                for it in selected
+            }
+        elif norm == "right":
+            target = max(r.right() for r in rects.values())
+            new_positions = {
+                it: (
+                    float(snap_to_grid(old_positions[it][0] + (target - rects[it].right()), 0.0, GRID_PITCH_PX)[0]),
+                    old_positions[it][1],
+                )
+                for it in selected
+            }
+        elif norm == "center_x":
+            xs = sorted(old_positions[it][0] for it in selected)
+            target = float(snap_to_grid(xs[len(xs) // 2], 0.0, GRID_PITCH_PX)[0])
+            new_positions = {it: (target, old_positions[it][1]) for it in selected}
+        elif norm == "top":
+            target = min(r.top() for r in rects.values())
+            new_positions = {
+                it: (
+                    old_positions[it][0],
+                    float(snap_to_grid(0.0, old_positions[it][1] + (target - rects[it].top()), GRID_PITCH_PX)[1]),
+                )
+                for it in selected
+            }
+        elif norm == "bottom":
+            target = max(r.bottom() for r in rects.values())
+            new_positions = {
+                it: (
+                    old_positions[it][0],
+                    float(snap_to_grid(0.0, old_positions[it][1] + (target - rects[it].bottom()), GRID_PITCH_PX)[1]),
+                )
+                for it in selected
+            }
+        elif norm == "center_y":
+            ys = sorted(old_positions[it][1] for it in selected)
+            target = float(snap_to_grid(0.0, ys[len(ys) // 2], GRID_PITCH_PX)[1])
+            new_positions = {it: (old_positions[it][0], target) for it in selected}
+        else:
+            raise ValueError(f"Unsupported align mode {mode!r}.")
+
+        return self._apply_batch_component_move(selected, old_positions, new_positions)
+
+    def distribute_selected(self, axis: str) -> bool:
+        """Evenly distribute >= 3 selected components along 'horizontal' or 'vertical' in one undo step."""
+        selected = [it for it in self.selectedItems() if isinstance(it, ComponentItem)]
+        if len(selected) < 3:
+            return False
+
+        norm = str(axis or "").strip().lower()
+        old_positions = {it: (float(it.pos().x()), float(it.pos().y())) for it in selected}
+        if norm in ("horizontal", "x"):
+            ordered = sorted(selected, key=lambda it: old_positions[it][0])
+            start = old_positions[ordered[0]][0]
+            end = old_positions[ordered[-1]][0]
+            step = (end - start) / max(1, len(ordered) - 1)
+            new_positions = {
+                it: (
+                    float(snap_to_grid(start + i * step, 0.0, GRID_PITCH_PX)[0]),
+                    old_positions[it][1],
+                )
+                for i, it in enumerate(ordered)
+            }
+        elif norm in ("vertical", "y"):
+            ordered = sorted(selected, key=lambda it: old_positions[it][1])
+            start = old_positions[ordered[0]][1]
+            end = old_positions[ordered[-1]][1]
+            step = (end - start) / max(1, len(ordered) - 1)
+            new_positions = {
+                it: (
+                    old_positions[it][0],
+                    float(snap_to_grid(0.0, start + i * step, GRID_PITCH_PX)[1]),
+                )
+                for i, it in enumerate(ordered)
+            }
+        else:
+            raise ValueError(f"Unsupported distribute axis {axis!r}.")
+
+        return self._apply_batch_component_move(selected, old_positions, new_positions)
+
+    def _apply_batch_component_move(
+        self,
+        selected: list[ComponentItem],
+        old_positions: dict[ComponentItem, tuple[float, float]],
+        new_positions: dict[ComponentItem, tuple[float, float]],
+    ) -> bool:
+        if all(new_positions[it] == old_positions[it] for it in selected):
+            return False
+        for it, pos in new_positions.items():
+            it.setPos(pos[0], pos[1])
+        old_graph = self._wire_graph
+        new_graph = self._update_graph_for_transformed_components(
+            old_graph, {it.component.name for it in selected}
+        )
+        self._wire_graph = new_graph
+        self._sync_graphics_from_wire_graph()
+        self.undo_stack.push(
+            MoveComponentsCommand(
+                self,
+                old_positions,
+                new_positions,
+                old_graph=old_graph,
+                new_graph=new_graph,
+                mergeable=False,
+            )
+        )
+        return True
+
     def rotate_selected(self) -> bool:
         """Rotate selected `ComponentItem`s by 90° CW and re-route attached wires via `QUndoStack`."""
         selected = [

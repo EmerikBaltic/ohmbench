@@ -1,4 +1,4 @@
-"""12 built-in, solver-ready WireGraph Test Jigs for benchtop verification (Qt-free)."""
+"""18 built-in, solver-ready WireGraph Test Jigs for benchtop verification (Qt-free)."""
 
 from __future__ import annotations
 
@@ -8,19 +8,27 @@ import math
 from circuitsim.components import (
     ACVoltageSource,
     Capacitor,
+    Comparator,
+    Counter4Bit,
     DCVoltageSource,
     Diode,
+    Fuse,
     Ground,
     Inductor,
     LED,
     LogicGate,
     MCUBlock,
+    NE555,
     NMOS,
     NPNBJT,
     OpAmp,
     Potentiometer,
     Resistor,
+    SPDTRelay,
+    SevenSegDisplay,
+    Transformer,
     Voltmeter,
+    WaveformType,
     ZenerDiode,
 )
 from circuitsim.io.circ_serializer import PlacedComponentSpec
@@ -98,11 +106,41 @@ BUILTIN_TEST_JIGS: tuple[TestJigInfo, ...] = (
         "MCU Analog Threshold LED Controller",
         "MCUBlock sampling 2.5 V A0 divider (ADC ~512) to drive D0 LED indicator",
     ),
+    TestJigInfo(
+        "555_astable_oscillator",
+        "NE555 Timer Astable Oscillator",
+        "9 V 555 astable oscillator (R_A=1k, R_B=2k, C=1uF) swinging 3 V..6 V",
+    ),
+    TestJigInfo(
+        "transformer_ac_supply",
+        "2:1 Transformer AC Step-Down Supply",
+        "20 Vp 100 Hz primary stepped down to 10 Vp across 1 kΩ secondary load",
+    ),
+    TestJigInfo(
+        "spdt_relay_driver",
+        "SPDT Relay Dual-Load Switch",
+        "6 V coil energizes SPDT relay switching 12 V bus from NC load to NO load",
+    ),
+    TestJigInfo(
+        "overcurrent_fuse_demo",
+        "Overcurrent Fuse Protection Demo",
+        "12 V supply through 0.5 A resettable fuse into 100 Ω normal load",
+    ),
+    TestJigInfo(
+        "counter_4bit_seven_seg",
+        "4-Bit Counter + 7-Segment Hex Display",
+        "5 V 1 kHz clock driving 4-bit binary counter directly into 7-segment display",
+    ),
+    TestJigInfo(
+        "comparator_threshold_detector",
+        "Voltage Comparator Threshold Detector",
+        "LM393-style comparator comparing 5 Vp AC sine against 2.5 V reference",
+    ),
 )
 
 
 def list_test_jigs() -> tuple[TestJigInfo, ...]:
-    """Return metadata for all 12 built-in test jigs."""
+    """Return metadata for all 18 built-in test jigs."""
     return BUILTIN_TEST_JIGS
 
 
@@ -533,6 +571,178 @@ def _make_mcu_analog_threshold_controller() -> CircuitDocumentV2:
     return CircuitDocumentV2(placed=placed, graph=g)
 
 
+def _make_555_astable_oscillator() -> CircuitDocumentV2:
+    placed = [
+        PlacedComponentSpec(DCVoltageSource("V1", "n_vcc", "0", voltage=9.0), (80.0, 200.0), rotation_deg=90),
+        PlacedComponentSpec(Resistor("RA", "n_vcc", "n_dis", resistance=1_000.0), (180.0, 80.0), rotation_deg=90),
+        PlacedComponentSpec(Resistor("RB", "n_dis", "n_cap", resistance=2_000.0), (180.0, 200.0), rotation_deg=90),
+        PlacedComponentSpec(Capacitor("C1", "n_cap", "0", capacitance=1e-6), (180.0, 320.0), rotation_deg=90),
+        PlacedComponentSpec(NE555("U1", "n_vcc", "0", "n_cap", "n_cap", "n_dis", "n_out", "n_vcc"), (340.0, 200.0)),
+        PlacedComponentSpec(Resistor("R_OUT", "n_out", "0", resistance=1_000.0), (500.0, 200.0), rotation_deg=90),
+        PlacedComponentSpec(Ground("GND1", "0"), (260.0, 420.0)),
+    ]
+    g = WireGraph()
+    g = g.add_junction((200.0, 20.0), "J_vcc")
+    for t in (
+        TerminalRef("V1", "pos"),
+        TerminalRef("RA", "a"),
+        TerminalRef("U1", "vcc"),
+        TerminalRef("U1", "reset"),
+    ):
+        g = g.add_wire(t, JunctionRef("J_vcc"))
+    g = g.add_junction((240.0, 140.0), "J_dis")
+    for t in (TerminalRef("RA", "b"), TerminalRef("RB", "a"), TerminalRef("U1", "dis")):
+        g = g.add_wire(t, JunctionRef("J_dis"))
+    g = g.add_junction((240.0, 260.0), "J_cap")
+    for t in (
+        TerminalRef("RB", "b"),
+        TerminalRef("C1", "a"),
+        TerminalRef("U1", "trig"),
+        TerminalRef("U1", "thr"),
+    ):
+        g = g.add_wire(t, JunctionRef("J_cap"))
+    g = g.add_wire(TerminalRef("U1", "out"), TerminalRef("R_OUT", "a"))
+    g = g.add_junction((260.0, 380.0), "J_gnd")
+    for t in (
+        TerminalRef("V1", "neg"),
+        TerminalRef("C1", "b"),
+        TerminalRef("U1", "gnd"),
+        TerminalRef("R_OUT", "b"),
+        TerminalRef("GND1", "gnd"),
+    ):
+        g = g.add_wire(t, JunctionRef("J_gnd"))
+    return CircuitDocumentV2(placed=placed, graph=g)
+
+
+def _make_transformer_ac_supply() -> CircuitDocumentV2:
+    placed = [
+        PlacedComponentSpec(ACVoltageSource("V1", "n_p", "0", amplitude=20.0, frequency=100.0), (100.0, 200.0), rotation_deg=90),
+        PlacedComponentSpec(Transformer("T1", "n_p", "0", "n_s", "0", turns_ratio=0.5), (260.0, 200.0)),
+        PlacedComponentSpec(Resistor("R_LOAD", "n_s", "0", resistance=1_000.0), (420.0, 200.0), rotation_deg=90),
+        PlacedComponentSpec(Ground("GND1", "0"), (260.0, 320.0)),
+    ]
+    g = WireGraph()
+    g = g.add_wire(TerminalRef("V1", "pos"), TerminalRef("T1", "p1"))
+    g = g.add_wire(TerminalRef("T1", "s1"), TerminalRef("R_LOAD", "a"))
+    g = g.add_junction((260.0, 280.0), "J_gnd")
+    for t in (
+        TerminalRef("V1", "neg"),
+        TerminalRef("T1", "p2"),
+        TerminalRef("T1", "s2"),
+        TerminalRef("R_LOAD", "b"),
+        TerminalRef("GND1", "gnd"),
+    ):
+        g = g.add_wire(t, JunctionRef("J_gnd"))
+    return CircuitDocumentV2(placed=placed, graph=g)
+
+
+def _make_spdt_relay_driver() -> CircuitDocumentV2:
+    placed = [
+        PlacedComponentSpec(DCVoltageSource("V_COIL", "n_coil", "0", voltage=6.0), (80.0, 200.0), rotation_deg=90),
+        PlacedComponentSpec(SPDTRelay("K1", "n_coil", "0", "n_com", "n_no", "n_nc"), (260.0, 200.0)),
+        PlacedComponentSpec(DCVoltageSource("V_BUS", "n_com", "0", voltage=12.0), (440.0, 80.0), rotation_deg=90),
+        PlacedComponentSpec(Resistor("R_NO", "n_no", "0", resistance=100.0), (440.0, 200.0), rotation_deg=90),
+        PlacedComponentSpec(Resistor("R_NC", "n_nc", "0", resistance=100.0), (440.0, 320.0), rotation_deg=90),
+        PlacedComponentSpec(Ground("GND1", "0"), (260.0, 380.0)),
+    ]
+    g = WireGraph()
+    g = g.add_wire(TerminalRef("V_COIL", "pos"), TerminalRef("K1", "coil_pos"))
+    g = g.add_wire(TerminalRef("K1", "com"), TerminalRef("V_BUS", "pos"))
+    g = g.add_wire(TerminalRef("K1", "no"), TerminalRef("R_NO", "a"))
+    g = g.add_wire(TerminalRef("K1", "nc"), TerminalRef("R_NC", "a"))
+    g = g.add_junction((260.0, 340.0), "J_gnd")
+    for t in (
+        TerminalRef("V_COIL", "neg"),
+        TerminalRef("K1", "coil_neg"),
+        TerminalRef("V_BUS", "neg"),
+        TerminalRef("R_NO", "b"),
+        TerminalRef("R_NC", "b"),
+        TerminalRef("GND1", "gnd"),
+    ):
+        g = g.add_wire(t, JunctionRef("J_gnd"))
+    return CircuitDocumentV2(placed=placed, graph=g)
+
+
+def _make_overcurrent_fuse_demo() -> CircuitDocumentV2:
+    placed = [
+        PlacedComponentSpec(DCVoltageSource("V1", "n_in", "0", voltage=12.0), (100.0, 200.0), rotation_deg=90),
+        PlacedComponentSpec(Fuse("F1", "n_in", "n_load", rating_amps=0.5), (240.0, 140.0)),
+        PlacedComponentSpec(Resistor("R_LOAD", "n_load", "0", resistance=100.0), (380.0, 200.0), rotation_deg=90),
+        PlacedComponentSpec(Ground("GND1", "0"), (240.0, 320.0)),
+    ]
+    g = WireGraph()
+    g = g.add_wire(TerminalRef("V1", "pos"), TerminalRef("F1", "a"))
+    g = g.add_wire(TerminalRef("F1", "b"), TerminalRef("R_LOAD", "a"))
+    g = g.add_junction((240.0, 280.0), "J_gnd")
+    for t in (
+        TerminalRef("V1", "neg"),
+        TerminalRef("R_LOAD", "b"),
+        TerminalRef("GND1", "gnd"),
+    ):
+        g = g.add_wire(t, JunctionRef("J_gnd"))
+    return CircuitDocumentV2(placed=placed, graph=g)
+
+
+def _make_counter_4bit_seven_seg() -> CircuitDocumentV2:
+    placed = [
+        PlacedComponentSpec(
+            ACVoltageSource(
+                "V_CLK",
+                "clk",
+                "0",
+                amplitude=2.5,
+                frequency=1000.0,
+                dc_offset=2.5,
+                waveform=WaveformType.SQUARE,
+            ),
+            (80.0, 180.0),
+            rotation_deg=90,
+        ),
+        PlacedComponentSpec(DCVoltageSource("V_RST", "rst", "0", voltage=0.0), (80.0, 300.0), rotation_deg=90),
+        PlacedComponentSpec(Counter4Bit("U1", "clk", "rst", "q0", "q1", "q2", "q3"), (260.0, 220.0)),
+        PlacedComponentSpec(SevenSegDisplay("DS1", "q0", "q1", "q2", "q3"), (460.0, 220.0)),
+        PlacedComponentSpec(Ground("GND1", "0"), (140.0, 380.0)),
+    ]
+    g = WireGraph()
+    g = g.add_wire(TerminalRef("V_CLK", "pos"), TerminalRef("U1", "CLK"))
+    g = g.add_wire(TerminalRef("V_RST", "pos"), TerminalRef("U1", "RST"))
+    g = g.add_wire(TerminalRef("U1", "Q0"), TerminalRef("DS1", "D0"))
+    g = g.add_wire(TerminalRef("U1", "Q1"), TerminalRef("DS1", "D1"))
+    g = g.add_wire(TerminalRef("U1", "Q2"), TerminalRef("DS1", "D2"))
+    g = g.add_wire(TerminalRef("U1", "Q3"), TerminalRef("DS1", "D3"))
+    g = g.add_junction((140.0, 340.0), "J_gnd")
+    for t in (
+        TerminalRef("V_CLK", "neg"),
+        TerminalRef("V_RST", "neg"),
+        TerminalRef("GND1", "gnd"),
+    ):
+        g = g.add_wire(t, JunctionRef("J_gnd"))
+    return CircuitDocumentV2(placed=placed, graph=g)
+
+
+def _make_comparator_threshold_detector() -> CircuitDocumentV2:
+    placed = [
+        PlacedComponentSpec(ACVoltageSource("V_IN", "n_in", "0", amplitude=5.0, frequency=100.0), (100.0, 160.0), rotation_deg=90),
+        PlacedComponentSpec(DCVoltageSource("V_REF", "n_ref", "0", voltage=2.5), (100.0, 280.0), rotation_deg=90),
+        PlacedComponentSpec(Comparator("U1", "n_in", "n_ref", "n_out", v_high=5.0, v_low=0.0), (280.0, 200.0)),
+        PlacedComponentSpec(Resistor("R_LOAD", "n_out", "0", resistance=10_000.0), (420.0, 240.0), rotation_deg=90),
+        PlacedComponentSpec(Ground("GND1", "0"), (240.0, 360.0)),
+    ]
+    g = WireGraph()
+    g = g.add_wire(TerminalRef("V_IN", "pos"), TerminalRef("U1", "in_pos"))
+    g = g.add_wire(TerminalRef("V_REF", "pos"), TerminalRef("U1", "in_neg"))
+    g = g.add_wire(TerminalRef("U1", "out"), TerminalRef("R_LOAD", "a"))
+    g = g.add_junction((240.0, 320.0), "J_gnd")
+    for t in (
+        TerminalRef("V_IN", "neg"),
+        TerminalRef("V_REF", "neg"),
+        TerminalRef("R_LOAD", "b"),
+        TerminalRef("GND1", "gnd"),
+    ):
+        g = g.add_wire(t, JunctionRef("J_gnd"))
+    return CircuitDocumentV2(placed=placed, graph=g)
+
+
 _JIG_BUILDERS = {
     "rc_lowpass": _make_rc_lowpass,
     "rlc_resonance": _make_rlc_resonance,
@@ -546,11 +756,17 @@ _JIG_BUILDERS = {
     "opamp_non_inverting_amp": _make_opamp_non_inverting_amp,
     "opamp_relaxation_oscillator": _make_opamp_relaxation_oscillator,
     "mcu_analog_threshold_controller": _make_mcu_analog_threshold_controller,
+    "555_astable_oscillator": _make_555_astable_oscillator,
+    "transformer_ac_supply": _make_transformer_ac_supply,
+    "spdt_relay_driver": _make_spdt_relay_driver,
+    "overcurrent_fuse_demo": _make_overcurrent_fuse_demo,
+    "counter_4bit_seven_seg": _make_counter_4bit_seven_seg,
+    "comparator_threshold_detector": _make_comparator_threshold_detector,
 }
 
 
 def build_test_jig(jig_id: str) -> CircuitDocumentV2:
-    """Construct a solver-ready `CircuitDocumentV2` for one of the 12 built-in Test Jigs."""
+    """Construct a solver-ready `CircuitDocumentV2` for one of the 18 built-in Test Jigs."""
     builder = _JIG_BUILDERS.get(jig_id)
     if builder is None:
         valid = ", ".join(sorted(_JIG_BUILDERS))

@@ -672,9 +672,9 @@ def test_h9_subcircuit_duplicate_copy_paste_and_rigid_group_move(qapp) -> None:
 
 
 def test_h10_all_twelve_test_jigs_load_validate_and_solve(qapp) -> None:
-    """H10: All 12 Test Jigs load cleanly into CircuitScene, validate topology, and solve accurately."""
+    """H10/I10: All 18 Test Jigs load cleanly into CircuitScene, validate topology, and solve accurately."""
     jigs = list_test_jigs()
-    assert len(jigs) == 12
+    assert len(jigs) == 18
 
     scene = CircuitScene(SymbolLibrary())
     try:

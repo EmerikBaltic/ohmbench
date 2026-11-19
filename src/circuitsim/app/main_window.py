@@ -381,6 +381,28 @@ class MainWindow(QMainWindow):
         self.act_flip.triggered.connect(self._flip_selected)
         edit_menu.addAction(self.act_flip)
 
+        align_menu = edit_menu.addMenu("&Align && Distribute")
+        for lbl, mode in (
+            ("Align &Left", "left"),
+            ("Align &Right", "right"),
+            ("Align &Top", "top"),
+            ("Align &Bottom", "bottom"),
+            ("Align Center &Horizontal (X)", "center_x"),
+            ("Align Center &Vertical (Y)", "center_y"),
+        ):
+            act_al = QAction(lbl, self)
+            act_al.triggered.connect(lambda _checked=False, m=mode: self.circuit_scene.align_selected(m))
+            align_menu.addAction(act_al)
+        align_menu.addSeparator()
+        for lbl, axis in (
+            ("Distribute &Horizontally", "horizontal"),
+            ("Distribute &Vertically", "vertical"),
+        ):
+            act_dist = QAction(lbl, self)
+            act_dist.triggered.connect(lambda _checked=False, ax=axis: self.circuit_scene.distribute_selected(ax))
+            align_menu.addAction(act_dist)
+        self.align_distribute_menu = align_menu
+
         self.act_wire_mode = QAction("&Wire (W)", self, checkable=True)
         self.act_wire_mode.setIconText("Wire")
         self.act_wire_mode.setToolTip(
@@ -473,6 +495,12 @@ class MainWindow(QMainWindow):
             self.circuit_scene.set_pinout_labels_enabled
         )
         self.view_menu.addAction(self.act_pinout_labels)
+
+        self.act_show_minimap = QAction("Show &Minimap", self, checkable=True)
+        self.act_show_minimap.setChecked(False)
+        self.act_show_minimap.setToolTip("Show 160x110 px schematic overview minimap in the bottom-right corner")
+        self.act_show_minimap.toggled.connect(self.circuit_view.set_minimap_visible)
+        self.view_menu.addAction(self.act_show_minimap)
 
         # Place menu (cross-platform accessible entry alongside canvas hotkeys)
         self.place_menu = menu_bar.addMenu("&Place")
@@ -1840,6 +1868,16 @@ class MainWindow(QMainWindow):
         if self.instruments_dialog is not None:
             try:
                 self.instruments_dialog.close()  # type: ignore[attr-defined]
+            except RuntimeError:
+                pass
+        if hasattr(self, "circuit_view") and self.circuit_view is not None:
+            try:
+                self.circuit_view.set_minimap_visible(False)
+            except RuntimeError:
+                pass
+        if getattr(self, "curve_tracer_dialog", None) is not None:
+            try:
+                self.curve_tracer_dialog.close()
             except RuntimeError:
                 pass
         self.circuit_scene.shutdown_scene()

@@ -105,12 +105,12 @@ def test_f7_wav_load_simulate_and_resample_export(tmp_path: Path) -> None:
 
 
 def test_f7_all_six_test_jigs_valid_and_loadable_in_main_window(qapp, tmp_path: Path) -> None:
-    """Verify all 12 built-in Test Jigs build cleanly, solve accurately, and load via UI menu."""
+    """Verify all 18 built-in Test Jigs build cleanly, solve accurately, and load via UI menu."""
     from circuitsim.app.main_window import MainWindow
     from circuitsim.app.settings import AppSettings
 
     jigs = list_test_jigs()
-    assert len(jigs) == 12
+    assert len(jigs) == 18
 
     expected_checks: dict[str, tuple[float, float]] = {
         "rc_lowpass": (2e-3, 1e-5),
@@ -125,6 +125,12 @@ def test_f7_all_six_test_jigs_valid_and_loadable_in_main_window(qapp, tmp_path: 
         "opamp_non_inverting_amp": (1e-3, 1e-4),
         "opamp_relaxation_oscillator": (5e-3, 2e-5),
         "mcu_analog_threshold_controller": (1e-3, 1e-4),
+        "555_astable_oscillator": (6e-3, 2e-5),
+        "transformer_ac_supply": (15e-3, 1e-4),
+        "spdt_relay_driver": (1e-3, 1e-4),
+        "overcurrent_fuse_demo": (1e-3, 1e-4),
+        "counter_4bit_seven_seg": (4e-3, 5e-5),
+        "comparator_threshold_detector": (10e-3, 1e-4),
     }
 
     for jig in jigs:
@@ -155,11 +161,11 @@ def test_f7_all_six_test_jigs_valid_and_loadable_in_main_window(qapp, tmp_path: 
                 wave_u1 = tr.component_voltages[u1.name]
                 assert float(np.ptp(wave_u1)) > 3.0
 
-    # Verify UI menu exposes all 12 Test Jigs and loads them cleanly
+    # Verify UI menu exposes all 18 Test Jigs and loads them cleanly
     win = MainWindow(settings=AppSettings(data_dir=tmp_path / "settings"))
     try:
         menu_titles = [act.text() for act in win.test_jigs_menu.actions()]
-        assert len(menu_titles) == 12
+        assert len(menu_titles) == 18
         for jig in jigs:
             win.load_test_jig(jig.jig_id, title=jig.title, prompt_discard=False)
             assert len(win.circuit_scene.placed_items) >= 4

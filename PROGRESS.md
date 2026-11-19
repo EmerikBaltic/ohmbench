@@ -11,7 +11,7 @@
 - [x] `I7` (`done`): Add Qt-free I-V Characteristic Curve Tracer (`circuitsim.engine.curve_tracer`) and `CurveTracerDialog` (`Simulation > I-V Curve Tracer...`) with CSV export.
 - [x] `I8` (`done`): Add Benchtop Digital Multimeter (DMM) tab (DC V, AC RMS, DC A, Resistance/Continuity) and Oscilloscope X-Y Lissajous mode.
 - [x] `I9` (`done`): Add automated Bill of Materials & Thermal Power Budget (`circuitsim.io.bom_export` + UI dialog) and Custom Subcircuit Macro packaging (`CustomMacroBlock`).
-- [ ] `I10` (`todo`): Add undoable Alignment & Distribution tools, toggleable corner Minimap, expand `BUILTIN_TEST_JIGS` to 18 circuits, and update docs.
+- [x] `I10` (`done`): Add undoable Alignment & Distribution tools (`CircuitScene.align_selected`, `distribute_selected` + `Edit > Align & Distribute`), toggleable corner Minimap (`_MinimapOverlay` in `CircuitView` + `View > Show Minimap`), expand `BUILTIN_TEST_JIGS` to 18 circuits, and update `PROGRESS.md` & `AGENT_INSTRUCTIONS.md`. Note: `tests/test_f7_wav_and_jigs.py: len(jigs) == 12 -> len(jigs) == 18` and `tests/test_h_workbench_expansion.py::test_h10_all_twelve_test_jigs_load_validate_and_solve: len(jigs) == 12 -> len(jigs) == 18 (I10 expanded BUILTIN_TEST_JIGS from 12 to 18)`.
 - [ ] `GATE I` (`todo`): Run Gate I test suites, verify Qt-free boundaries, commit, and tag `checkpoint/I-done`.
 
 ## PHASE H QUEUE (PALETTE, ROUTER, ACTIVE SEMICONDUCTORS & WORKBENCH UI)
@@ -54,6 +54,7 @@ Run these manual checks in the live desktop window (`.\.venv\Scripts\python.exe 
 5. **E5 (Label Plates Over Wires)**: Place a voltmeter (`Rot`), wire across its readout/label region, run simulation -> wire remains cleanly visible through label/value text rather than being erased by an opaque box (check both Dark and Light themes).
 6. **E6 (Startup Console Cleanliness)**: Launch the app from PowerShell (`.\.venv\Scripts\python.exe -m circuitsim.main`) and switch Dark/Light themes -> verify zero `"QFont::setPointSize: Point size <= 0 (-1)"` warnings print to stderr.
 7. **F1–F12 Workbench Suite**: Toggle **View > Show Physical Pinout / Package Labels**, toggle **View > Voltage Colors / Current Dots / Stress Warnings**, open **Simulation > Virtual Instruments (Waveform & Bode)**, load a jig from **File > Test Jigs**, import a `.MODEL` / `.SUBCKT` via **File > Import SPICE Model / Subcircuit...**, and verify **File > Copy Share URL** / **Export as KiCad Schematic (.kicad_sch)** cleanly round-trip.
+8. **I1–I10 Advanced Workbench**: Verify Light Theme (`Ctrl+T`) matte contrast & light `Problems` dock title bar, empty-selection Properties shortcut summary reflects `Shortcuts...` edits, full-span non-overlapping placement/drag revert, overload warnings appear in Problems + Properties + Tooltips, `Simulation > I-V Curve Tracer...`, Virtual Instruments **DMM** tab & **X-Y Mode (CH1 vs CH2)**, **File > Bill of Materials & Power Report...**, **Edit > Align & Distribute**, **View > Show Minimap**, and all 18 Test Jigs.
 
 ## PHASE F QUEUE (WORKBENCH UPGRADE)
 - **Baseline Gate E**: Tag `checkpoint/E-done` (`305563c` on `wire-redesign`), `400 passed, 1 xfailed` (sole xfail is owner-skipped `E2`) across all 4 Gate E runs (`pytest.exe -q` x3 + `python.exe -m pytest -q` x1).

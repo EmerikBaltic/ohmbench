@@ -449,14 +449,18 @@ def test_i6_sequential_d_jk_flipflops_4bit_counter_and_seven_seg_display(qapp) -
 
     # Render SevenSegDisplay in offscreen scene without error
     scene = CircuitScene(SymbolLibrary())
-    item = scene.place_new_component("seven_seg_display", QPointF(0.0, 0.0))
-    assert item is not None
-    item.component.step_sequential({"DS1_D0": 5.0, "DS1_D1": 0.0, "DS1_D2": 5.0, "DS1_D3": 0.0})
-    img = QImage(160, 180, QImage.Format.Format_ARGB32)
-    img.fill(0)
-    painter = QPainter(img)
-    scene.render(painter, QRectF(0, 0, 160, 180), QRectF(-80, -90, 160, 180))
-    painter.end()
+    try:
+        item = scene.place_new_component("seven_seg_display", QPointF(0.0, 0.0))
+        assert item is not None
+        item.component.step_sequential({"DS1_D0": 5.0, "DS1_D1": 0.0, "DS1_D2": 5.0, "DS1_D3": 0.0})
+        img = QImage(160, 180, QImage.Format.Format_ARGB32)
+        img.fill(0)
+        painter = QPainter(img)
+        scene.render(painter, QRectF(0, 0, 160, 180), QRectF(-80, -90, 160, 180))
+        painter.end()
+    finally:
+        scene.shutdown_scene()
+        qapp.processEvents()
 
 
 def test_i7_curve_tracer_zener_npn_nmos_and_qt_free_check(qapp, tmp_path: Path) -> None:
@@ -514,6 +518,7 @@ def test_i7_curve_tracer_zener_npn_nmos_and_qt_free_check(qapp, tmp_path: Path) 
     res_dlg = dlg.run_trace()
     assert len(res_dlg.curves) >= 1
     dlg.close()
+    dlg.deleteLater()
 
 
 def test_i8_dmm_modes_continuity_and_oscilloscope_xy_lissajous(qapp) -> None:
@@ -653,3 +658,64 @@ def test_i9_bom_power_report_and_custom_subcircuit_macro(tmp_path: Path) -> None
     parent.add(Ground("G_P", "0"))
     res_macro = MNASolver(parent).solve_dc()
     assert res_macro.node_voltages["n_out"] == pytest.approx(6.0, abs=1e-3)
+
+
+def test_i10_align_distribute_undo_minimap_and_18_test_jigs(qapp, tmp_path: Path) -> None:
+    """I10: Undoable align/distribute, toggleable corner minimap, and all 18 built-in Test Jigs."""
+    from circuitsim.engine.solver import MNASolver
+    from circuitsim.templates import build_test_jig, list_test_jigs
+    from circuitsim.wiring.model import FreeEnd
+
+    win = MainWindow(settings=AppSettings(data_dir=tmp_path / "i10_settings"))
+    try:
+        win.resize(900, 650)
+        win.show()
+        scene = win.circuit_scene
+        view = win.circuit_view
+
+        r1 = scene.place_new_component("resistor", QPointF(0.0, 0.0))
+        r2 = scene.place_new_component("resistor", QPointF(160.0, 120.0))
+        r3 = scene.place_new_component("resistor", QPointF(240.0, 240.0))
+        assert r1 is not None and r2 is not None and r3 is not None
+
+        for it in (r1, r2, r3):
+            it.setSelected(True)
+        assert scene.align_selected("left") is True
+        assert r2.pos().x() == pytest.approx(r1.pos().x())
+        assert r3.pos().x() == pytest.approx(r1.pos().x())
+
+        # Single undo restores all misaligned X coordinates
+        scene.undo_stack.undo()
+        assert r2.pos().x() == pytest.approx(160.0)
+        assert r3.pos().x() == pytest.approx(240.0)
+
+        # Distribute horizontally in 1 undoable step (0, 240 -> 0, 120, 240)
+        assert scene.distribute_selected("horizontal") is True
+        assert r2.pos().x() == pytest.approx(120.0)
+        scene.undo_stack.undo()
+        assert r2.pos().x() == pytest.approx(160.0)
+
+        # Toggle corner minimap
+        assert view.is_minimap_visible() is False
+        win.act_show_minimap.trigger()
+        qapp.processEvents()
+        assert view.is_minimap_visible() is True
+        assert view._minimap.width() == 160 and view._minimap.height() == 110
+    finally:
+        win.circuit_view.set_minimap_visible(False)
+        win.circuit_scene.undo_stack.setClean()
+        win.close()
+        qapp.processEvents()
+
+    # All 18 Test Jigs valid & solver-ready
+    jigs = list_test_jigs()
+    assert len(jigs) == 18
+    for jig in jigs:
+        doc = build_test_jig(jig.jig_id)
+        assert not any(
+            isinstance(w.end_a, FreeEnd) or isinstance(w.end_b, FreeEnd)
+            for w in doc.graph.wires
+        )
+        wnet = doc.build_circuit()
+        dc = MNASolver(wnet.circuit).solve_dc()
+        assert all(math.isfinite(v) for v in dc.node_voltages.values())
