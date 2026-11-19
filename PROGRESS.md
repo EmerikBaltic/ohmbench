@@ -687,7 +687,7 @@ When ready to perform Stage 2 (internal/package rename after Stage 1 settles):
 | `K3` | Blown Fuse Visual: Broken Open Wire Gap + Animated "POP!" Spark Effect + Click-to-Reset Label | `[x]` | Done |
 | `K4` | Always-Visible Pin Labels on All Multi-Pin Components (`ComponentItem.default_pin_labels`, upright edge labels, 7-seg pinout info hint) | `[x]` | Done |
 | `K5` | Lock Problems Panel to Bottom Dock & Dynamic Palette Resizing (bottom corners owned by bottom dock, single title bar, non-floating) | `[x]` | Done |
-| `GATE K` | Targeted Gate Verification (`test_k_ui_and_transformer.py`, `test_i_advanced_workbench.py`, `test_problems_panel.py`, `test_g_qol_fixes.py`) & `checkpoint/K-done` tag | `[ ]` | pending |
+| `GATE K` | Targeted Gate Verification (`test_k_ui_and_transformer.py`, `test_i_advanced_workbench.py`, `test_problems_panel.py`, `test_g_qol_fixes.py`, `test_f7_wav_and_jigs.py`, `test_paint_safety_and_theme_palette.py`: `38 passed in 17.04s`) & `checkpoint/K-done` tag | `[x]` | Done |
 
 
 
