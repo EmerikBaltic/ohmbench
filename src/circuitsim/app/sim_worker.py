@@ -31,12 +31,17 @@ class _SessionThreadWorker(QObject):
     """Worker object living inside the background `QThread`."""
 
     frame_emitted = Signal(object)  # Emits immutable SimulationFrame
+    sample_block_emitted = Signal(object)  # Emits immutable SampleBlock chunks
 
     def __init__(self) -> None:
         super().__init__()
         self.session: SimulationSession = SimulationSession()
+        self.session.attach_scope_sink(self._on_sample_block)
         self._tick_timer: QTimer | None = None
         self.tick_interval_ms: int = 33  # ~30 FPS UI update rate
+
+    def _on_sample_block(self, block: object) -> None:
+        self.sample_block_emitted.emit(block)
 
     def _ensure_timer(self) -> QTimer:
         if self._tick_timer is None:
@@ -109,6 +114,11 @@ class _SessionThreadWorker(QObject):
     def handle_set_speed(self, speed_value: str) -> None:
         self.session.speed = SimulationSpeed(speed_value)
 
+    @Slot(object, int)
+    def handle_set_timebase(self, seconds_per_div: object, points_per_div: int = 100) -> None:
+        sec_div = float(seconds_per_div) if seconds_per_div is not None else None
+        self.session.set_timebase(sec_div, points_per_div=int(points_per_div))
+
     @Slot(str, int)
     def handle_toggle_switch(self, switch_name: str, min_gen: int = 0) -> None:
         try:
@@ -156,7 +166,7 @@ class _SessionThreadWorker(QObject):
         wall_dt = self.tick_interval_ms / 1000.0
         target_sim_advance = wall_dt * self.session.speed.multiplier
         dt = max(1e-9, self.session.dt)
-        steps = max(1, min(350, int(round(target_sim_advance / dt))))
+        steps = max(1, min(2500, int(round(target_sim_advance / dt))))
         frame = self.session.step_chunk(steps=steps, dt=dt)
         if frame.state != SimulationState.RUNNING and self._tick_timer is not None:
             self._tick_timer.stop()
@@ -183,6 +193,7 @@ class SimulationWorkerController(QObject):
     """
 
     frame_ready = Signal(object)  # Emits SimulationFrame on the main thread
+    sample_block_ready = Signal(object)  # Emits SampleBlock chunks on the main thread
 
     # Internal queued signals to the worker thread
     _sig_load = Signal(object, object, object, int)
@@ -191,6 +202,7 @@ class SimulationWorkerController(QObject):
     _sig_pause = Signal()
     _sig_stop = Signal()
     _sig_speed = Signal(str)
+    _sig_set_timebase = Signal(object, int)
     _sig_toggle_switch = Signal(str, int)
     _sig_reset_fuse = Signal(str, int)
     _sig_update_param = Signal(str, str, object, int)
@@ -222,6 +234,9 @@ class SimulationWorkerController(QObject):
         self._sig_speed.connect(
             self._worker.handle_set_speed, Qt.ConnectionType.QueuedConnection
         )
+        self._sig_set_timebase.connect(
+            self._worker.handle_set_timebase, Qt.ConnectionType.QueuedConnection
+        )
         self._sig_toggle_switch.connect(
             self._worker.handle_toggle_switch, Qt.ConnectionType.QueuedConnection
         )
@@ -237,6 +252,9 @@ class SimulationWorkerController(QObject):
         )
         self._worker.frame_emitted.connect(
             self._on_worker_frame, Qt.ConnectionType.QueuedConnection
+        )
+        self._worker.sample_block_emitted.connect(
+            self._on_worker_sample_block, Qt.ConnectionType.QueuedConnection
         )
         app = QCoreApplication.instance()
         if app is not None:
@@ -257,6 +275,12 @@ class SimulationWorkerController(QObject):
         if getattr(frame, "generation", 0) < self._min_generation:
             return
         self.frame_ready.emit(frame)
+
+    @Slot(object)
+    def _on_worker_sample_block(self, block: object) -> None:
+        """Forward high-rate oscilloscope SampleBlock chunks to main-thread listeners."""
+        if not self._is_shut_down:
+            self.sample_block_ready.emit(block)
 
     def load_schematic(
         self,
@@ -300,6 +324,13 @@ class SimulationWorkerController(QObject):
         self._ensure_thread_running()
         self._sig_speed.emit(speed.value)
 
+    def set_timebase(
+        self, seconds_per_div: float | None, points_per_div: int = 100
+    ) -> None:
+        """Couple worker solver dt to an active DSO timebase without resetting state."""
+        self._ensure_thread_running()
+        self._sig_set_timebase.emit(seconds_per_div, int(points_per_div))
+
     def toggle_switch(self, switch_name: str) -> None:
         """Toggle a switch live on the worker thread."""
         self._ensure_thread_running()
@@ -336,6 +367,10 @@ class SimulationWorkerController(QObject):
         if self._worker is not None:
             try:
                 self._worker.frame_emitted.disconnect(self._on_worker_frame)
+            except (RuntimeError, TypeError):
+                pass
+            try:
+                self._worker.sample_block_emitted.disconnect(self._on_worker_sample_block)
             except (RuntimeError, TypeError):
                 pass
 

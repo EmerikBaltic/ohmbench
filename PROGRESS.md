@@ -710,7 +710,7 @@ When ready to perform Stage 2 (internal/package rename after Stage 1 settles):
 | Item | Description | Status |
 | :--- | :--- | :--- |
 | **L0** | Initialize Phase L queue in `PROGRESS.md` (`L0`–`L5`, `GATE L`) | [x] |
-| **L1** | High-rate `SampleBlock` streaming into DSO-1062D & coupled simulation `dt` | [ ] |
+| **L1** | High-rate `SampleBlock` streaming into DSO-1062D & coupled simulation `dt` (`sim_worker.py`, `main_window.py`, `dso_panel.py`; `26 passed`) | [x] |
 | **L2** | Exact `SEC/DIV` X-axis scaling, triggered windowing & Roll Mode (`>= 100 ms/div`) | [ ] |
 | **L3** | `RUN/STOP` freeze & discontinuity guard, unified hardware frequency counter & `AUTO SET` | [ ] |
 | **L4** | Front-panel UI clipping, high-contrast status badge & mini-screen preview polish | [ ] |

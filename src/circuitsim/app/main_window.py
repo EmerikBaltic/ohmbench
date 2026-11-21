@@ -779,6 +779,7 @@ class MainWindow(QMainWindow):
         )
         self.circuit_scene.status_notice.connect(self._on_scene_status_notice)
         self.sim_controller.frame_ready.connect(self._on_simulation_frame)
+        self.sim_controller.sample_block_ready.connect(self._on_sample_block)
 
     # ------------------------------------------------------------------
     # Simulation Controls (Run / Pause / Stop / Speed / Live Edits)
@@ -795,6 +796,7 @@ class MainWindow(QMainWindow):
             self._user_closed_problems_panel = False
             self._prev_error_count = 0
             self._sync_schematic_to_worker()
+        self._sync_dso_timebase_to_worker()
         self.sim_controller.start()
 
     def pause_simulation(self) -> None:
@@ -1525,6 +1527,38 @@ class MainWindow(QMainWindow):
             except RuntimeError:
                 pass
 
+    def _on_sample_block(self, block: object) -> None:
+        """Forward high-rate SampleBlock chunks to all open DSO-1062D dialogs."""
+        for dlg in list(self._dso_dialogs.values()):
+            try:
+                dlg.on_sample_block(block)  # type: ignore[attr-defined]
+            except RuntimeError:
+                pass
+
+    def _sync_dso_timebase_to_worker(self) -> None:
+        """Couple background worker dt to the finest active DSO window timebase."""
+        active_sec_divs: list[float] = []
+        for dlg in list(self._dso_dialogs.values()):
+            try:
+                if dlg.isVisible():  # type: ignore[attr-defined]
+                    active_sec_divs.append(float(dlg.state.horizontal.sec_per_div))  # type: ignore[attr-defined]
+            except RuntimeError:
+                pass
+        if active_sec_divs:
+            self.sim_controller.set_timebase(min(active_sec_divs), points_per_div=100)
+        elif self._dso_dialogs:
+            # Keep last open DSO timebase if any dialog exists
+            first_dlg = next(iter(self._dso_dialogs.values()))
+            try:
+                self.sim_controller.set_timebase(
+                    float(first_dlg.state.horizontal.sec_per_div),  # type: ignore[attr-defined]
+                    points_per_div=100,
+                )
+            except RuntimeError:
+                self.sim_controller.set_timebase(None, points_per_div=100)
+        else:
+            self.sim_controller.set_timebase(None, points_per_div=100)
+
     def open_dso_dialog_for_item(self, item: ComponentItem):
         """Open (or focus) the multi-instance DSO-1062D window bound to `item`."""
         from circuitsim.app.dso_panel import DSOOscilloscopeDialog
@@ -1537,6 +1571,7 @@ class MainWindow(QMainWindow):
             existing.show()
             existing.raise_()
             existing.activateWindow()
+            self._sync_dso_timebase_to_worker()
             return existing
 
         dlg = DSOOscilloscopeDialog(
@@ -1545,6 +1580,7 @@ class MainWindow(QMainWindow):
             nets_provider=lambda name=cname: self.circuit_scene.extract_connectivity_result().component_nodes.get(
                 name, {}
             ),
+            timebase_changed_callback=self._sync_dso_timebase_to_worker,
             parent=self,
         )
         self._dso_dialogs[cname] = dlg
@@ -1553,6 +1589,7 @@ class MainWindow(QMainWindow):
         dlg.show()
         dlg.raise_()
         dlg.activateWindow()
+        self._sync_dso_timebase_to_worker()
         return dlg
 
     def show_instruments_panel(self):
@@ -1949,6 +1986,7 @@ class MainWindow(QMainWindow):
             (self.circuit_scene.component_parameters_edited, self._on_user_parameters_edited),
             (self.circuit_scene.status_notice, self._on_scene_status_notice),
             (self.sim_controller.frame_ready, self._on_simulation_frame),
+            (self.sim_controller.sample_block_ready, self._on_sample_block),
         ):
             try:
                 sig.disconnect(slot)

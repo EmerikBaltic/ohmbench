@@ -575,6 +575,7 @@ class DSOOscilloscopeDialog(QDialog):
         *,
         circuit_provider: Callable[[], Circuit] | None = None,
         nets_provider: Callable[[], dict[str, str]] | None = None,
+        timebase_changed_callback: Callable[[], None] | None = None,
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
@@ -587,6 +588,7 @@ class DSOOscilloscopeDialog(QDialog):
 
         self._circuit_provider = circuit_provider
         self._nets_provider = nets_provider
+        self._timebase_changed_callback = timebase_changed_callback
         self.state: DSOState = recall_setup_json(self.osc_component.dso_state_json)
         self.latest_frame: DSOFrame | None = None
         self.active_menu: str = "CH1"
@@ -594,12 +596,14 @@ class DSOOscilloscopeDialog(QDialog):
         self._saved_setup_slot: str = ""
         self._syncing_dials: bool = False
 
-        self._live_times: deque[float] = deque(maxlen=4096)
-        self._live_ch1: deque[float] = deque(maxlen=4096)
-        self._live_ch2: deque[float] = deque(maxlen=4096)
-        self._live_ext: deque[float] = deque(maxlen=4096)
+        self._live_times: deque[float] = deque(maxlen=65536)
+        self._live_ch1: deque[float] = deque(maxlen=65536)
+        self._live_ch2: deque[float] = deque(maxlen=65536)
+        self._live_ext: deque[float] = deque(maxlen=65536)
         self._last_live_t: float | None = None
         self._live_step_counter: int = 0
+        self._received_sample_blocks: bool = False
+        self._cached_nets: dict[str, str] = {}
 
         self.setWindowTitle(f"{self.osc_component.name} — DSO-1062D Benchtop Oscilloscope")
         self.resize(1080, 620)
@@ -1043,8 +1047,10 @@ class DSOOscilloscopeDialog(QDialog):
                 s.horizontal.zoom_enabled = not s.horizontal.zoom_enabled
             elif index == 2:
                 s.horizontal.sec_per_div = _step_table(s.horizontal.sec_per_div, DSO_SEC_PER_DIV, -1)
+                self._notify_timebase_changed()
             elif index == 3:
                 s.horizontal.sec_per_div = _step_table(s.horizontal.sec_per_div, DSO_SEC_PER_DIV, 1)
+                self._notify_timebase_changed()
             elif index == 4:
                 s.horizontal.position_s = 0.0
         elif m == "TRIG":
@@ -1080,6 +1086,7 @@ class DSOOscilloscopeDialog(QDialog):
             elif index == 3 and self._saved_setup_slot:
                 self.state = recall_setup_json(self._saved_setup_slot)
                 self.knob_status_label.setText("Recalled Slot 1 setup")
+                self._notify_timebase_changed()
             elif index == 4:
                 self._on_default_setup()
                 return
@@ -1150,12 +1157,20 @@ class DSOOscilloscopeDialog(QDialog):
         self._reprocess_or_capture()
         self._sync_ui_from_state()
 
+    def _notify_timebase_changed(self) -> None:
+        if self._timebase_changed_callback is not None:
+            try:
+                self._timebase_changed_callback()
+            except Exception:
+                pass
+
     def _on_sec_div_dial(self, idx: int) -> None:
         if self._syncing_dials:
             return
         self.state.horizontal.sec_per_div = float(DSO_SEC_PER_DIV[max(0, min(len(DSO_SEC_PER_DIV) - 1, idx))])
         self.knob_status_label.setText(f"Timebase: {format_engineering_value(self.state.horizontal.sec_per_div, 's/div')}")
         self._persist_state_to_component()
+        self._notify_timebase_changed()
         self.capture_from_scene()
         self._sync_ui_from_state()
 
@@ -1180,6 +1195,7 @@ class DSOOscilloscopeDialog(QDialog):
                 self.state = compute_auto_set(t_arr, c1, c2, self.state)
         self.knob_status_label.setText("AUTO SET complete")
         self._persist_state_to_component()
+        self._notify_timebase_changed()
         self.capture_from_scene()
         self._sync_ui_from_state()
 
@@ -1206,6 +1222,7 @@ class DSOOscilloscopeDialog(QDialog):
         self.state = reset_default_setup()
         self.knob_status_label.setText("Factory default setup restored")
         self._persist_state_to_component()
+        self._notify_timebase_changed()
         self.capture_from_scene()
         self._sync_ui_from_state()
 
@@ -1298,16 +1315,25 @@ class DSOOscilloscopeDialog(QDialog):
         if self.osc_item is not None:
             self.osc_item.update()
 
-    def refresh_net_labels(self) -> None:
-        """Update bottom BNC jack badges with active schematic node/net names."""
+    def _resolve_active_nets(self) -> dict[str, str]:
         nets: dict[str, str] = {}
         if self._nets_provider is not None:
             try:
-                nets = self._nets_provider()
+                provided = self._nets_provider()
+                if provided:
+                    nets = dict(provided)
+                    self._cached_nets = dict(nets)
             except Exception:
                 nets = {}
-        elif len(self.osc_component.nodes) >= 4:
+        if not nets and self._cached_nets:
+            nets = dict(self._cached_nets)
+        if not nets and len(self.osc_component.nodes) >= 4:
             nets = dict(zip(Oscilloscope.PIN_NAMES, self.osc_component.nodes))
+        return nets
+
+    def refresh_net_labels(self) -> None:
+        """Update bottom BNC jack badges with active schematic node/net names."""
+        nets = self._resolve_active_nets()
 
         for pin_name, ring_col, cap in (
             ("CH1", "#EAB308", "CH1"),
@@ -1335,17 +1361,30 @@ class DSOOscilloscopeDialog(QDialog):
             return None
 
         osc_in_circuit: Oscilloscope | None = None
+        ac_freqs: list[float] = []
         for comp in circuit.flat_components():
             if isinstance(comp, Oscilloscope) and comp.name == self.osc_component.name:
                 osc_in_circuit = comp
-                break
+            freq_val = getattr(comp, "frequency", None)
+            if isinstance(freq_val, (int, float)) and float(freq_val) > 0.0:
+                ac_freqs.append(float(freq_val))
         if osc_in_circuit is None:
             self.knob_status_label.setText(f"{self.osc_component.name} not wired to active circuit")
             return None
 
-        span = max(min(self.state.horizontal.sec_per_div * DSO_HORIZONTAL_DIVS, 0.5), 1e-7)
-        dt = max(span / 800.0, 1e-8)
-        tr = MNASolver(circuit).solve_transient(duration=span, dt=dt)
+        sec_div = max(float(self.state.horizontal.sec_per_div), 1e-9)
+        span = max(sec_div * DSO_HORIZONTAL_DIVS, 1e-7)
+        if ac_freqs:
+            min_f = min(ac_freqs)
+            max_f = max(ac_freqs)
+            duration = min(max(2.0 * span, 6.0 / max(min_f, 1.0)), 1.5)
+            dt_target = min(sec_div / 50.0, 1.0 / (64.0 * max(max_f, 50.0)))
+        else:
+            duration = min(max(span, 1e-6), 1.0)
+            dt_target = sec_div / 50.0
+        dt = max(dt_target, duration / 12000.0, 1e-8)
+
+        tr = MNASolver(circuit).solve_transient(duration=duration, dt=dt)
         gnd_wired = circuit.is_oscilloscope_gnd_wired(osc_in_circuit)
         vg = tr.node_voltages[osc_in_circuit.node_gnd] if (gnd_wired and osc_in_circuit.node_gnd in tr.node_voltages) else np.zeros_like(tr.times)
         ch1 = tr.node_voltages.get(osc_in_circuit.node_ch1, np.zeros_like(tr.times)) - vg
@@ -1360,31 +1399,110 @@ class DSOOscilloscopeDialog(QDialog):
         self._live_ch1.extend(float(v) for v in ch1)
         self._live_ch2.extend(float(v) for v in ch2)
         self._live_ext.extend(float(v) for v in ext)
+        self._last_live_t = float(tr.times[-1]) if len(tr.times) > 0 else None
 
         self.latest_frame = process_dso_capture(tr.times, ch1, ch2, ext, self.state, prev_frame=self.latest_frame)
         self._push_mini_preview()
         self._sync_ui_from_state()
         return self.latest_frame
 
+    def __call__(self, block: object) -> None:
+        """Allow direct registration as a `SimulationSession.attach_scope_sink` callable."""
+        self.on_sample_block(block)
+
+    def on_sample_block(self, block: object) -> None:
+        """Ingest high-rate `SampleBlock` chunks without dropping solver substeps."""
+        if not self.state.running and not self.state.trigger.single_armed:
+            return
+        n_steps = int(getattr(block, "n_steps", 0))
+        if n_steps <= 0:
+            return
+        t_arr = block.timestamps()  # type: ignore[attr-defined]
+        if len(t_arr) == 0:
+            return
+
+        t_first = float(t_arr[0])
+        t_last = float(t_arr[-1])
+        if self._last_live_t is not None:
+            if t_first < self._last_live_t - 1e-12 and t_last < self._last_live_t - 1e-12:
+                # Simulation restarted from an earlier t -> reset live rolling buffer cleanly
+                self._live_times.clear()
+                self._live_ch1.clear()
+                self._live_ch2.clear()
+                self._live_ext.clear()
+                self._last_live_t = None
+            elif t_last <= self._last_live_t + 1e-15:
+                return
+
+        slice_mask: np.ndarray | None = None
+        if self._last_live_t is not None and t_first <= self._last_live_t + 1e-15:
+            slice_mask = t_arr > (self._last_live_t + 1e-15)
+            if not np.any(slice_mask):
+                return
+            t_arr = t_arr[slice_mask]
+
+        nets = self._resolve_active_nets()
+        ch1_n = nets.get("CH1", self.osc_component.node_ch1)
+        ch2_n = nets.get("CH2", self.osc_component.node_ch2)
+        ext_n = nets.get("EXT_TRIG", self.osc_component.node_ext_trig)
+        gnd_n = nets.get("GND", self.osc_component.node_gnd)
+        node_names = tuple(getattr(block, "node_names", ()))
+
+        def _col_or_zero(name: str) -> np.ndarray:
+            if name == "0" or name in node_names:
+                arr = np.asarray(block.column(name), dtype=np.float64)  # type: ignore[attr-defined]
+            else:
+                arr = np.zeros(n_steps, dtype=np.float64)
+            return arr[slice_mask] if slice_mask is not None else arr
+
+        vg = _col_or_zero(gnd_n)
+        v1 = _col_or_zero(ch1_n) - vg
+        v2 = _col_or_zero(ch2_n) - vg
+        ve = _col_or_zero(ext_n) - vg
+
+        self._live_times.extend(t_arr.tolist())
+        self._live_ch1.extend(v1.tolist())
+        self._live_ch2.extend(v2.tolist())
+        self._live_ext.extend(ve.tolist())
+        self._last_live_t = float(t_arr[-1])
+        self._received_sample_blocks = True
+        self._live_step_counter += len(t_arr)
+
+        if len(v1) > 0:
+            self.osc_component.v_gnd = float(vg[-1])
+            self.osc_component.v_ch1 = float(v1[-1])
+            self.osc_component.v_ch2 = float(v2[-1])
+            self.osc_component.v_ext = float(ve[-1])
+
+        if len(self._live_times) >= 8 and (n_steps >= 2 or self._live_step_counter % 8 == 0):
+            t_buf, c1_buf, c2_buf, ext_buf = self._raw_arrays_for_processing()
+            self.latest_frame = process_dso_capture(
+                t_buf, c1_buf, c2_buf, ext_buf, self.state, prev_frame=self.latest_frame
+            )
+            self._push_mini_preview()
+            self._sync_ui_from_state()
+
     def on_simulation_frame(self, frame: SimulationFrame) -> None:
         """Ingest live `SimulationFrame` telemetry without blocking the UI thread."""
         if frame.state == SimulationState.STOPPED:
             self._last_live_t = None
+            self._received_sample_blocks = False
             return
         if not self.state.running and not self.state.trigger.single_armed:
             return
         if not frame.node_voltages or frame.dt <= 0.0:
             return
+        if (
+            self._received_sample_blocks
+            and self._last_live_t is not None
+            and frame.sim_time <= self._last_live_t + 1e-12
+        ):
+            return
         if self._last_live_t is not None and frame.sim_time <= self._last_live_t:
             return
         self._last_live_t = frame.sim_time
 
-        nets: dict[str, str] = {}
-        if self._nets_provider is not None:
-            try:
-                nets = self._nets_provider()
-            except Exception:
-                nets = {}
+        nets = self._resolve_active_nets()
         ch1_n = nets.get("CH1", self.osc_component.node_ch1)
         ch2_n = nets.get("CH2", self.osc_component.node_ch2)
         ext_n = nets.get("EXT_TRIG", self.osc_component.node_ext_trig)
