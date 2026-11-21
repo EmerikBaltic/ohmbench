@@ -714,7 +714,7 @@ When ready to perform Stage 2 (internal/package rename after Stage 1 settles):
 | **L2** | Exact `SEC/DIV` X-axis scaling, triggered windowing & Roll Mode (`>= 100 ms/div`) (`dso_engine.py`, `dso_panel.py`; `26 passed`) | [x] |
 | **L3** | `RUN/STOP` freeze & discontinuity guard, unified hardware frequency counter & `AUTO SET` (`dso_engine.py`, `dso_panel.py`; `26 passed`) | [x] |
 | **L4** | Front-panel UI clipping, high-contrast status badge & mini-screen preview polish (`dso_panel.py`; `26 passed`) | [x] |
-| **L5** | Phase L regression tests (`test_l1`–`test_l4`) in `tests/test_j_dso_and_release.py` | [ ] |
+| **L5** | Phase L regression tests (`test_l1`–`test_l4`) in `tests/test_j_dso_and_release.py` (`30 passed`) | [x] |
 | **GATE L** | Final targeted verification, `PROGRESS.md` completion & `checkpoint/L-done` tag | [ ] |
 
 

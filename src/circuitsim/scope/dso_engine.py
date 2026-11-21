@@ -901,16 +901,56 @@ def process_dso_capture(
         t_arr, fft_sig, window_name=state.math.fft_window
     )
 
-    ch1_meas = _measure_dso_channel(t_arr, ch1_cond) if len(t_arr) >= 8 else _measure_dso_channel(t_win, ch1_win)
-    ch2_meas = _measure_dso_channel(t_arr, ch2_cond) if len(t_arr) >= 8 else _measure_dso_channel(t_win, ch2_win)
-    if trig_freq_hz is None:
+    ch1_meas = _measure_dso_channel(t_win, ch1_win)
+    ch2_meas = _measure_dso_channel(t_win, ch2_win)
+    if ch1_meas.freq_hz is None and len(t_arr) >= 8:
+        full1 = _measure_dso_channel(t_arr, ch1_cond)
+        if full1.freq_hz is not None:
+            ch1_meas = DSOChannelMeasurements(
+                v_pp=ch1_meas.v_pp,
+                v_max=ch1_meas.v_max,
+                v_min=ch1_meas.v_min,
+                v_avg=ch1_meas.v_avg,
+                v_rms=ch1_meas.v_rms,
+                freq_hz=full1.freq_hz,
+                period_s=full1.period_s,
+                duty_cycle_pct=ch1_meas.duty_cycle_pct,
+            )
+    if ch2_meas.freq_hz is None and len(t_arr) >= 8:
+        full2 = _measure_dso_channel(t_arr, ch2_cond)
+        if full2.freq_hz is not None:
+            ch2_meas = DSOChannelMeasurements(
+                v_pp=ch2_meas.v_pp,
+                v_max=ch2_meas.v_max,
+                v_min=ch2_meas.v_min,
+                v_avg=ch2_meas.v_avg,
+                v_rms=ch2_meas.v_rms,
+                freq_hz=full2.freq_hz,
+                period_s=full2.period_s,
+                duty_cycle_pct=ch2_meas.duty_cycle_pct,
+            )
+
+    win_crossings = (
+        crossings[(crossings >= t_left - 1e-12) & (crossings <= t_right + 1e-12)]
+        if len(crossings) >= 2
+        else np.empty(0, dtype=np.float64)
+    )
+    if len(win_crossings) >= 2:
+        w_diffs = np.diff(win_crossings)
+        w_pos = w_diffs[w_diffs > 1e-15]
+        if len(w_pos) > 0:
+            mean_wp = float(np.mean(w_pos))
+            if mean_wp > 1e-15 and (1.0 / mean_wp) >= 1.0:
+                trig_freq_hz = 1.0 / mean_wp
+
+    if trig_src_name == "CH1" and ch1_meas.freq_hz is not None and (trig_freq_hz is None or len(win_crossings) < 3):
+        trig_freq_hz = ch1_meas.freq_hz
+    elif trig_src_name == "CH2" and ch2_meas.freq_hz is not None and (trig_freq_hz is None or len(win_crossings) < 3):
+        trig_freq_hz = ch2_meas.freq_hz
+    elif trig_freq_hz is None:
         trig_freq_hz = (
             ch2_meas.freq_hz if trig_src_name == "CH2" else ch1_meas.freq_hz
         )
-    elif trig_src_name == "CH1" and ch1_meas.freq_hz is not None and len(crossings) < 3:
-        trig_freq_hz = ch1_meas.freq_hz
-    elif trig_src_name == "CH2" and ch2_meas.freq_hz is not None and len(crossings) < 3:
-        trig_freq_hz = ch2_meas.freq_hz
 
     pers_traces: tuple[tuple[np.ndarray, np.ndarray], ...] = ()
     if state.display.persistence:
