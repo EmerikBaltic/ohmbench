@@ -232,6 +232,18 @@ class DSOFrame:
     x_norm: np.ndarray = field(default_factory=lambda: np.empty(0, dtype=np.float64))
     roll_mode: bool = False
 
+    @property
+    def ch1_measurements(self) -> DSOChannelMeasurements:
+        return self.ch1_meas
+
+    @property
+    def ch2_measurements(self) -> DSOChannelMeasurements:
+        return self.ch2_meas
+
+    @property
+    def hw_freq_counter_hz(self) -> float | None:
+        return self.trig_freq_hz
+
 
 def snap_dso_step(value: float, steps: tuple[float, ...]) -> float:
     """Snap a positive value to the nearest 1-2-5 table step."""
@@ -285,6 +297,22 @@ def _condition_channel(
     return out
 
 
+def _latest_contiguous_slice(times: np.ndarray) -> slice:
+    """Isolate the most recent uninterrupted run after any reset or pause gap."""
+    n = len(times)
+    if n < 3:
+        return slice(0, n)
+    diffs = np.diff(times)
+    pos_diffs = diffs[diffs > 0.0]
+    if len(pos_diffs) == 0:
+        return slice(max(0, n - 1), n)
+    med_dt = float(np.median(pos_diffs))
+    gap_idxs = np.flatnonzero((diffs <= 0.0) | (diffs > 10.0 * med_dt))
+    if len(gap_idxs) == 0:
+        return slice(0, n)
+    return slice(int(gap_idxs[-1]) + 1, n)
+
+
 def _find_edge_crossings(
     times: np.ndarray,
     trig_sig: np.ndarray,
@@ -292,38 +320,61 @@ def _find_edge_crossings(
     slope: str,
     holdoff_s: float = 0.0,
 ) -> np.ndarray:
-    """Return linearly interpolated crossing timestamps for the requested slope."""
+    """Return linearly interpolated crossing timestamps with noise hysteresis."""
     if len(times) < 2 or len(times) != len(trig_sig):
         return np.empty(0, dtype=np.float64)
-    a = trig_sig[:-1]
-    b = trig_sig[1:]
-    slope_u = slope.upper()
-    rising_mask = (a < level_v) & (b >= level_v)
-    falling_mask = (a > level_v) & (b <= level_v)
-    if slope_u == "RISING":
-        mask = rising_mask
-    elif slope_u == "FALLING":
-        mask = falling_mask
-    else:
-        mask = rising_mask | falling_mask
-
-    idx = np.flatnonzero(mask)
-    if len(idx) == 0:
+    v_min = float(np.min(trig_sig))
+    v_max = float(np.max(trig_sig))
+    v_pp = v_max - v_min
+    v_mid = 0.5 * (v_max + v_min)
+    if v_pp < max(1e-4, 1e-5 * abs(v_mid)):
         return np.empty(0, dtype=np.float64)
-    dv = b[idx] - a[idx]
-    with np.errstate(divide="ignore", invalid="ignore"):
-        frac = np.where(np.abs(dv) > 1e-18, (level_v - a[idx]) / dv, 0.0)
-    frac = np.clip(frac, 0.0, 1.0)
-    crossings = times[idx] + frac * (times[idx + 1] - times[idx])
-    if holdoff_s > 0.0 and len(crossings) > 1:
-        kept = [float(crossings[0])]
-        last_t = kept[0]
-        for tc in crossings[1:]:
-            if float(tc) - last_t >= holdoff_s:
-                kept.append(float(tc))
-                last_t = float(tc)
-        return np.array(kept, dtype=np.float64)
-    return crossings
+
+    hyst = min(max(0.05 * v_pp, 1e-4), 0.25 * v_pp)
+    low_arm = max(level_v - hyst, 0.5 * (level_v + v_min)) if level_v > v_min else level_v
+    high_arm = min(level_v + hyst, 0.5 * (level_v + v_max)) if level_v < v_max else level_v
+
+    slope_u = slope.upper()
+    want_rise = slope_u in ("RISING", "EITHER")
+    want_fall = slope_u in ("FALLING", "EITHER")
+
+    v0 = float(trig_sig[0])
+    armed_rise = want_rise and (v0 <= low_arm or v0 < level_v - 0.1 * hyst)
+    armed_fall = want_fall and (v0 >= high_arm or v0 > level_v + 0.1 * hyst)
+
+    crossings: list[float] = []
+    last_t = -math.inf
+    for i in range(len(trig_sig) - 1):
+        a = float(trig_sig[i])
+        b = float(trig_sig[i + 1])
+        ta = float(times[i])
+        tb = float(times[i + 1])
+        if want_rise:
+            if not armed_rise and a <= low_arm:
+                armed_rise = True
+            if armed_rise and a < level_v and b >= level_v:
+                dv = b - a
+                frac = ((level_v - a) / dv) if abs(dv) > 1e-18 else 0.0
+                frac = max(0.0, min(1.0, frac))
+                tc = ta + frac * (tb - ta)
+                if holdoff_s <= 0.0 or (tc - last_t) >= holdoff_s:
+                    crossings.append(tc)
+                    last_t = tc
+                armed_rise = False
+        if want_fall:
+            if not armed_fall and a >= high_arm:
+                armed_fall = True
+            if armed_fall and a > level_v and b <= level_v:
+                dv = b - a
+                frac = ((level_v - a) / dv) if abs(dv) > 1e-18 else 0.0
+                frac = max(0.0, min(1.0, frac))
+                tc = ta + frac * (tb - ta)
+                if holdoff_s <= 0.0 or (tc - last_t) >= holdoff_s:
+                    crossings.append(tc)
+                    last_t = tc
+                armed_fall = False
+
+    return np.array(crossings, dtype=np.float64) if crossings else np.empty(0, dtype=np.float64)
 
 
 def _measure_dso_channel(times: np.ndarray, sig: np.ndarray) -> DSOChannelMeasurements:
@@ -331,14 +382,21 @@ def _measure_dso_channel(times: np.ndarray, sig: np.ndarray) -> DSOChannelMeasur
         val = float(sig[0]) if len(sig) > 0 else 0.0
         return DSOChannelMeasurements(0.0, val, val, val, abs(val), None, None, None)
     m = measure_channel(times, sig)
+    vpp = float(m.vpp)
+    vavg = float(m.vavg)
+    freq = None if m.frequency_hz is None else float(m.frequency_hz)
+    per = None if m.period_s is None else float(m.period_s)
+    if vpp < max(1e-4, 1e-4 * abs(vavg)) or (freq is not None and freq < 1.0):
+        freq = None
+        per = None
     return DSOChannelMeasurements(
-        v_pp=float(m.vpp),
+        v_pp=vpp,
         v_max=float(m.vmax),
         v_min=float(m.vmin),
-        v_avg=float(m.vavg),
+        v_avg=vavg,
         v_rms=float(m.vrms),
-        freq_hz=None if m.frequency_hz is None else float(m.frequency_hz),
-        period_s=None if m.period_s is None else float(m.period_s),
+        freq_hz=freq,
+        period_s=per,
         duty_cycle_pct=None if m.duty_cycle_pct is None else float(m.duty_cycle_pct),
     )
 
@@ -481,14 +539,17 @@ def _auto_scale_channel(raw: np.ndarray, cfg: DSOChannelState) -> DSOChannelStat
 
     chosen = DSO_VOLTS_PER_DIV[-1]
     for cand in DSO_VOLTS_PER_DIV:
-        span_ok = (v_pp / cand) <= 5.5
+        span_ok = (v_pp / cand) <= 6.05
         center_ok = abs(v_mid / cand) <= 3.8
         if span_ok and center_ok:
             chosen = cand
             break
     updated.volts_per_div = chosen
-    pos = -v_mid / chosen
-    updated.position_div = max(-4.0, min(4.0, round(pos * 20.0) / 20.0))
+    if abs(v_mid) <= 0.1 * max(v_pp, 1e-6):
+        updated.position_div = 0.0
+    else:
+        pos = -v_mid / chosen
+        updated.position_div = max(-4.0, min(4.0, round(pos * 20.0) / 20.0))
     return updated
 
 
@@ -521,8 +582,8 @@ def compute_auto_set(
         meas = _measure_dso_channel(t_arr, active)
         if meas.freq_hz is not None and meas.freq_hz > 0.0:
             period_s = 1.0 / meas.freq_hz
-            # Target ~2.4 to ~3.5 full cycles across the 12 horizontal divisions
-            target_sec_div = (2.5 * period_s) / float(DSO_HORIZONTAL_DIVS)
+            # Target ~3.0 full cycles across the 12 horizontal divisions
+            target_sec_div = (3.0 * period_s) / float(DSO_HORIZONTAL_DIVS)
             new_state.horizontal.sec_per_div = snap_dso_step(target_sec_div, DSO_SEC_PER_DIV)
         else:
             span = max(float(t_arr[-1] - t_arr[0]), 1e-9)
@@ -585,6 +646,38 @@ def process_dso_capture(
                 roll_mode=prev_frame.roll_mode,
             )
 
+    # Guard against short/empty live buffers overwriting an existing valid waveform during rapid toggles
+    if prev_frame is not None and len(prev_frame.ch1_v) >= 16 and len(t_arr) < 16:
+        return DSOFrame(
+            times_rel_s=prev_frame.times_rel_s,
+            ch1_v=prev_frame.ch1_v,
+            ch2_v=prev_frame.ch2_v,
+            math_v=prev_frame.math_v,
+            fft_freqs_hz=prev_frame.fft_freqs_hz,
+            fft_mag_db=prev_frame.fft_mag_db,
+            fft_peak_hz=prev_frame.fft_peak_hz,
+            triggered=prev_frame.triggered,
+            trigger_status="Stop" if not state.running else prev_frame.trigger_status,
+            trigger_time_s=prev_frame.trigger_time_s,
+            trig_freq_hz=prev_frame.trig_freq_hz,
+            captured_single=False,
+            ch1_meas=prev_frame.ch1_meas,
+            ch2_meas=prev_frame.ch2_meas,
+            cursor_readout=cursor_ro,
+            persistence_traces=prev_frame.persistence_traces,
+            t_left_s=prev_frame.t_left_s,
+            t_right_s=prev_frame.t_right_s,
+            span_s=prev_frame.span_s,
+            x_norm=prev_frame.x_norm,
+            roll_mode=prev_frame.roll_mode,
+        )
+
+    contig = _latest_contiguous_slice(t_arr)
+    t_arr = t_arr[contig]
+    c1_in = c1_in[contig]
+    c2_in = c2_in[contig]
+    ext_in = ext_in[contig]
+
     ch1_cond = _condition_channel(t_arr, c1_in, state.ch1)
     ch2_cond = _condition_channel(t_arr, c2_in, state.ch2)
 
@@ -611,9 +704,14 @@ def process_dso_capture(
 
     trig_freq_hz: float | None = None
     if len(crossings) >= 2:
-        total_span = float(crossings[-1] - crossings[0])
-        if total_span > 1e-15:
-            trig_freq_hz = (len(crossings) - 1) / total_span
+        diffs = np.diff(crossings)
+        pos_diffs = diffs[diffs > 1e-15]
+        if len(pos_diffs) > 0:
+            med_p = float(np.median(pos_diffs))
+            valid_p = pos_diffs[pos_diffs <= 2.5 * med_p]
+            mean_p = float(np.mean(valid_p)) if len(valid_p) > 0 else med_p
+            if mean_p > 1e-15 and (1.0 / mean_p) >= 1.0:
+                trig_freq_hz = 1.0 / mean_p
 
     trig_mode = state.trigger.mode.upper()
     has_crossing = len(crossings) > 0
@@ -803,12 +901,16 @@ def process_dso_capture(
         t_arr, fft_sig, window_name=state.math.fft_window
     )
 
-    ch1_meas = _measure_dso_channel(t_win, ch1_win)
-    ch2_meas = _measure_dso_channel(t_win, ch2_win)
+    ch1_meas = _measure_dso_channel(t_arr, ch1_cond) if len(t_arr) >= 8 else _measure_dso_channel(t_win, ch1_win)
+    ch2_meas = _measure_dso_channel(t_arr, ch2_cond) if len(t_arr) >= 8 else _measure_dso_channel(t_win, ch2_win)
     if trig_freq_hz is None:
         trig_freq_hz = (
             ch2_meas.freq_hz if trig_src_name == "CH2" else ch1_meas.freq_hz
         )
+    elif trig_src_name == "CH1" and ch1_meas.freq_hz is not None and len(crossings) < 3:
+        trig_freq_hz = ch1_meas.freq_hz
+    elif trig_src_name == "CH2" and ch2_meas.freq_hz is not None and len(crossings) < 3:
+        trig_freq_hz = ch2_meas.freq_hz
 
     pers_traces: tuple[tuple[np.ndarray, np.ndarray], ...] = ()
     if state.display.persistence:

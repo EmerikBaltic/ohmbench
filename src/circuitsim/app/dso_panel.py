@@ -343,27 +343,34 @@ class _DSOScreenWidget(QWidget):
     def _draw_trace(
         self,
         painter: QPainter,
-        pts: list[QPointF],
+        pts: list[QPointF] | list[list[QPointF]],
         color: QColor,
         width: float = 1.7,
     ) -> None:
-        if len(pts) < 1:
+        if not pts:
             return
-        painter.setPen(QPen(color, width))
-        if self.state.display.render_style.upper() == "DOTS" or len(pts) == 1:
-            for pt in pts:
-                painter.drawPoint(pt)
+        segments: list[list[QPointF]]
+        if isinstance(pts[0], list):
+            segments = [seg for seg in pts if seg]  # type: ignore[assignment]
         else:
-            painter.drawPolyline(QPolygonF(pts))
+            segments = [pts]  # type: ignore[list-item]
+        painter.setPen(QPen(color, width))
+        is_dots = self.state.display.render_style.upper() == "DOTS"
+        for seg in segments:
+            if is_dots or len(seg) == 1:
+                for pt in seg:
+                    painter.drawPoint(pt)
+            else:
+                painter.drawPolyline(QPolygonF(seg))
 
-    def _map_yt_points(
+    def _map_yt_segments(
         self,
         t_rel: np.ndarray,
         vals: np.ndarray,
         v_div: float,
         pos_div: float,
         plot: QRectF,
-    ) -> list[QPointF]:
+    ) -> list[list[QPointF]]:
         n = min(len(t_rel), len(vals))
         if n < 2:
             return []
@@ -379,17 +386,38 @@ class _DSOScreenWidget(QWidget):
             else None
         )
 
+        diffs = np.diff(t_rel[:n])
+        pos_diffs = diffs[diffs > 0.0]
+        med_dt = float(np.median(pos_diffs)) if len(pos_diffs) > 0 else 0.0
+
         step = max(1, n // 1200)
-        pts: list[QPointF] = []
+        segments: list[list[QPointF]] = [[]]
+        prev_t: float | None = None
+        gap_limit = 10.0 * med_dt * step if med_dt > 0.0 else 0.0
         for idx in range(0, n, step):
+            cur_t = float(t_rel[idx])
+            if prev_t is not None and (cur_t <= prev_t or (gap_limit > 0.0 and (cur_t - prev_t) > gap_limit)):
+                if segments[-1]:
+                    segments.append([])
+            prev_t = cur_t
             if frame_x is not None:
                 fx = float(frame_x[idx])
             else:
-                fx = (float(t_rel[idx]) + 0.5 * t_span) / t_span
+                fx = (cur_t + 0.5 * t_span) / t_span
             px = plot.left() + fx * plot.width()
             py = self._y_from_div(float(vals[idx]) / max(v_div, 1e-9) + pos_div, plot)
-            pts.append(QPointF(px, py))
-        return pts
+            segments[-1].append(QPointF(px, py))
+        return [seg for seg in segments if len(seg) >= 1]
+
+    def _map_yt_points(
+        self,
+        t_rel: np.ndarray,
+        vals: np.ndarray,
+        v_div: float,
+        pos_div: float,
+        plot: QRectF,
+    ) -> list[QPointF]:
+        return [pt for seg in self._map_yt_segments(t_rel, vals, v_div, pos_div, plot) for pt in seg]
 
     def _paint_waveforms(self, painter: QPainter, plot: QRectF, frame: DSOFrame) -> None:
         painter.save()
@@ -413,19 +441,19 @@ class _DSOScreenWidget(QWidget):
         for idx_p, (p1, p2) in enumerate(frame.persistence_traces[:-1]):
             alpha = 40 + idx_p * 25
             if self.state.ch1.enabled:
-                pts1 = self._map_yt_points(frame.times_rel_s, p1, self.state.ch1.volts_per_div, self.state.ch1.position_div, plot)
-                self._draw_trace(painter, pts1, QColor(250, 204, 21, alpha), 1.2)
+                segs1 = self._map_yt_segments(frame.times_rel_s, p1, self.state.ch1.volts_per_div, self.state.ch1.position_div, plot)
+                self._draw_trace(painter, segs1, QColor(250, 204, 21, alpha), 1.2)
             if self.state.ch2.enabled:
-                pts2 = self._map_yt_points(frame.times_rel_s, p2, self.state.ch2.volts_per_div, self.state.ch2.position_div, plot)
-                self._draw_trace(painter, pts2, QColor(34, 211, 238, alpha), 1.2)
+                segs2 = self._map_yt_segments(frame.times_rel_s, p2, self.state.ch2.volts_per_div, self.state.ch2.position_div, plot)
+                self._draw_trace(painter, segs2, QColor(34, 211, 238, alpha), 1.2)
 
         if self.state.ch1.enabled:
-            pts1 = self._map_yt_points(frame.times_rel_s, frame.ch1_v, self.state.ch1.volts_per_div, self.state.ch1.position_div, plot)
-            self._draw_trace(painter, pts1, QColor("#FACC15"), 1.8)
+            segs1 = self._map_yt_segments(frame.times_rel_s, frame.ch1_v, self.state.ch1.volts_per_div, self.state.ch1.position_div, plot)
+            self._draw_trace(painter, segs1, QColor("#FACC15"), 1.8)
 
         if self.state.ch2.enabled:
-            pts2 = self._map_yt_points(frame.times_rel_s, frame.ch2_v, self.state.ch2.volts_per_div, self.state.ch2.position_div, plot)
-            self._draw_trace(painter, pts2, QColor("#22D3EE"), 1.8)
+            segs2 = self._map_yt_segments(frame.times_rel_s, frame.ch2_v, self.state.ch2.volts_per_div, self.state.ch2.position_div, plot)
+            self._draw_trace(painter, segs2, QColor("#22D3EE"), 1.8)
 
         if self.state.math.enabled:
             if self.state.math.operation.upper() == "FFT":
@@ -454,8 +482,8 @@ class _DSOScreenWidget(QWidget):
                             f"FFT Peak: {format_engineering_value(frame.fft_peak_hz, 'Hz')}",
                         )
             else:
-                pts_m = self._map_yt_points(frame.times_rel_s, frame.math_v, self.state.math.scale, self.state.math.position_div, plot)
-                self._draw_trace(painter, pts_m, QColor("#E879F9"), 1.6)
+                segs_m = self._map_yt_segments(frame.times_rel_s, frame.math_v, self.state.math.scale, self.state.math.position_div, plot)
+                self._draw_trace(painter, segs_m, QColor("#E879F9"), 1.6)
 
         painter.restore()
 
@@ -1199,7 +1227,10 @@ class DSOOscilloscopeDialog(QDialog):
         self.knob_status_label.setText("AUTO SET complete")
         self._persist_state_to_component()
         self._notify_timebase_changed()
-        self.capture_from_scene()
+        if len(self._live_times) >= 16:
+            self._reprocess_or_capture()
+        else:
+            self.capture_from_scene()
         self._sync_ui_from_state()
 
     def _on_run_stop(self) -> None:
@@ -1208,8 +1239,14 @@ class DSOOscilloscopeDialog(QDialog):
             self.state.trigger.single_armed = True
         self.knob_status_label.setText("Running" if self.state.running else "Stopped (Hold)")
         self._persist_state_to_component()
-        if self.state.running:
-            self.capture_from_scene()
+        if not self.state.running:
+            if self.latest_frame is not None or len(self._live_times) >= 16:
+                self._reprocess_or_capture()
+        else:
+            if len(self._live_times) >= 16:
+                self._reprocess_or_capture()
+            elif self._circuit_provider is not None:
+                self.capture_from_scene()
         self._sync_ui_from_state()
 
     def _on_single_seq(self) -> None:
