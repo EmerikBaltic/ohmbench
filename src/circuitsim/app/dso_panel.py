@@ -118,8 +118,7 @@ class _DSOScreenWidget(QWidget):
         h = float(self.height())
         top_h = 26.0
         bot_h = 26.0
-        right_menu_w = 132.0 if self.menu_visible else 8.0
-        return QRectF(8.0, top_h + 4.0, max(120.0, w - 16.0 - right_menu_w), max(120.0, h - top_h - bot_h - 8.0))
+        return QRectF(8.0, top_h + 4.0, max(120.0, w - 16.0), max(120.0, h - top_h - bot_h - 8.0))
 
     def _y_from_div(self, y_div: float, plot: QRectF) -> float:
         return plot.center().y() - (y_div / (DSO_VERTICAL_DIVS / 2.0)) * (plot.height() / 2.0)
@@ -374,16 +373,19 @@ class _DSOScreenWidget(QWidget):
             else self.state.horizontal.sec_per_div
         )
         t_span = max(eff_sec_div * DSO_HORIZONTAL_DIVS, 1e-12)
-        t0 = float(t_rel[0])
-        t1 = float(t_rel[n - 1])
-        # Use configured window centered if capture covers >= half window, else map available span
-        t_start = -0.5 * t_span if (t1 - t0) >= 0.8 * t_span else t0
-        t_range = max(t_span if (t1 - t0) >= 0.8 * t_span else (t1 - t0), 1e-12)
+        frame_x = (
+            self.frame.x_norm
+            if (self.frame is not None and len(self.frame.x_norm) == n)
+            else None
+        )
 
-        step = max(1, n // 900)
+        step = max(1, n // 1200)
         pts: list[QPointF] = []
         for idx in range(0, n, step):
-            fx = (float(t_rel[idx]) - t_start) / t_range
+            if frame_x is not None:
+                fx = float(frame_x[idx])
+            else:
+                fx = (float(t_rel[idx]) + 0.5 * t_span) / t_span
             px = plot.left() + fx * plot.width()
             py = self._y_from_div(float(vals[idx]) / max(v_div, 1e-9) + pos_div, plot)
             pts.append(QPointF(px, py))
@@ -519,7 +521,8 @@ class _DSOScreenWidget(QWidget):
 
         if cmode != "OFF" and self.frame is not None:
             ro = self.frame.cursor_readout
-            box = QRectF(plot.right() - 172.0, plot.top() + 6.0, 166.0, 38.0)
+            right_offset = 132.0 if self.menu_visible else 6.0
+            box = QRectF(plot.right() - right_offset - 166.0, plot.top() + 6.0, 166.0, 38.0)
             painter.fillRect(box, QColor(15, 23, 42, 220))
             painter.setPen(QColor("#60A5FA"))
             painter.drawRect(box)
@@ -533,10 +536,10 @@ class _DSOScreenWidget(QWidget):
             painter.drawText(box.adjusted(4.0, 2.0, -4.0, -2.0), Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, txt)
 
     def _paint_softkey_menu(self, painter: QPainter, plot: QRectF, w: float) -> None:
-        menu_x = plot.right() + 4.0
-        menu_w = max(80.0, w - menu_x - 4.0)
+        menu_w = min(126.0, max(84.0, plot.width() * 0.24))
+        menu_x = plot.right() - menu_w
         menu_rect = QRectF(menu_x, plot.top(), menu_w, plot.height())
-        painter.fillRect(menu_rect, QColor(30, 58, 138, 225))
+        painter.fillRect(menu_rect, QColor(30, 58, 138, 195))
         painter.setPen(QPen(QColor("#60A5FA"), 1.2))
         painter.drawRect(menu_rect)
 

@@ -101,7 +101,7 @@ class DSOMathState:
 class DSOHorizontalState:
     """Horizontal timebase state."""
 
-    sec_per_div: float = 1e-3
+    sec_per_div: float = 5e-3
     position_s: float = 0.0
     format_mode: str = "YT"  # "YT", "XY"
     zoom_enabled: bool = False
@@ -168,6 +168,14 @@ class DSOState:
     running: bool = True
     auto_measure_enabled: bool = True
 
+    @property
+    def sec_per_div(self) -> float:
+        return self.horizontal.sec_per_div
+
+    @sec_per_div.setter
+    def sec_per_div(self, value: float) -> None:
+        self.horizontal.sec_per_div = float(value)
+
 
 @dataclass(frozen=True)
 class DSOCursorReadout:
@@ -218,6 +226,11 @@ class DSOFrame:
     ch2_meas: DSOChannelMeasurements
     cursor_readout: DSOCursorReadout
     persistence_traces: tuple[tuple[np.ndarray, np.ndarray], ...] = ()
+    t_left_s: float = 0.0
+    t_right_s: float = 0.06
+    span_s: float = 0.06
+    x_norm: np.ndarray = field(default_factory=lambda: np.empty(0, dtype=np.float64))
+    roll_mode: bool = False
 
 
 def snap_dso_step(value: float, steps: tuple[float, ...]) -> float:
@@ -565,6 +578,11 @@ def process_dso_capture(
                 ch2_meas=prev_frame.ch2_meas,
                 cursor_readout=cursor_ro,
                 persistence_traces=prev_frame.persistence_traces,
+                t_left_s=prev_frame.t_left_s,
+                t_right_s=prev_frame.t_right_s,
+                span_s=prev_frame.span_s,
+                x_norm=prev_frame.x_norm,
+                roll_mode=prev_frame.roll_mode,
             )
 
     ch1_cond = _condition_channel(t_arr, c1_in, state.ch1)
@@ -624,6 +642,11 @@ def process_dso_capture(
                     ch2_meas=prev_frame.ch2_meas,
                     cursor_readout=cursor_ro,
                     persistence_traces=prev_frame.persistence_traces,
+                    t_left_s=prev_frame.t_left_s,
+                    t_right_s=prev_frame.t_right_s,
+                    span_s=prev_frame.span_s,
+                    x_norm=prev_frame.x_norm,
+                    roll_mode=prev_frame.roll_mode,
                 )
             triggered = False
             trigger_status = "Stop"
@@ -659,6 +682,11 @@ def process_dso_capture(
                     ch2_meas=prev_frame.ch2_meas,
                     cursor_readout=cursor_ro,
                     persistence_traces=prev_frame.persistence_traces,
+                    t_left_s=prev_frame.t_left_s,
+                    t_right_s=prev_frame.t_right_s,
+                    span_s=prev_frame.span_s,
+                    x_norm=prev_frame.x_norm,
+                    roll_mode=prev_frame.roll_mode,
                 )
             triggered = False
             trigger_status = "Wait"
@@ -670,46 +698,71 @@ def process_dso_capture(
             triggered = False
             trigger_status = "Auto"
 
-    # Choose trigger reference timestamp inside capture for stable time-windowing
-    t0 = float(t_arr[0]) if len(t_arr) > 0 else 0.0
-    t_end = float(t_arr[-1]) if len(t_arr) > 0 else 0.0
-    t_mid = 0.5 * (t0 + t_end)
-    if has_crossing:
-        # Prefer crossing closest to midpoint (maximizes pre- and post-trigger samples)
-        mid_cross_idx = int(np.argmin(np.abs(crossings - t_mid)))
-        trigger_time_s: float | None = float(crossings[mid_cross_idx])
-    elif forced:
-        trigger_time_s = t_mid
-    else:
-        trigger_time_s = None
-
+    # Choose trigger reference & exact 12-division horizontal window [t_left, t_right]
     eff_sec_div = (
         state.horizontal.zoom_sec_per_div
         if state.horizontal.zoom_enabled
         else state.horizontal.sec_per_div
     )
-    window_s = max(float(eff_sec_div) * float(DSO_HORIZONTAL_DIVS), 1e-12)
-    t_ref = (trigger_time_s if trigger_time_s is not None else t_mid) + state.horizontal.position_s
+    span_s = max(float(eff_sec_div) * float(DSO_HORIZONTAL_DIVS), 1e-12)
+    t0 = float(t_arr[0]) if len(t_arr) > 0 else 0.0
+    t_end = float(t_arr[-1]) if len(t_arr) > 0 else 0.0
+    t_mid = 0.5 * (t0 + t_end)
+    pos_s = float(state.horizontal.position_s)
 
-    if len(t_arr) >= 4 and (t_end - t0) > window_s * 1.0001:
-        w_start = t_ref - 0.5 * window_s
-        w_end = t_ref + 0.5 * window_s
-        if w_start < t0:
-            w_end = min(t_end, w_end + (t0 - w_start))
-            w_start = t0
-        if w_end > t_end:
-            w_start = max(t0, w_start - (w_end - t_end))
-            w_end = t_end
-        mask_w = (t_arr >= w_start) & (t_arr <= w_end)
-        if int(np.sum(mask_w)) >= 8:
+    is_roll_mode = (eff_sec_div >= 0.1) or (
+        trig_mode == "AUTO" and not has_crossing and not forced
+    )
+
+    if is_roll_mode:
+        trigger_time_s: float | None = float(crossings[-1]) if has_crossing else None
+        t_right = t_end
+        t_left = t_right - span_s
+        t_ref = 0.5 * (t_left + t_right)
+    else:
+        if has_crossing:
+            half_span = 0.5 * span_s
+            latest_ok: float | None = None
+            for cand_t in reversed(crossings):
+                c_val = float(cand_t)
+                c_ref = c_val - pos_s
+                if (c_ref - half_span) >= (t0 - 1e-12) and (c_ref + half_span) <= (t_end + 1e-12):
+                    latest_ok = c_val
+                    break
+            if latest_ok is None:
+                for cand_t in reversed(crossings):
+                    c_val = float(cand_t)
+                    if (c_val - pos_s + half_span) <= (t_end + 1e-12):
+                        latest_ok = c_val
+                        break
+            if latest_ok is None:
+                mid_cross_idx = int(np.argmin(np.abs(crossings - t_mid)))
+                latest_ok = float(crossings[mid_cross_idx])
+            trigger_time_s = latest_ok
+        elif forced:
+            trigger_time_s = (
+                max(t0 + 0.5 * span_s, t_end - 0.5 * span_s)
+                if (t_end - t0) >= span_s
+                else t_mid
+            )
+        else:
+            trigger_time_s = None
+
+        base_t = trigger_time_s if trigger_time_s is not None else t_mid
+        t_ref = base_t - pos_s
+        t_left = t_ref - 0.5 * span_s
+        t_right = t_left + span_s
+
+    if len(t_arr) > 0:
+        mask_w = (t_arr >= (t_left - 1e-12)) & (t_arr <= (t_right + 1e-12))
+        if int(np.sum(mask_w)) >= 1:
             t_win = t_arr[mask_w]
             ch1_win = ch1_cond[mask_w]
             ch2_win = ch2_cond[mask_w]
         else:
-            n_pts = min(max(len(t_arr), 256), 2400)
-            t_win = np.linspace(w_start, w_end, n_pts, dtype=np.float64)
-            ch1_win = np.interp(t_win, t_arr, ch1_cond)
-            ch2_win = np.interp(t_win, t_arr, ch2_cond)
+            t_win = t_arr
+            ch1_win = ch1_cond
+            ch2_win = ch2_cond
     else:
         t_win = t_arr
         ch1_win = ch1_cond
@@ -727,6 +780,11 @@ def process_dso_capture(
         ch2_win = (1.0 - alpha) * prev_frame.ch2_v + alpha * ch2_win
 
     times_rel = t_win - t_ref
+    x_norm = (
+        np.clip((t_win - t_left) / span_s, 0.0, 1.0)
+        if len(t_win) > 0
+        else np.empty(0, dtype=np.float64)
+    )
 
     # Math trace
     op = state.math.operation.upper()
@@ -775,4 +833,9 @@ def process_dso_capture(
         ch2_meas=ch2_meas,
         cursor_readout=cursor_ro,
         persistence_traces=pers_traces,
+        t_left_s=t_left,
+        t_right_s=t_right,
+        span_s=span_s,
+        x_norm=x_norm,
+        roll_mode=is_roll_mode,
     )
