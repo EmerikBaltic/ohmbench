@@ -705,6 +705,19 @@ When ready to perform Stage 2 (internal/package rename after Stage 1 settles):
 | `J6` | Student docs (`LEARNING_NOTES.md`, `SUGGESTIONS.md`) & Windows packaging (`packaging/ohmbench.spec`, `packaging/installer.iss`, `.gitignore`, `README.md`) | `[x]` | Done |
 | `GATE J` | Targeted Gate Verification (`test_j_dso_and_release.py`, `test_k_ui_and_transformer.py`, `test_g_qol_fixes.py`: `19 passed in 4.92s`; post-sweep fixes: pure `#FFFFFF` publication export & perpendicular corner-shared collision exemption, `45 passed in 11.96s`) & `checkpoint/J-done` tag | `[x]` | Done (`45 passed`) |
 
+## PHASE L QUEUE (DSO-1062D REAL-TIME STREAMING, WINDOWING & POLISH)
+
+| Item | Description | Status |
+| :--- | :--- | :--- |
+| **L0** | Initialize Phase L queue in `PROGRESS.md` (`L0`–`L5`, `GATE L`) | [x] |
+| **L1** | High-rate `SampleBlock` streaming into DSO-1062D & coupled simulation `dt` | [ ] |
+| **L2** | Exact `SEC/DIV` X-axis scaling, triggered windowing & Roll Mode (`>= 100 ms/div`) | [ ] |
+| **L3** | `RUN/STOP` freeze & discontinuity guard, unified hardware frequency counter & `AUTO SET` | [ ] |
+| **L4** | Front-panel UI clipping, high-contrast status badge & mini-screen preview polish | [ ] |
+| **L5** | Phase L regression tests (`test_l1`–`test_l4`) in `tests/test_j_dso_and_release.py` | [ ] |
+| **GATE L** | Final targeted verification, `PROGRESS.md` completion & `checkpoint/L-done` tag | [ ] |
+
+
 
 
 
