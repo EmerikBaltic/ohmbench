@@ -96,6 +96,16 @@ class _DSOScreenWidget(QWidget):
         self.menu_visible: bool = True
         self._dragging_cursor: int | None = None
         self._plot_rect: QRectF = QRectF()
+        self.top_timebase_text: str = "M 5ms/div"
+
+    def _format_top_timebase_text(self) -> str:
+        eff_sec_div = (
+            self.state.horizontal.zoom_sec_per_div
+            if self.state.horizontal.zoom_enabled
+            else self.state.horizontal.sec_per_div
+        )
+        m_str = format_engineering_value(eff_sec_div, "s", sig_figs=3).replace(" ", "")
+        return f"M {m_str}/div"
 
     def set_view_data(
         self,
@@ -111,6 +121,7 @@ class _DSOScreenWidget(QWidget):
         self.active_menu_title = menu_title
         self.menu_rows = list(menu_rows[:7])
         self.menu_visible = bool(menu_visible)
+        self.top_timebase_text = self._format_top_timebase_text()
         self.update()
 
     def _compute_plot_rect(self) -> QRectF:
@@ -242,14 +253,15 @@ class _DSOScreenWidget(QWidget):
         painter.drawText(pill_rect, Qt.AlignmentFlag.AlignCenter, trig_st)
 
         # Main timebase
-        m_str = format_engineering_value(self.state.horizontal.sec_per_div, "s", sig_figs=3)
+        tb_text = self._format_top_timebase_text()
+        self.top_timebase_text = tb_text
         painter.setPen(QColor("#E2E8F0"))
         f_reg = QFont("Segoe UI", 8)
         painter.setFont(f_reg)
-        painter.drawText(QRectF(74.0, 2.0, 96.0, 22.0), Qt.AlignmentFlag.AlignVCenter, f"M {m_str}/")
+        painter.drawText(QRectF(72.0, 2.0, 124.0, 22.0), Qt.AlignmentFlag.AlignVCenter, tb_text)
 
         # Miniature memory overview bar
-        mem_box = QRectF(176.0, 7.0, 94.0, 12.0)
+        mem_box = QRectF(202.0, 7.0, 90.0, 12.0)
         painter.setPen(QPen(QColor("#475569"), 1.0))
         painter.setBrush(QColor("#0B1120"))
         painter.drawRect(mem_box)
@@ -264,11 +276,11 @@ class _DSOScreenWidget(QWidget):
             else f"Acq {self.state.acquire.acq_mode[:4]}"
         )
         painter.setPen(QColor("#94A3B8"))
-        painter.drawText(QRectF(280.0, 2.0, 100.0, 22.0), Qt.AlignmentFlag.AlignVCenter, w_str)
+        painter.drawText(QRectF(300.0, 2.0, 100.0, 22.0), Qt.AlignmentFlag.AlignVCenter, w_str)
 
         delay_str = format_engineering_value(self.state.horizontal.position_s, "s", sig_figs=3)
         painter.setPen(QColor("#CBD5E1"))
-        painter.drawText(QRectF(max(390.0, w - 190.0), 2.0, 180.0, 22.0), Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter, f"Delay: {delay_str}")
+        painter.drawText(QRectF(max(406.0, w - 190.0), 2.0, 180.0, 22.0), Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter, f"Delay: {delay_str}")
 
     def _paint_bottom_bar(self, painter: QPainter, w: float, h: float) -> None:
         y0 = h - 26.0
@@ -303,9 +315,14 @@ class _DSOScreenWidget(QWidget):
 
         # Hardware trigger frequency counter
         freq = self.frame.trig_freq_hz if self.frame is not None else None
-        freq_txt = f"{freq:.5f}Hz" if (freq is not None and freq < 100.0) else (
-            format_engineering_value(freq, "Hz", sig_figs=5) if freq is not None else "0.00000Hz"
-        )
+        if freq is None:
+            freq_txt = "---- Hz"
+        elif freq < 1.0:
+            freq_txt = "< 1 Hz"
+        elif freq < 1000.0:
+            freq_txt = f"{freq:.3f}Hz"
+        else:
+            freq_txt = format_engineering_value(freq, "Hz", sig_figs=4)
         painter.setPen(QColor("#38BDF8"))
         painter.drawText(QRectF(max(430.0, w - 150.0), y0 + 2.0, 140.0, 22.0), Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter, freq_txt)
 
@@ -637,7 +654,8 @@ class DSOOscilloscopeDialog(QDialog):
         self._cached_nets: dict[str, str] = {}
 
         self.setWindowTitle(f"{self.osc_component.name} — DSO-1062D Benchtop Oscilloscope")
-        self.resize(1080, 620)
+        self.setMinimumSize(980, 620)
+        self.resize(1100, 680)
         self._build_ui()
         self._sync_ui_from_state()
         self.refresh_net_labels()
@@ -650,7 +668,8 @@ class DSOOscilloscopeDialog(QDialog):
                 background-color: #E5E7EB;
                 border: 1px solid #94A3B8;
                 border-radius: 5px;
-                margin-top: 14px;
+                margin-top: 10px;
+                padding-top: 4px;
                 font-weight: bold;
                 font-size: 10px;
                 color: #1E293B;
@@ -736,6 +755,8 @@ class DSOOscilloscopeDialog(QDialog):
 
         # Bottom BNC jack visual strip
         bnc_bar = QFrame(self)
+        self.bnc_bar = bnc_bar
+        bnc_bar.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
         bnc_bar.setStyleSheet("QFrame { background-color: #CBD5E1; border: 1px solid #94A3B8; border-radius: 4px; }")
         bnc_lay = QHBoxLayout(bnc_bar)
         bnc_lay.setContentsMargins(10, 4, 10, 4)
@@ -866,7 +887,9 @@ class DSOOscilloscopeDialog(QDialog):
         right_panel.addLayout(ht_row)
 
         self.knob_status_label = QLabel("Ready — DSO-1062D", self)
-        self.knob_status_label.setStyleSheet("color: #334155; font-size: 10px;")
+        self.knob_status_label.setStyleSheet(
+            "color: #E2E8F0; background-color: #1E293B; border: 1px solid #475569; border-radius: 3px; padding: 3px 8px; font-size: 10px; font-weight: 600;"
+        )
         right_panel.addWidget(self.knob_status_label)
         right_panel.addStretch(1)
 
@@ -1348,9 +1371,9 @@ class DSOOscilloscopeDialog(QDialog):
             ("mini_preview_ch2", self.latest_frame.ch2_v, self.state.ch2.volts_per_div),
         ):
             if len(arr) >= 2:
-                idxs = np.linspace(0, len(arr) - 1, min(32, len(arr)), dtype=int)
+                idxs = np.linspace(0, len(arr) - 1, min(48, len(arr)), dtype=int)
                 sub = arr[idxs]
-                scale = max(float(np.max(np.abs(sub))), vdiv, 1e-6)
+                scale = max(float(np.max(np.abs(sub))), 2.0 * vdiv, 1e-6)
                 setattr(self.osc_component, attr, tuple(float(v / scale) for v in sub))
         if self.osc_item is not None:
             self.osc_item.update()
