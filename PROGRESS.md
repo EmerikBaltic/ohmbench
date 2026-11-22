@@ -727,7 +727,7 @@ When ready to perform Stage 2 (internal/package rename after Stage 1 settles):
 | `M2` | Placeable Benchtop Function Generator (`function_generator`, `FG1`) & modeless panel | `[x]` | Done (`38 passed`; fixed MNA `-= r_internal` sign across solver/AC/Thevenin) |
 | `M3` | DC / AC RMS measurement mode on canvas `Voltmeter` & `Ammeter` | `[x]` | Done (`29 passed`) |
 | `M4` | Logic Gates Teaching Pack (`LogicProbe`, Net Logic Coloring & Truth-Table Generator) | `[x]` | Done (`46 passed`) |
-| `M5` | Live Potentiometer keyboard tuning (`[` / `]`) & `Space` Quick-Place search popup | `[ ]` | Pending |
+| `M5` | Live Potentiometer keyboard tuning (`[` / `]`) & `Space` Quick-Place search popup | `[x]` | Done (`12 passed in 2.91s`) |
 | `M6` | Persistent User Custom Parts Library (`My Custom Parts` palette + Import/Export) | `[ ]` | Pending |
 | `GATE M` | Phase M regression verification & `checkpoint/M-done` tag | `[ ]` | Pending |
 

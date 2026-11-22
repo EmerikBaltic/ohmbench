@@ -449,4 +449,80 @@ def test_m4_logic_probe_net_logic_coloring_and_truth_table_generator(
         assert hasattr(win, "act_net_logic_colors")
         assert hasattr(win, "act_truth_table")
     finally:
+        win.circuit_scene.undo_stack.setClean()
+        win._switch_modified = False
+        win.close()
+
+
+def test_m5_potentiometer_bracket_tuning_and_space_quick_place(
+    qapp: QApplication, tmp_path
+) -> None:
+    from PySide6.QtCore import QPointF, QTimer, Qt
+    from circuitsim.app.main_window import MainWindow
+    from circuitsim.app.settings import AppSettings
+    from circuitsim.components.potentiometer import Potentiometer
+    from circuitsim.dialogs.quick_place_dialog import QuickPlaceDialog
+    from circuitsim.engine.solver import MNASolver
+    from tests.ui_flow_helpers import press_key, terminal_scene_point
+
+    win = MainWindow(settings=AppSettings(data_dir=tmp_path / "m5_settings"))
+    scene = win.circuit_scene
+    view = win.circuit_view
+    try:
+        win.show()
+        qapp.processEvents()
+
+        # Build 10 V + Potentiometer voltage divider (node_a = +10V, node_b = GND)
+        it_v = scene.place_new_component("dc_voltage", QPointF(-160.0, 0.0))
+        it_g = scene.place_new_component("ground", QPointF(-160.0, 120.0))
+        it_pot = scene.place_new_component("potentiometer", QPointF(0.0, 0.0))
+        it_v.component.dc_voltage = 10.0  # type: ignore[attr-defined]
+
+        scene.add_routed_wire(terminal_scene_point(it_v, "pos"), terminal_scene_point(it_pot, "a"))
+        scene.add_routed_wire(terminal_scene_point(it_v, "neg"), terminal_scene_point(it_g, "gnd"))
+        scene.add_routed_wire(terminal_scene_point(it_pot, "b"), terminal_scene_point(it_g, "gnd"))
+
+        pot = it_pot.component
+        assert isinstance(pot, Potentiometer)
+        assert pot.alpha == pytest.approx(0.5)
+
+        scene.clearSelection()
+        it_pot.setSelected(True)
+
+        # Press ']' twice (+0.05 each -> 0.60), then Shift+'[' (-0.01 -> 0.59)
+        press_key(view, Qt.Key.Key_BracketRight)
+        assert pot.alpha == pytest.approx(0.55)
+        assert "55%" in win.statusBar().currentMessage()
+
+        press_key(view, Qt.Key.Key_BracketRight)
+        assert pot.alpha == pytest.approx(0.60)
+
+        press_key(view, Qt.Key.Key_BraceLeft, modifiers=Qt.KeyboardModifier.ShiftModifier)
+        assert pot.alpha == pytest.approx(0.59)
+
+        # Wiper at alpha=0.59 from GND(b) -> A(+10V): V_w = 10.0 * 0.59 = 5.90 V
+        conn = scene.extract_connectivity_result()
+        dc_res = MNASolver(conn.circuit).solve_dc()
+        w_node = conn.component_nodes[pot.name]["w"]
+        v_wiper = float(dc_res.node_voltages[w_node])
+        assert v_wiper == pytest.approx(5.90, abs=0.05)
+
+        # Spacebar triggers QuickPlaceDialog (non-blocking) and places chosen component near cursor
+        view._last_scene_pos = QPointF(220.0, -40.0)
+        count_before = len(scene.placed_items)
+
+        press_key(view, Qt.Key.Key_Space)
+        dlg = view.quick_place_dialog
+        assert isinstance(dlg, QuickPlaceDialog)
+        dlg.search_input.setText("nand")
+        qapp.processEvents()
+        dlg.accept()
+        qapp.processEvents()
+
+        assert len(scene.placed_items) == count_before + 1
+        placed_types = [it.component.component_type for it in scene.placed_items]
+        assert "gate_nand" in placed_types
+    finally:
+        win.circuit_scene.undo_stack.setClean()
+        win._switch_modified = False
         win.close()

@@ -29,6 +29,7 @@ from circuitsim.canvas.wire_item import JunctionItem, WireItem
 from circuitsim.components.mcu import MCUBlock
 from circuitsim.components.function_generator import FunctionGenerator
 from circuitsim.components.oscilloscope import Oscilloscope
+from circuitsim.components.potentiometer import Potentiometer
 from circuitsim.components.power import Fuse
 from circuitsim.components.switch import Switch
 from circuitsim.dialogs.mcu_firmware_dialog import MCUFirmwareDialog
@@ -156,6 +157,7 @@ class CircuitView(QGraphicsView):
         self._pressed_switch_pos: QPointF = QPointF()
         self._pressed_fuse_item: ComponentItem | None = None
         self._pressed_fuse_pos: QPointF = QPointF()
+        self.quick_place_dialog: object | None = None
 
         self.setAcceptDrops(True)
         self.setMouseTracking(True)
@@ -490,6 +492,77 @@ class CircuitView(QGraphicsView):
                 comp.name, comp.closed
             )
         return True
+
+    def adjust_selected_potentiometer_wiper(self, delta: float) -> bool:
+        """Adjust `alpha` on selected `Potentiometer` item(s) live in `[0.001, 0.999]`."""
+        pot_items = [
+            it
+            for it in self.circuit_scene.selectedItems()
+            if isinstance(it, ComponentItem) and isinstance(it.component, Potentiometer)
+        ]
+        if not pot_items:
+            return False
+        notices: list[str] = []
+        for item in pot_items:
+            pot = item.component
+            assert isinstance(pot, Potentiometer)
+            new_alpha = max(0.001, min(0.999, round(float(pot.alpha) + float(delta), 4)))
+            if abs(new_alpha - float(pot.alpha)) > 1e-6:
+                self.circuit_scene.edit_component_parameters(item, {"alpha": new_alpha})
+            notices.append(f"{pot.name} wiper: {new_alpha * 100.0:.0f}%")
+        if notices:
+            self.circuit_scene.status_notice.emit(" | ".join(notices))
+        return True
+
+    def open_quick_place_dialog(
+        self,
+        *,
+        initial_query: str = "",
+        auto_accept: bool = False,
+    ) -> ComponentItem | None:
+        """Open the non-blocking `Space` Quick-Place popup and place chosen part near cursor."""
+        from circuitsim.dialogs.quick_place_dialog import QuickPlaceDialog
+
+        win = self.window()
+        user_lib = getattr(win, "user_library", None) or getattr(
+            self.circuit_scene, "user_library", None
+        )
+        dlg = QuickPlaceDialog(
+            self.circuit_scene.symbol_library,
+            user_library=user_lib,
+            parent=win,
+        )
+        self.quick_place_dialog = dlg
+        target_pt = QPointF(self._last_scene_pos)
+        placed_holder: list[ComponentItem | None] = [None]
+
+        def _on_accepted() -> None:
+            comp_id = dlg.selected_component_id()
+            if not comp_id:
+                return
+            fx, fy = self.circuit_scene._find_nearest_free_grid_pos(
+                comp_id, target_pt.x(), target_pt.y(), 0
+            )
+            placed_holder[0] = self.circuit_scene.place_new_component(
+                comp_id, QPointF(fx, fy)
+            )
+
+        def _on_finished(_code: int = 0) -> None:
+            if self.quick_place_dialog is dlg:
+                self.quick_place_dialog = None
+
+        dlg.accepted.connect(_on_accepted)
+        dlg.finished.connect(_on_finished)
+        if initial_query:
+            dlg.search_input.setText(initial_query)
+        if auto_accept:
+            dlg.accept()
+            return placed_holder[0]
+
+        dlg.show()
+        dlg.raise_()
+        dlg.activateWindow()
+        return None
 
     def viewportEvent(self, event: QEvent) -> bool:
         if event.type() == QEvent.Type.ToolTip:
@@ -1039,8 +1112,23 @@ class CircuitView(QGraphicsView):
         if event.isAutoRepeat():
             event.accept()
             return
-        if event.key() == Qt.Key.Key_Space:
-            self._space_held = True
+        if event.key() in (Qt.Key.Key_BracketRight, Qt.Key.Key_BraceRight):
+            fine = bool(event.modifiers() & Qt.KeyboardModifier.ShiftModifier) or (
+                event.key() == Qt.Key.Key_BraceRight
+            )
+            if self.adjust_selected_potentiometer_wiper(0.01 if fine else 0.05):
+                event.accept()
+                return
+        if event.key() in (Qt.Key.Key_BracketLeft, Qt.Key.Key_BraceLeft):
+            fine = bool(event.modifiers() & Qt.KeyboardModifier.ShiftModifier) or (
+                event.key() == Qt.Key.Key_BraceLeft
+            )
+            if self.adjust_selected_potentiometer_wiper(-0.01 if fine else -0.05):
+                event.accept()
+                return
+        if event.key() == Qt.Key.Key_Space and not self._is_panning and not event.modifiers():
+            self._space_held = False
+            self.open_quick_place_dialog()
             self._update_cursor_for_scene_pos(self._last_scene_pos)
             event.accept()
             return

@@ -265,7 +265,9 @@ class FunctionGeneratorDialog(QDialog):
             self.fg.set_parameter_value(k, v)  # type: ignore[arg-type]
             applied[k] = getattr(self.fg, k)
         if self._item is not None:
-            self._item.refresh_geometry_after_edit()
+            self._item.live_display_value = None
+            self._item.setToolTip(self._item.get_live_tooltip(is_running=False))
+            self._item.update()
         self.sync_from_component()
         self.parameters_changed.emit(self.fg.name, applied)
         if self._parameter_changed_callback is not None:
