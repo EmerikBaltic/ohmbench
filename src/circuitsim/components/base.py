@@ -252,6 +252,12 @@ _DEFAULT_PARAMETERS_BY_TYPE["seven_seg_display"] = (
     ComponentParameter("r_in", "Input Resistance", "Ω"),
 )
 
+_DEFAULT_PARAMETERS_BY_TYPE["logic_probe"] = (
+    ComponentParameter("v_il", "Input Low Max (V_IL)", "V", allow_zero=True),
+    ComponentParameter("v_ih", "Input High Min (V_IH)", "V", allow_zero=True),
+    ComponentParameter("r_in", "Input Resistance", "Ω"),
+)
+
 
 class Component(ABC):
     """Abstract base class for all electrical components in a circuit.

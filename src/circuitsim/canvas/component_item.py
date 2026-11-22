@@ -61,6 +61,7 @@ from circuitsim.components import (
     JKFlipFlop,
     LED,
     Lightbulb,
+    LogicProbe,
     MOSFETBase,
     NE555,
     OpAmp,
@@ -116,6 +117,7 @@ COMPONENT_PREFIXES: dict[str, str] = {
     "mcu": "U",
     "oscilloscope": "OSC",
     "function_generator": "FG",
+    "logic_probe": "LP",
 }
 
 
@@ -174,6 +176,8 @@ def format_component_value_summary(comp: Component) -> str:
     if isinstance(comp, DigitalSequentialBlock):
         return comp.display_value
     if isinstance(comp, Oscilloscope):
+        return comp.display_value
+    if isinstance(comp, LogicProbe):
         return comp.display_value
     if isinstance(comp, (Voltmeter, Ammeter)):
         return comp.format_reading()
@@ -529,6 +533,9 @@ class ComponentItem(QGraphicsObject):
             self.logic_level = telemetry.logic_level
             if telemetry.logic_level in ("H", "L"):
                 self.component._output_level = telemetry.logic_level == "H"
+        elif isinstance(self.component, LogicProbe):
+            self.component.evaluate_voltage(telemetry.voltage)
+            self.logic_level = self.component.logic_state
         elif isinstance(self.component, SevenSegDisplay):
             self.component.decoded_hex_char = telemetry.decoded_hex_char
             self.component.active_segments = telemetry.active_segments
@@ -1737,6 +1744,18 @@ class ComponentItem(QGraphicsObject):
                 painter.setPen(QColor("#F8FAFC"))
                 painter.setFont(QFont("Segoe UI", 6, QFont.Weight.Bold))
                 painter.drawText(rms_rect, Qt.AlignmentFlag.AlignCenter, "RMS")
+
+            if isinstance(self.component, LogicProbe):
+                lp = self.component
+                st = lp.logic_state if lp.logic_state in ("H", "L", "?") else "?"
+                pill_hex = "#22C55E" if st == "H" else ("#38BDF8" if st == "L" else "#F59E0B")
+                pill_rect = QRectF(-14.0, -9.0, 40.0, 18.0)
+                painter.setPen(Qt.PenStyle.NoPen)
+                painter.setBrush(QColor(pill_hex))
+                painter.drawRoundedRect(pill_rect, 7.0, 7.0)
+                painter.setPen(QColor("#0F172A"))
+                painter.setFont(QFont("Segoe UI", 9, QFont.Weight.Bold))
+                painter.drawText(pill_rect, Qt.AlignmentFlag.AlignCenter, st)
 
             if (
                 len(self.metadata.terminals) >= 3

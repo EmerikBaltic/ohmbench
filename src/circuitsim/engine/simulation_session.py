@@ -36,6 +36,7 @@ from circuitsim.components.function_generator import FunctionGenerator
 from circuitsim.components.led import LED
 from circuitsim.components.lightbulb import Lightbulb
 from circuitsim.components.logic_gate import LogicGate
+from circuitsim.components.logic_probe import LogicProbe
 from circuitsim.components.meters import Ammeter, Voltmeter
 from circuitsim.components.potentiometer import Potentiometer
 from circuitsim.components.power import Fuse
@@ -300,6 +301,8 @@ def format_component_canvas_text(comp: Component) -> str:
         return f"{comp.rated_power:g}W / {comp.rated_voltage:g}V"
     if isinstance(comp, LogicGate):
         return "H" if comp.output_level else "L"
+    if isinstance(comp, LogicProbe):
+        return comp.display_value
     if isinstance(comp, (Voltmeter, Ammeter)):
         return comp.format_reading()
     # Capacitor / Inductor fallback via attribute check to avoid circular import
@@ -1104,11 +1107,12 @@ class SimulationSession:
             loading_err = (
                 comp.loading_error_message if isinstance(comp, Voltmeter) else None
             )
-            gate_lvl = (
-                ("H" if comp.output_level else "L")
-                if isinstance(comp, LogicGate)
-                else ""
-            )
+            if isinstance(comp, LogicGate):
+                gate_lvl = "H" if comp.output_level else "L"
+            elif isinstance(comp, LogicProbe):
+                gate_lvl = comp.logic_state
+            else:
+                gate_lvl = ""
 
             v_out = (
                 comp.reading

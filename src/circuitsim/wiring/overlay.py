@@ -95,10 +95,25 @@ def estimate_wire_currents(
     return wire_currents
 
 
+def map_logic_voltage_to_rgb(
+    voltage: float,
+    v_il: float = 1.5,
+    v_ih: float = 3.5,
+) -> tuple[int, int, int]:
+    """Map digital net voltage to High (green), Low (blue), or Undefined (amber) RGB."""
+    v = float(voltage)
+    if v >= v_ih:
+        return (34, 197, 94)  # #22C55E High
+    if v <= v_il:
+        return (56, 189, 248)  # #38BDF8 Low
+    return (245, 158, 11)  # #F59E0B Undefined
+
+
 __all__ = [
     "compute_current_dot_velocity",
     "estimate_wire_currents",
     "format_power_probe_text",
     "format_watts_si",
+    "map_logic_voltage_to_rgb",
     "map_voltage_to_rgb",
 ]

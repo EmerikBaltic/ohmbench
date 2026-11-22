@@ -27,6 +27,7 @@ from circuitsim.components.logic_gate import (
     evaluate_gate_boolean,
     normalize_logic_family,
 )
+from circuitsim.components.logic_probe import LOGIC_PROBE_FAMILIES, LogicProbe
 from circuitsim.components.mcu import MCUBlock
 from circuitsim.components.meters import Ammeter, MeterMode, Voltmeter
 from circuitsim.components.mosfet import MOSFETBase, NMOS, PMOS
@@ -78,8 +79,10 @@ __all__ = [
     "LED",
     "LED_COLOUR_PRESETS",
     "LOGIC_FAMILY_PRESETS",
+    "LOGIC_PROBE_FAMILIES",
     "Lightbulb",
     "LogicGate",
+    "LogicProbe",
     "MCUBlock",
     "MOSFETBase",
     "MeterMode",

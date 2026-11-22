@@ -321,3 +321,132 @@ def test_m3_ac_rms_voltmeter_and_ammeter_telemetry_and_serialization(
     am_r = reloaded.placed[1].component
     assert isinstance(vm_r, Voltmeter) and vm_r.measurement_mode == "AC_RMS" and vm_r.mode == MeterMode.RMS
     assert isinstance(am_r, Ammeter) and am_r.measurement_mode == "AC_RMS" and am_r.mode == MeterMode.RMS
+
+
+def test_m4_logic_probe_net_logic_coloring_and_truth_table_generator(
+    qapp: QApplication, tmp_path
+) -> None:
+    from PySide6.QtCore import QPointF
+    from circuitsim.app.main_window import MainWindow
+    from circuitsim.app.settings import AppSettings
+    from circuitsim.canvas.scene import CircuitScene
+    from circuitsim.canvas.symbol_renderer import SymbolLibrary
+    from circuitsim.components.ground import Ground
+    from circuitsim.components.logic_gate import LogicGate
+    from circuitsim.components.logic_probe import LogicProbe
+    from circuitsim.components.sources import DCVoltageSource
+    from circuitsim.dialogs.truth_table_dialog import TruthTableDialog
+    from circuitsim.engine.netlist import Circuit
+    from circuitsim.engine.solver import MNASolver
+    from circuitsim.engine.truth_table import generate_truth_table
+    from circuitsim.io.circ_serializer import (
+        CircuitDocument,
+        PlacedComponentSpec,
+        load_document,
+        save_document,
+    )
+    from circuitsim.wiring.overlay import map_logic_voltage_to_rgb
+    from tests.ui_flow_helpers import terminal_scene_point
+
+    # 1. LogicProbe thresholds & family presets + DC simulation
+    assert map_logic_voltage_to_rgb(5.0) == (34, 197, 94)
+    assert map_logic_voltage_to_rgb(0.2) == (56, 189, 248)
+    assert map_logic_voltage_to_rgb(2.5) == (245, 158, 11)
+
+    lp_ttl = LogicProbe("LP_TTL", "n_test", family="5V_TTL")
+    assert lp_ttl.v_il == pytest.approx(0.8)
+    assert lp_ttl.v_ih == pytest.approx(2.0)
+    assert lp_ttl.evaluate_voltage(2.5) == "H"
+    assert lp_ttl.evaluate_voltage(1.2) == "?"
+    assert lp_ttl.evaluate_voltage(0.4) == "L"
+
+    # 2. NAND + NOT -> AND gate circuit with LogicProbe on output
+    c = Circuit()
+    va = DCVoltageSource("VA", "in_a", "0", voltage=5.0)
+    vb = DCVoltageSource("VB", "in_b", "0", voltage=5.0)
+    u_nand = LogicGate("U1", "nand", ("in_a", "in_b"), "n_nand")
+    u_not = LogicGate("U2", "not", "n_nand", "n_out")
+    lp = LogicProbe("LP1", "n_out")
+    gnd = Ground("GND", "0")
+    for comp in (va, vb, u_nand, u_not, lp, gnd):
+        c.add(comp)
+
+    c.validate_topology()
+    dc_res = MNASolver(c).solve_dc()
+    assert dc_res.node_voltages["n_out"] > 4.0
+    assert lp.logic_state == "H"
+
+    tt = generate_truth_table(c)
+    assert tt.input_names == ("VA", "VB")
+    assert tt.output_names == ("LP1",)
+    assert tt.as_mapping() == {
+        (0, 0): ("0",),
+        (0, 1): ("0",),
+        (1, 0): ("0",),
+        (1, 1): ("1",),
+    }
+    md = tt.to_markdown()
+    csv_txt = tt.to_csv()
+    assert "| VA | VB | LP1 |" in md
+    assert "1,1,1" in csv_txt
+
+    # 3. TruthTableDialog UI check
+    dlg = TruthTableDialog(lambda: c)
+    try:
+        res_ui = dlg.run_generation()
+        assert res_ui is not None
+        assert dlg.table.rowCount() == 4
+        assert dlg.table.columnCount() == 3
+    finally:
+        dlg.close()
+
+    # 4. Net logic coloring on CircuitScene + View menu action check
+    lib = SymbolLibrary()
+    scene = CircuitScene(lib)
+    it_va = scene.place_new_component("dc_voltage", QPointF(-200.0, -60.0))
+    it_u1 = scene.place_new_component("gate_not", QPointF(-40.0, -60.0))
+    it_lp = scene.place_new_component("logic_probe", QPointF(120.0, -60.0))
+    it_gnd = scene.place_new_component("ground", QPointF(-200.0, 40.0))
+
+    it_va.component.dc_voltage = 5.0  # type: ignore[attr-defined]
+    w_in = scene.add_routed_wire(
+        terminal_scene_point(it_va, "pos"),
+        terminal_scene_point(it_u1, "in"),
+    )
+    scene.add_routed_wire(
+        terminal_scene_point(it_va, "neg"),
+        terminal_scene_point(it_gnd, "gnd"),
+    )
+    w_out = scene.add_routed_wire(
+        terminal_scene_point(it_u1, "out"),
+        terminal_scene_point(it_lp, "in"),
+    )
+
+    conn = scene.extract_connectivity_result()
+    conn.circuit.validate_topology()
+    res_scene = MNASolver(conn.circuit).solve_dc()
+    scene.apply_solve_result(res_scene)
+    scene.set_net_logic_coloring_enabled(True)
+
+    assert it_lp.component.logic_state == "L"  # type: ignore[attr-defined]
+    assert w_in.overlay_rgb == (34, 197, 94)  # 5 V High -> green
+    assert w_out.overlay_rgb == (56, 189, 248)  # 0 V Low -> blue
+
+    # 5. .circ round-trip for LogicProbe
+    doc = CircuitDocument(
+        placed=[PlacedComponentSpec(component=lp_ttl, center_px=(0.0, 0.0))]
+    )
+    lp_file = tmp_path / "logic_probe.circ"
+    save_document(lp_file, doc)
+    loaded = load_document(lp_file)
+    lp_loaded = loaded.placed[0].component
+    assert isinstance(lp_loaded, LogicProbe)
+    assert lp_loaded.family == "5V_TTL"
+
+    # 6. MainWindow View & Simulation menu hooks exist
+    win = MainWindow(settings=AppSettings(data_dir=tmp_path / "m4_settings"))
+    try:
+        assert hasattr(win, "act_net_logic_colors")
+        assert hasattr(win, "act_truth_table")
+    finally:
+        win.close()

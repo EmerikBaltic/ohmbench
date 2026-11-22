@@ -193,6 +193,7 @@ class MainWindow(QMainWindow):
         self._prev_error_count: int = 0
         self.instruments_dialog: object | None = None
         self.sweep_dialog: object | None = None
+        self.truth_table_dialog: object | None = None
         self._dso_dialogs: dict[str, object] = {}
         self._funcgen_dialogs: dict[str, object] = {}
 
@@ -471,6 +472,16 @@ class MainWindow(QMainWindow):
         )
         self.view_menu.addAction(self.act_voltage_colors)
 
+        self.act_net_logic_colors = QAction("Net &Logic Coloring", self, checkable=True)
+        self.act_net_logic_colors.setChecked(False)
+        self.act_net_logic_colors.setToolTip(
+            "Color wires by digital logic state (Green = High, Blue = Low, Amber = Undefined)"
+        )
+        self.act_net_logic_colors.toggled.connect(
+            self.circuit_scene.set_net_logic_coloring_enabled
+        )
+        self.view_menu.addAction(self.act_net_logic_colors)
+
         self.act_current_dots = QAction("Current &Dots", self, checkable=True)
         self.act_current_dots.setChecked(False)
         self.act_current_dots.setToolTip(
@@ -598,6 +609,13 @@ class MainWindow(QMainWindow):
         )
         self.act_curve_tracer.triggered.connect(self.show_curve_tracer_panel)
         sim_menu.addAction(self.act_curve_tracer)
+
+        self.act_truth_table = QAction("&Truth-Table Generator...", self)
+        self.act_truth_table.setToolTip(
+            "Exhaustively simulate all binary input combinations and export Truth Table CSV/Markdown"
+        )
+        self.act_truth_table.triggered.connect(self.show_truth_table_dialog)
+        sim_menu.addAction(self.act_truth_table)
 
         # Help menu
         help_menu = menu_bar.addMenu("&Help")
@@ -1646,6 +1664,22 @@ class MainWindow(QMainWindow):
         dlg.activateWindow()
         return dlg
 
+    def show_truth_table_dialog(self):
+        """Open (or focus) the Simulation > Truth-Table Generator dialog."""
+        from circuitsim.dialogs.truth_table_dialog import TruthTableDialog
+
+        if self.truth_table_dialog is None:
+            self.truth_table_dialog = TruthTableDialog(
+                circuit_provider=lambda: self.circuit_scene.extract_connectivity_result().circuit,
+                parent=self,
+            )
+        dlg: TruthTableDialog = self.truth_table_dialog  # type: ignore[assignment]
+        dlg.refresh_candidates()
+        dlg.show()
+        dlg.raise_()
+        dlg.activateWindow()
+        return dlg
+
     def show_sweep_panel(self):
         """Open (or focus) the Parameter Sweep (.STEP) & Monte Carlo Analyzer dialog."""
         from circuitsim.app.sweep_panel import SweepAnalysisDialog
@@ -2057,6 +2091,11 @@ class MainWindow(QMainWindow):
         if getattr(self, "curve_tracer_dialog", None) is not None:
             try:
                 self.curve_tracer_dialog.close()
+            except RuntimeError:
+                pass
+        if getattr(self, "truth_table_dialog", None) is not None:
+            try:
+                self.truth_table_dialog.close()  # type: ignore[attr-defined]
             except RuntimeError:
                 pass
         self.circuit_scene.shutdown_scene()

@@ -48,11 +48,12 @@ COMPONENT_ORDER_IN_CATEGORY: dict[str, tuple[str, ...]] = {
         "gate_nor",
         "gate_xor",
         "gate_xnor",
+        "logic_probe",
     ),
-    "Digital": ("d_flipflop", "jk_flipflop", "counter_4bit", "seven_seg_display"),
+    "Digital": ("d_flipflop", "jk_flipflop", "counter_4bit", "seven_seg_display", "logic_probe"),
     "Mixed-Signal": ("ne555", "comparator", "mcu"),
     "Loads": ("lightbulb",),
-    "Instruments": ("voltmeter", "ammeter", "oscilloscope", "function_generator"),
+    "Instruments": ("voltmeter", "ammeter", "oscilloscope", "function_generator", "logic_probe"),
 }
 
 
@@ -172,6 +173,10 @@ class ComponentPaletteWidget(QWidget):
             grouped.setdefault(meta.category, []).append(comp_id)
         if "function_generator" in catalog and "function_generator" not in grouped.get("Sources", []):
             grouped.setdefault("Sources", []).append("function_generator")
+        if "logic_probe" in catalog:
+            for extra_cat in ("Logic Gates", "Instruments"):
+                if "logic_probe" not in grouped.get(extra_cat, []):
+                    grouped.setdefault(extra_cat, []).append("logic_probe")
 
         for category, comp_ids in grouped.items():
             if not comp_ids:

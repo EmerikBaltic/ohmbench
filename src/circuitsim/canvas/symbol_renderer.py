@@ -765,6 +765,11 @@ class SymbolLibrary:
             # Unpowered bezel outline; live glowing LED bars painted by ComponentItem
             painter.drawRect(QRectF(-18.0, -34.0, 44.0, 68.0))
 
+        elif component_id == "logic_probe":
+            # Probe tip lead (-40 -> -22) + rounded pill indicator bezel
+            painter.drawLine(QPointF(-40.0, 0.0), QPointF(-22.0, 0.0))
+            painter.drawRoundedRect(QRectF(-22.0, -14.0, 56.0, 28.0), 12.0, 12.0)
+
         elif component_id == "function_generator":
             # Benchtop chassis + right-side OUT / GND leads clear of pin labels
             painter.drawLine(QPointF(48.0, -20.0), QPointF(60.0, -20.0))

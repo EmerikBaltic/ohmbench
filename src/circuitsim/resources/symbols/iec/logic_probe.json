@@ -1,0 +1,14 @@
+{
+  "id": "logic_probe",
+  "display_name": "Logic Probe",
+  "category": "Digital",
+  "style": "iec",
+  "grid_size": [4, 2],
+  "terminals": [
+    {"name": "in", "grid_pos": [-2, 0]}
+  ],
+  "label_offset": [0, -1.6],
+  "value_offset": [0, 1.6],
+  "default_svg": "logic_probe.svg",
+  "states": {}
+}

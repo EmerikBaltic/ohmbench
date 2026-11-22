@@ -19,6 +19,7 @@ from circuitsim.components.inductor import Inductor
 from circuitsim.components.led import LED
 from circuitsim.components.lightbulb import Lightbulb
 from circuitsim.components.logic_gate import LogicGate
+from circuitsim.components.logic_probe import LogicProbe
 from circuitsim.components.mcu import MCUBlock
 from circuitsim.components.meters import Ammeter, Voltmeter
 from circuitsim.components.mosfet import MOSFETBase
@@ -66,6 +67,7 @@ _TAG_TRANSFORMER = 22
 _TAG_RELAY = 23
 _TAG_SEQUENTIAL = 24
 _TAG_OSCILLOSCOPE = 25
+_TAG_LOGIC_PROBE = 26
 
 
 class IntegrationMethod(str, Enum):
@@ -325,6 +327,8 @@ class MNASolver:
             elif isinstance(comp, Oscilloscope):
                 tagged.append((comp, _TAG_OSCILLOSCOPE))
                 oscilloscopes.append(comp)
+            elif isinstance(comp, LogicProbe):
+                tagged.append((comp, _TAG_LOGIC_PROBE))
             elif isinstance(comp, Potentiometer):
                 tagged.append((comp, _TAG_POTENTIOMETER))
             elif isinstance(comp, DCVoltageSource):
@@ -548,6 +552,8 @@ class MNASolver:
                 sig.extend((1.0 if comp.energized else 0.0, comp.coil_resistance_ohm))
             elif isinstance(comp, Oscilloscope):
                 sig.extend((comp.r_in, 1.0 if self.circuit.is_oscilloscope_gnd_wired(comp) else 0.0))
+            elif isinstance(comp, LogicProbe):
+                sig.append(comp.r_in)
             elif isinstance(comp, Potentiometer):
                 sig.extend((comp.g_aw, comp.g_wb))
             elif isinstance(comp, (DCVoltageSource, ACVoltageSource)):
@@ -613,6 +619,8 @@ class MNASolver:
                 sig.extend((1.0 if comp.energized else 0.0, comp.coil_resistance_ohm))
             elif tag == _TAG_OSCILLOSCOPE:
                 sig.extend((comp.r_in, 1.0 if self.circuit.is_oscilloscope_gnd_wired(comp) else 0.0))
+            elif tag == _TAG_LOGIC_PROBE:
+                sig.append(comp.r_in)
             elif tag == _TAG_POTENTIOMETER:
                 sig.extend((comp.g_aw, comp.g_wb))
             elif tag <= _TAG_AC_VS:
@@ -678,6 +686,10 @@ class MNASolver:
                     gnd_wired=self.circuit.is_oscilloscope_gnd_wired(comp)
                 )
                 self._stamp_small_matrix(matrix_a, self._node_to_idx, comp.nodes, g_mat)
+            elif isinstance(comp, LogicProbe):
+                ip = self._node_to_idx.get(comp.nodes[0])
+                if ip is not None:
+                    matrix_a[ip, ip] += comp.conductance
             elif isinstance(comp, Switch):
                 if mode == "dc":
                     g_sw = comp.conductance
@@ -1257,6 +1269,10 @@ class MNASolver:
                     gnd_wired=self.circuit.is_oscilloscope_gnd_wired(comp)
                 )
                 self._stamp_small_matrix(mat, node_to_idx, comp.nodes, g_mat)
+            elif isinstance(comp, LogicProbe):
+                ip = node_to_idx.get(comp.nodes[0])
+                if ip is not None:
+                    mat[ip, ip] += comp.conductance
             elif isinstance(comp, DCCurrentSource):
                 ia = node_to_idx.get(comp.nodes[0])
                 ib = node_to_idx.get(comp.nodes[1])
@@ -2156,6 +2172,11 @@ class MNASolver:
                 )
                 continue
 
+            if isinstance(comp, LogicProbe):
+                comp.evaluate_voltage(float(node_voltages.get(comp.nodes[0], 0.0)))
+                branch_currents[comp.name] = comp.current
+                continue
+
             v_a = node_voltages.get(comp.nodes[0], 0.0)
             v_b = node_voltages.get(comp.nodes[1], 0.0)
             v_ab = v_a - v_b
@@ -2377,6 +2398,10 @@ class MNASolver:
                     gnd_wired=self.circuit.is_oscilloscope_gnd_wired(comp)
                 )
                 self._stamp_small_matrix(mat, node_to_idx, comp.nodes, g_mat)
+            elif isinstance(comp, LogicProbe):
+                ip = node_to_idx.get(comp.nodes[0])
+                if ip is not None:
+                    mat[ip, ip] += comp.conductance
 
         for k, vs in enumerate(voltage_sources):
             row_k = n_nodes + k
@@ -2806,6 +2831,11 @@ class MNASolver:
                     node_voltages,
                     gnd_wired=self.circuit.is_oscilloscope_gnd_wired(comp),
                 )
+                continue
+
+            if tag == _TAG_LOGIC_PROBE:
+                comp.evaluate_voltage(float(node_voltages.get(comp.nodes[0], 0.0)))
+                branch_currents[comp.name] = comp.current
                 continue
 
             v_a = node_voltages.get(comp.nodes[0], 0.0)

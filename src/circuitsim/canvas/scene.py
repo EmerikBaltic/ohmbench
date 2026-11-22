@@ -87,6 +87,7 @@ from circuitsim.wiring.overlay import (
     compute_current_dot_velocity,
     estimate_wire_currents,
     format_power_probe_text,
+    map_logic_voltage_to_rgb,
     map_voltage_to_rgb,
 )
 from circuitsim.wiring.router import (
@@ -205,6 +206,7 @@ class CircuitScene(QGraphicsScene):
         self.is_simulation_running: bool = False
         self._last_sim_frame: SimulationFrame | None = None
         self.voltage_colors_enabled: bool = False
+        self.net_logic_coloring_enabled: bool = False
         self.current_dots_enabled: bool = False
         self.stress_warnings_enabled: bool = True
         self.pinout_labels_enabled: bool = False
@@ -3659,6 +3661,10 @@ class CircuitScene(QGraphicsScene):
                     comp.power = float(comp.voltage * comp.current)
                 if hasattr(comp, "step_sequential"):
                     comp.step_sequential(self.latest_node_voltages)
+                elif hasattr(comp, "evaluate_voltage"):
+                    comp.evaluate_voltage(
+                        float(self.latest_node_voltages.get(comp.nodes[0], 0.0))
+                    )
                 elif hasattr(comp, "evaluate_latch"):
                     comp.evaluate_latch(self.latest_node_voltages)
                 elif hasattr(comp, "evaluate_coil"):
@@ -3763,6 +3769,14 @@ class CircuitScene(QGraphicsScene):
             self._refresh_wire_overlays()
             self.update()
 
+    def set_net_logic_coloring_enabled(self, enabled: bool) -> None:
+        """Enable or disable digital logic-state (High/Low/Undef) coloring on wires."""
+        val = bool(enabled)
+        if val != self.net_logic_coloring_enabled:
+            self.net_logic_coloring_enabled = val
+            self._refresh_wire_overlays()
+            self.update()
+
     def set_current_dots_enabled(self, enabled: bool) -> None:
         """Enable or disable animated current flow dots on wires."""
         val = bool(enabled)
@@ -3855,13 +3869,15 @@ class CircuitScene(QGraphicsScene):
 
     def _refresh_wire_overlays(self) -> None:
         self.probe_wire_ids.intersection_update(self._wire_items_by_id.keys())
-        has_live = self.is_simulation_running and bool(
-            self._last_sim_frame is not None or self.latest_node_voltages
+        has_colors = self.voltage_colors_enabled or self.net_logic_coloring_enabled
+        has_live = bool(
+            (self.is_simulation_running and (self._last_sim_frame is not None or self.latest_node_voltages))
+            or (self.net_logic_coloring_enabled and bool(self.latest_node_voltages))
         )
         if not has_live:
             for wire in self._wire_items:
                 wire.set_overlay_state(
-                    voltage_color_enabled=self.voltage_colors_enabled,
+                    voltage_color_enabled=has_colors,
                     current_dots_enabled=self.current_dots_enabled,
                     clear_overlay=True,
                 )
@@ -3870,7 +3886,7 @@ class CircuitScene(QGraphicsScene):
             return
 
         if (
-            not self.voltage_colors_enabled
+            not has_colors
             and not self.current_dots_enabled
             and not self.probe_wire_ids
         ):
@@ -3904,18 +3920,23 @@ class CircuitScene(QGraphicsScene):
             net_name = conn.wire_to_node.get(wire.wire_id)
             rgb = None
             if (
-                self.voltage_colors_enabled
+                has_colors
                 and net_name is not None
                 and net_name in self.latest_node_voltages
             ):
-                rgb = map_voltage_to_rgb(self.latest_node_voltages[net_name])
+                v_net = float(self.latest_node_voltages[net_name])
+                rgb = (
+                    map_logic_voltage_to_rgb(v_net)
+                    if self.net_logic_coloring_enabled
+                    else map_voltage_to_rgb(v_net)
+                )
             vel = (
                 compute_current_dot_velocity(wire_currents.get(wire.wire_id, 0.0))
                 if self.current_dots_enabled
                 else 0.0
             )
             wire.set_overlay_state(
-                voltage_color_enabled=self.voltage_colors_enabled,
+                voltage_color_enabled=has_colors,
                 current_dots_enabled=self.current_dots_enabled,
                 overlay_rgb=rgb,
                 dot_velocity=vel,

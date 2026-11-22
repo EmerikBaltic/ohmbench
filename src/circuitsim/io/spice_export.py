@@ -25,6 +25,7 @@ from circuitsim.components import (
     LED,
     Lightbulb,
     LogicGate,
+    LogicProbe,
     MCUBlock,
     MOSFETBase,
     NE555,
@@ -290,6 +291,10 @@ def export_to_spice_netlist(
             lines.append(
                 f"* Oscilloscope {comp.name} CH1={n_str(comp.nodes[0])} CH2={n_str(comp.nodes[1])} "
                 f"EXT_TRIG={n_str(comp.nodes[2])} GND={n_str(comp.nodes[3])} RIN={format_spice_value(comp.r_in)}"
+            )
+        elif isinstance(comp, LogicProbe):
+            lines.append(
+                f"* LogicProbe {comp.name} IN={n_str(comp.nodes[0])} family={comp.family} RIN={format_spice_value(comp.r_in)}"
             )
         elif isinstance(comp, (Voltmeter, Ammeter)):
             lines.append(

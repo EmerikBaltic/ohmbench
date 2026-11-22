@@ -152,6 +152,7 @@ _EXTRA_SETTINGS: dict[str, dict[str, str]] = {
     "counter_4bit": {"initial_count": "int"},
     "seven_seg_display": {"v_high": "float", "v_low": "float"},
     "oscilloscope": {"dso_state_json": "str"},
+    "logic_probe": {"family": "str"},
 }
 
 # Editable parameters that may legitimately be "none" (feature switched off).
