@@ -10,6 +10,7 @@ from circuitsim.components.base import Component
 from circuitsim.components.bjt import NPNBJT, PNPBJT
 from circuitsim.components.capacitor import Capacitor
 from circuitsim.components.comparator import Comparator
+from circuitsim.components.custom_macro import CustomMacroBlock, package_subcircuit_macro
 from circuitsim.components.ground import Ground
 from circuitsim.components.inductor import Inductor
 from circuitsim.components.diode import Diode, ZenerDiode
@@ -153,6 +154,11 @@ def create_default_component_model(component_id: str, name: str) -> Component:
         return Oscilloscope(name)
     if component_id == "logic_probe":
         return LogicProbe(name, f"{name}_in")
+    if component_id == "custom_macro":
+        return CustomMacroBlock(
+            name,
+            package_subcircuit_macro("CustomMacro", ("IN", "OUT"), ()),
+        )
     if component_id.startswith("gate_"):
         op = component_id.removeprefix("gate_")
         if op in GATE_OPERATIONS:

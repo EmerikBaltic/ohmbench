@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 from typing import Mapping, Sequence
 
@@ -165,6 +166,7 @@ class MainWindow(QMainWindow):
         *,
         initial_theme: ThemeMode = ThemeMode.DARK,
         settings: AppSettings | None = None,
+        user_library: object | None = None,
     ) -> None:
         super().__init__()
         self.setWindowTitle(f"{APP_NAME} — {APP_SUBTITLE}")
@@ -175,10 +177,24 @@ class MainWindow(QMainWindow):
         )
         set_global_number_format(self.settings.get_number_format())
         self.theme: ThemeMode = initial_theme
+        from circuitsim.io.user_library import UserLibraryStore
+
+        if isinstance(user_library, UserLibraryStore):
+            self.user_library: UserLibraryStore = user_library
+        elif os.environ.get("OHMBENCH_USER_LIBRARY_PATH", "").strip():
+            self.user_library = UserLibraryStore()
+        elif settings is not None:
+            self.user_library = UserLibraryStore(
+                self.settings.data_dir / "user_library.json"
+            )
+        else:
+            self.user_library = UserLibraryStore()
+
         self.symbol_library = SymbolLibrary()
         self.circuit_scene = CircuitScene(
             self.symbol_library, theme=self.theme, settings=self.settings, parent=self
         )
+        self.circuit_scene.user_library = self.user_library
         self.circuit_view = CircuitView(self.circuit_scene, settings=self.settings)
         self.setCentralWidget(self.circuit_view)
 
@@ -447,6 +463,13 @@ class MainWindow(QMainWindow):
         self.act_create_macro.triggered.connect(self.create_custom_macro_from_scene)
         edit_menu.addAction(self.act_create_macro)
 
+        self.act_manage_custom_parts = QAction("Manage &Custom Parts...", self)
+        self.act_manage_custom_parts.setToolTip(
+            "View, rename, delete, export, or import parts in My Custom Parts"
+        )
+        self.act_manage_custom_parts.triggered.connect(self.show_manage_custom_parts_dialog)
+        edit_menu.addAction(self.act_manage_custom_parts)
+
         # View menu
         self.view_menu = menu_bar.addMenu("&View")
         self.act_toggle_grid = QAction(
@@ -691,7 +714,10 @@ class MainWindow(QMainWindow):
         # 1. Left Dock: Component Palette
         self.palette_dock = QDockWidget("Component Palette", self)
         self.palette_widget = ComponentPaletteWidget(
-            self.symbol_library, theme=self.theme, parent=self.palette_dock
+            self.symbol_library,
+            theme=self.theme,
+            user_library=self.user_library,
+            parent=self.palette_dock,
         )
         self.palette_dock.setWidget(self.palette_widget)
         self.palette_dock.setFixedWidth(240)
@@ -1760,9 +1786,15 @@ class MainWindow(QMainWindow):
         dlg.show()
         return report
 
-    def create_custom_macro_from_scene(self, macro_name: str | None = None):
+    def create_custom_macro_from_scene(
+        self,
+        macro_name: str | None = None,
+        *,
+        save_to_library: bool = True,
+    ):
         """Package current schematic components + labeled nets into a reusable SubcircuitMacroDef."""
         from circuitsim.components.custom_macro import package_subcircuit_macro
+        from circuitsim.io.user_library import create_macro_part_entry
 
         conn = self.circuit_scene.extract_connectivity_result()
         pins: list[str] = []
@@ -1782,8 +1814,39 @@ class MainWindow(QMainWindow):
         if not hasattr(self, "custom_macros"):
             self.custom_macros = {}
         self.custom_macros[name] = macro_def
+        if save_to_library and hasattr(self, "user_library"):
+            entry = create_macro_part_entry(macro_def)
+            self.user_library.add_or_update_part(entry)
+            if hasattr(self, "palette_widget"):
+                self.palette_widget.refresh_custom_parts()
         self.statusBar().showMessage(f"Created macro '{name}' with pins {pins}", 4000)
         return macro_def
+
+    def save_component_to_custom_parts(self, item: ComponentItem):
+        """Open `SaveCustomPartDialog` to save `item`'s component into `My Custom Parts`."""
+        from circuitsim.dialogs.custom_parts_dialog import SaveCustomPartDialog
+
+        dlg = SaveCustomPartDialog(item.component, self.user_library, parent=self)
+        if dlg.exec():
+            self.palette_widget.refresh_custom_parts()
+            return dlg.saved_entry
+        return None
+
+    def show_manage_custom_parts_dialog(self):
+        """Open `ManageCustomPartsDialog` for `My Custom Parts` management & import/export."""
+        from circuitsim.dialogs.custom_parts_dialog import ManageCustomPartsDialog
+
+        dlg = ManageCustomPartsDialog(
+            self.user_library,
+            on_library_changed=self.palette_widget.refresh_custom_parts,
+            on_place_part=self._place_component_at_view_center,
+            parent=self,
+        )
+        dlg.show()
+        dlg.raise_()
+        dlg.activateWindow()
+        self._manage_custom_parts_dialog = dlg
+        return dlg
 
     def _toggle_problems_panel(self, checked: bool | None = None) -> None:
         if checked is None:
@@ -2096,6 +2159,11 @@ class MainWindow(QMainWindow):
         if getattr(self, "truth_table_dialog", None) is not None:
             try:
                 self.truth_table_dialog.close()  # type: ignore[attr-defined]
+            except RuntimeError:
+                pass
+        if getattr(self, "_manage_custom_parts_dialog", None) is not None:
+            try:
+                self._manage_custom_parts_dialog.close()  # type: ignore[attr-defined]
             except RuntimeError:
                 pass
         self.circuit_scene.shutdown_scene()

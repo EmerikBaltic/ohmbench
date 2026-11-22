@@ -442,6 +442,21 @@ class CircuitView(QGraphicsView):
             holder.append(dlg)
         return True
 
+    def save_component_to_custom_parts(self, item: ComponentItem):
+        """Prompt to save `item`'s component into the persistent `My Custom Parts` library."""
+        win = self.window()
+        if win is not None and hasattr(win, "save_component_to_custom_parts"):
+            return win.save_component_to_custom_parts(item)
+        user_lib = getattr(self.circuit_scene, "user_library", None)
+        if user_lib is None:
+            return None
+        from circuitsim.dialogs.custom_parts_dialog import SaveCustomPartDialog
+
+        dlg = SaveCustomPartDialog(item.component, user_lib, parent=win)
+        if dlg.exec():
+            return dlg.saved_entry
+        return None
+
     def open_function_generator_dialog(self, item: ComponentItem) -> bool:
         """Open the modeless Benchtop Function Generator dialog for a `FunctionGenerator` item."""
         if not isinstance(item.component, FunctionGenerator):
@@ -981,6 +996,16 @@ class CircuitView(QGraphicsView):
                     lambda: self.circuit_scene.reset_fuse_item(target_comp)
                 )
                 menu.addAction(act_reset_fuse)
+            win = self.window()
+            if (
+                win is not None
+                and hasattr(win, "save_component_to_custom_parts")
+            ) or getattr(self.circuit_scene, "user_library", None) is not None:
+                act_save_custom = QAction("Save to My Custom Parts...", menu)
+                act_save_custom.triggered.connect(
+                    lambda: self.save_component_to_custom_parts(target_comp)
+                )
+                menu.addAction(act_save_custom)
             menu.addSeparator()
 
         selected_wires = [

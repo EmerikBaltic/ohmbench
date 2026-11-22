@@ -36,6 +36,7 @@ from circuitsim.canvas.connectivity import (
 from circuitsim.canvas.symbol_geometry import (
     GRID_PITCH_PX,
     SymbolMetadata,
+    build_custom_macro_metadata,
     led_marks,
     snap_to_grid,
     transform_terminal_position,
@@ -49,6 +50,7 @@ from circuitsim.components import (
     Comparator,
     Component,
     Counter4Bit,
+    CustomMacroBlock,
     DCCurrentSource,
     DCVoltageSource,
     DFlipFlop,
@@ -118,6 +120,7 @@ COMPONENT_PREFIXES: dict[str, str] = {
     "oscilloscope": "OSC",
     "function_generator": "FG",
     "logic_probe": "LP",
+    "custom_macro": "X",
 }
 
 
@@ -178,6 +181,8 @@ def format_component_value_summary(comp: Component) -> str:
     if isinstance(comp, Oscilloscope):
         return comp.display_value
     if isinstance(comp, LogicProbe):
+        return comp.display_value
+    if isinstance(comp, CustomMacroBlock):
         return comp.display_value
     if isinstance(comp, (Voltmeter, Ammeter)):
         return comp.format_reading()
@@ -266,9 +271,13 @@ class ComponentItem(QGraphicsObject):
         super().__init__()
         self.component: Component = component
         self.symbol_library: SymbolLibrary = symbol_library
-        self.metadata: SymbolMetadata = symbol_library.get_metadata(
-            component.component_type
-        )
+        if isinstance(component, CustomMacroBlock):
+            self.metadata: SymbolMetadata = build_custom_macro_metadata(
+                component.macro_def.macro_name,
+                component.macro_def.pins,
+            )
+        else:
+            self.metadata = symbol_library.get_metadata(component.component_type)
         self.theme: ThemeMode = theme
         self.is_ghost: bool = is_ghost
         self._rotation_deg: int = 0
@@ -980,6 +989,8 @@ class ComponentItem(QGraphicsObject):
             return {"CH1": "CH1", "CH2": "CH2", "EXT_TRIG": "EXT_TRIG", "GND": "GND"}
         if ctype == "function_generator":
             return {"out": "OUT", "gnd": "GND"}
+        if ctype == "custom_macro" and isinstance(comp, CustomMacroBlock):
+            return {p: p for p in comp.macro_def.pins}
         if ctype.startswith("gate_") and ctype != "gate_not":
             return {"a": "A", "b": "B", "out": "Y", "in0": "A", "in1": "B"}
         return {}
@@ -988,6 +999,7 @@ class ComponentItem(QGraphicsObject):
         """Return `[(terminal_name, label_text, tight_upright_rect)]` clear of all 5 px terminal dots."""
         if len(self.metadata.terminals) < 3 and self.component.component_type not in (
             "function_generator",
+            "custom_macro",
         ):
             return []
         pin_map = self.default_pin_labels(self.component)
@@ -1028,6 +1040,9 @@ class ComponentItem(QGraphicsObject):
                 ly = ly0
             elif ctype == "function_generator":
                 lx = 32.0
+                ly = ly0
+            elif ctype == "custom_macro":
+                lx = -26.0 if lx0 < 0 else 26.0
                 ly = ly0
             elif ctype == "spdt_relay":
                 if lx0 < 0:
@@ -1276,7 +1291,7 @@ class ComponentItem(QGraphicsObject):
 
             if (
                 len(self.metadata.terminals) >= 3
-                or self.component.component_type in ("function_generator",)
+                or self.component.component_type in ("function_generator", "custom_macro")
             ) and not self._pinout_overlay_enabled:
                 for _tname, _tag, pin_rect in self.default_pin_label_rects():
                     rect = rect.united(pin_rect.adjusted(-1.0, -1.0, 1.0, 1.0))
@@ -1565,6 +1580,7 @@ class ComponentItem(QGraphicsObject):
             wiper_alpha=wiper_arg,
             rotation_deg=self.rotation_deg,
             flipped_h=self.flipped_h,
+            metadata_override=self.metadata if isinstance(self.component, CustomMacroBlock) else None,
         )
         if isinstance(self.component, SevenSegDisplay) and not self.is_ghost:
             self._paint_seven_seg_leds(painter, self.component)
@@ -1759,7 +1775,7 @@ class ComponentItem(QGraphicsObject):
 
             if (
                 len(self.metadata.terminals) >= 3
-                or self.component.component_type in ("function_generator",)
+                or self.component.component_type in ("function_generator", "custom_macro")
             ) and not self._pinout_overlay_enabled:
                 pin_rects = self.default_pin_label_rects()
                 if pin_rects:

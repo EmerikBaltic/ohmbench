@@ -22,6 +22,7 @@ from circuitsim.app.themes import ThemeMode, get_theme_palette
 from circuitsim.canvas.symbol_geometry import (
     DEFAULT_IEC_SYMBOLS_DIR,
     SymbolMetadata,
+    build_custom_macro_metadata,
     load_all_iec_metadata,
     polarity_mark_positions,
     prepare_svg_for_theme,
@@ -57,6 +58,8 @@ class SymbolLibrary:
 
     def get_metadata(self, component_id: str) -> SymbolMetadata:
         """Return `SymbolMetadata` for `component_id`."""
+        if component_id == "custom_macro":
+            return build_custom_macro_metadata("CustomMacro", ("IN", "OUT"))
         if component_id not in self._metadata:
             raise KeyError(f"Unknown symbol component_id {component_id!r}.")
         return self._metadata[component_id]
@@ -129,6 +132,7 @@ class SymbolLibrary:
         wiper_alpha: float | None = None,
         rotation_deg: int = 0,
         flipped_h: bool = False,
+        metadata_override: SymbolMetadata | None = None,
     ) -> bool:
         """Paint the symbol centered at `(0, 0)` in `painter` coordinates.
 
@@ -136,15 +140,19 @@ class SymbolLibrary:
             True if rendered from an SVG file on disk, False if drawn by the
             built-in procedural IEC fallback.
         """
-        meta = self.get_metadata(component_id)
+        meta = metadata_override if metadata_override is not None else self.get_metadata(component_id)
         w_px, h_px = meta.pixel_size
         target_rect = QRectF(-w_px / 2.0, -h_px / 2.0, float(w_px), float(h_px))
 
-        svg_renderer = self.get_svg_renderer(
-            component_id,
-            state=state,
-            stroke_color=stroke_color,
-            flat_color=polarity_color if component_id == "led" else None,
+        svg_renderer = (
+            None
+            if component_id == "custom_macro"
+            else self.get_svg_renderer(
+                component_id,
+                state=state,
+                stroke_color=stroke_color,
+                flat_color=polarity_color if component_id == "led" else None,
+            )
         )
         use_procedural_gate = component_id.startswith("gate_") and (
             (rotation_deg % 360) != 0 or flipped_h
@@ -159,6 +167,23 @@ class SymbolLibrary:
         ):
             svg_renderer.render(painter, target_rect)
             used_svg = True
+        elif component_id == "custom_macro":
+            painter.save()
+            pen = QPen(QColor(stroke_color), 2.0)
+            pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+            pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
+            painter.setPen(pen)
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            bx = -float(w_px) / 2.0 + 18.0
+            by = -float(h_px) / 2.0 + 10.0
+            bw = max(44.0, float(w_px) - 36.0)
+            bh = max(36.0, float(h_px) - 20.0)
+            painter.drawRoundedRect(QRectF(bx, by, bw, bh), 4.0, 4.0)
+            for term in meta.terminals:
+                tx, ty = term.local_px
+                edge_x = bx if tx < 0.0 else (bx + bw)
+                painter.drawLine(QPointF(tx, ty), QPointF(edge_x, ty))
+            painter.restore()
         else:
             self._paint_procedural_iec(
                 painter,

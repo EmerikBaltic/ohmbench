@@ -95,7 +95,10 @@ def terminal_names_by_component(
     for comp in components:
         if comp.name in result:
             raise WireGraphError(f"Two components are named {comp.name}.")
-        result[comp.name] = tuple(t.name for t in catalog[comp.component_type].terminals)
+        if hasattr(comp, "macro_def"):
+            result[comp.name] = tuple(comp.macro_def.pins)  # type: ignore[attr-defined]
+        else:
+            result[comp.name] = tuple(t.name for t in catalog[comp.component_type].terminals)
     return result
 
 

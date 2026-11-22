@@ -48,6 +48,8 @@ from circuitsim.canvas.connectivity import (
 )
 from circuitsim.canvas.symbol_geometry import (
     GRID_PITCH_PX,
+    SymbolMetadata,
+    build_custom_macro_metadata,
     snap_to_grid,
     transform_terminal_position,
 )
@@ -140,6 +142,7 @@ class CircuitScene(QGraphicsScene):
         self.symbol_library: SymbolLibrary = symbol_library
         self.theme: ThemeMode = theme
         self.settings: AppSettings | None = settings
+        self.user_library: object | None = None
         self.show_grid: bool = True
         self.undo_stack: QUndoStack = QUndoStack(self)
 
@@ -276,11 +279,45 @@ class CircuitScene(QGraphicsScene):
         self.show_grid = bool(visible)
         self.update()
 
+    def _resolve_component_metadata(self, component_id: str) -> SymbolMetadata:
+        if component_id.startswith("custom:") and self.user_library is not None:
+            part_id = component_id.removeprefix("custom:")
+            entry = self.user_library.get_part(part_id)  # type: ignore[attr-defined]
+            if entry is not None:
+                if entry.kind == "macro":
+                    from circuitsim.io.user_library import deserialize_macro_def
+
+                    mdef = deserialize_macro_def(entry.macro_payload)
+                    return build_custom_macro_metadata(mdef.macro_name, mdef.pins)
+                if entry.base_component_type:
+                    return self.symbol_library.get_metadata(entry.base_component_type)
+        return self.symbol_library.get_metadata(component_id)
+
+    def _create_model_for_id(self, component_id: str, name: str) -> Component:
+        if component_id.startswith("custom:") and self.user_library is not None:
+            part_id = component_id.removeprefix("custom:")
+            entry = self.user_library.get_part(part_id)  # type: ignore[attr-defined]
+            if entry is None:
+                raise ValueError(f"Unknown custom part {part_id!r}.")
+            from circuitsim.io.user_library import instantiate_custom_part
+
+            return instantiate_custom_part(entry, name)
+        return create_default_component_model(component_id, name)
+
     def next_component_name(
         self, component_id: str, extra_taken: set[str] | None = None
     ) -> str:
         """Generate the lowest unused sequential designator for the prefix (e.g. 'R1', 'VM1')."""
-        prefix = COMPONENT_PREFIXES.get(component_id, component_id)
+        canonical_id = component_id
+        if component_id.startswith("custom:") and self.user_library is not None:
+            entry = self.user_library.get_part(component_id.removeprefix("custom:"))  # type: ignore[attr-defined]
+            if entry is not None:
+                canonical_id = (
+                    entry.base_component_type
+                    if entry.base_component_type
+                    else ("custom_macro" if entry.kind == "macro" else component_id)
+                )
+        prefix = COMPONENT_PREFIXES.get(canonical_id, canonical_id)
         existing_names = {it.component.name for it in self._placed_items}
         if extra_taken:
             existing_names.update(extra_taken)
@@ -662,12 +699,11 @@ class CircuitScene(QGraphicsScene):
         self, component_id: str, scene_pos: QPointF, *, rotation_deg: int = 0
     ) -> None:
         """Create or move the snapping ghost preview item for `component_id`."""
-        if (
-            self._ghost_item is None
-            or self._ghost_item.component.component_type != component_id
-        ):
+        ghost_key = getattr(self, "_ghost_component_id", None)
+        if self._ghost_item is None or ghost_key != component_id:
             self.hide_ghost_preview()
-            temp_model = create_default_component_model(component_id, "PREVIEW")
+            temp_model = self._create_model_for_id(component_id, "PREVIEW")
+            self._ghost_component_id = component_id
             self._ghost_item = ComponentItem(
                 temp_model,
                 self.symbol_library,
@@ -685,6 +721,7 @@ class CircuitScene(QGraphicsScene):
         if self._ghost_item is not None:
             self.removeItem(self._ghost_item)
             self._ghost_item = None
+        self._ghost_component_id = None
 
     def _component_footprint_rect_at(
         self,
@@ -694,7 +731,7 @@ class CircuitScene(QGraphicsScene):
         rotation_deg: int = 0,
     ) -> QRectF:
         """Full terminal-to-terminal collision footprint (inset 2 px at tips, >=36 px thick)."""
-        meta = self.symbol_library.get_metadata(component_id)
+        meta = self._resolve_component_metadata(component_id)
         raw_w, raw_h = meta.pixel_size
         rw = max(36.0, float(raw_w) - 4.0)
         rh = max(36.0, float(raw_h) - 4.0)
@@ -724,7 +761,7 @@ class CircuitScene(QGraphicsScene):
         """Return True if candidate footprint or its terminals overlap any non-excluded component."""
         cand = self._component_footprint_rect_at(component_id, cx, cy, rotation_deg)
         excl = exclude or set()
-        meta = self.symbol_library.get_metadata(component_id)
+        meta = self._resolve_component_metadata(component_id)
         cand_terms = [
             normalize_point_px(
                 transform_terminal_position(
@@ -837,8 +874,8 @@ class CircuitScene(QGraphicsScene):
         sx, sy = snap_to_grid(px, py, GRID_PITCH_PX)
 
         name = self.next_component_name(component_id)
-        model = create_default_component_model(component_id, name)
-        if component_id in ("voltmeter", "ammeter"):
+        model = self._create_model_for_id(component_id, name)
+        if model.component_type in ("voltmeter", "ammeter"):
             meter_mode = (
                 self.settings.get_new_meters_mode()
                 if self.settings is not None

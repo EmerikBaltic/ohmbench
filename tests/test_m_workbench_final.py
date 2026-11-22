@@ -526,3 +526,124 @@ def test_m5_potentiometer_bracket_tuning_and_space_quick_place(
         win.circuit_scene.undo_stack.setClean()
         win._switch_modified = False
         win.close()
+
+
+def test_m6_custom_parts_library_preset_macro_export_import_and_palette(
+    qapp: QApplication, tmp_path
+) -> None:
+    from PySide6.QtCore import QPointF, Qt
+    from circuitsim.app.main_window import MainWindow
+    from circuitsim.app.settings import AppSettings
+    from circuitsim.components.custom_macro import CustomMacroBlock, package_subcircuit_macro
+    from circuitsim.components.resistor import Resistor
+    from circuitsim.dialogs.custom_parts_dialog import ManageCustomPartsDialog
+    from circuitsim.engine.solver import MNASolver
+    from circuitsim.io.circ_serializer import (
+        CircuitDocument,
+        PlacedComponentSpec,
+        load_document,
+        save_document,
+    )
+    from circuitsim.io.user_library import (
+        UserLibraryStore,
+        create_macro_part_entry,
+        create_preset_from_component,
+    )
+    from tests.ui_flow_helpers import terminal_scene_point
+
+    lib_path = tmp_path / "user_library.json"
+    store = UserLibraryStore(lib_path)
+
+    # 1. Save a Preset (10 kOhm Resistor) and a Macro (1:1 Voltage Divider)
+    r_template = Resistor("R_tpl", "a", "b", resistance=10_000.0)
+    preset_entry = create_preset_from_component(
+        r_template, name="Pullup 10k", description="Standard I2C pull-up"
+    )
+    store.add_or_update_part(preset_entry)
+
+    div_r1 = Resistor("R_top", "IN", "OUT", resistance=1000.0)
+    div_r2 = Resistor("R_bot", "OUT", "GND", resistance=1000.0)
+    div_macro_def = package_subcircuit_macro("Divider Macro", ("IN", "OUT", "GND"), (div_r1, div_r2))
+    macro_entry = create_macro_part_entry(div_macro_def, description="50% 1k/1k divider")
+    store.add_or_update_part(macro_entry)
+
+    # Reload from disk in fresh store
+    reloaded = UserLibraryStore(lib_path)
+    assert len(reloaded.list_parts()) == 2
+    assert reloaded.get_part(preset_entry.part_id) is not None
+    assert reloaded.get_part(macro_entry.part_id) is not None
+
+    # Export / Import round-trip
+    export_file = tmp_path / "exported_parts.json"
+    reloaded.export_library(export_file)
+    store2 = UserLibraryStore(tmp_path / "imported_library.json")
+    imported = store2.import_library(export_file)
+    assert len(imported) == 2
+
+    # 2. Palette, Manage Dialog, Scene Placement & MNA Simulation in MainWindow
+    win = MainWindow(
+        settings=AppSettings(data_dir=tmp_path / "m6_settings"),
+        user_library=store,
+    )
+    try:
+        top_cat = win.palette_widget.tree.topLevelItem(0)
+        assert top_cat is not None
+        assert top_cat.text(0) == "My Custom Parts"
+        names = [top_cat.child(i).text(0) for i in range(top_cat.childCount())]
+        assert "Pullup 10k" in names
+        assert "Divider Macro" in names
+
+        mgr = ManageCustomPartsDialog(
+            store,
+            on_library_changed=win.palette_widget.refresh_custom_parts,
+            parent=win,
+        )
+        try:
+            assert mgr.parts_list.count() == 2
+        finally:
+            mgr.close()
+
+        scene = win.circuit_scene
+        # Place custom preset
+        it_preset = scene.place_new_component(
+            f"custom:{preset_entry.part_id}", QPointF(-240.0, -120.0)
+        )
+        assert it_preset is not None
+        assert isinstance(it_preset.component, Resistor)
+        assert it_preset.component.resistance == pytest.approx(10_000.0)
+
+        # Place custom macro + DC source + Ground and verify MNA DC solution
+        it_v = scene.place_new_component("dc_voltage", QPointF(-160.0, 40.0))
+        it_g = scene.place_new_component("ground", QPointF(-160.0, 160.0))
+        it_mac = scene.place_new_component(
+            f"custom:{macro_entry.part_id}", QPointF(40.0, 40.0)
+        )
+        assert it_v is not None and it_g is not None and it_mac is not None
+        assert isinstance(it_mac.component, CustomMacroBlock)
+        it_v.component.dc_voltage = 10.0  # type: ignore[attr-defined]
+
+        scene.add_routed_wire(terminal_scene_point(it_v, "pos"), terminal_scene_point(it_mac, "IN"))
+        scene.add_routed_wire(terminal_scene_point(it_v, "neg"), terminal_scene_point(it_g, "gnd"))
+        scene.add_routed_wire(terminal_scene_point(it_mac, "GND"), terminal_scene_point(it_g, "gnd"))
+
+        conn = scene.extract_connectivity_result()
+        conn.circuit.validate_topology()
+        dc_res = MNASolver(conn.circuit).solve_dc()
+        out_net = conn.component_nodes[it_mac.component.name]["OUT"]
+        assert float(dc_res.node_voltages[out_net]) == pytest.approx(5.0, abs=1e-3)
+
+        # Verify CustomMacroBlock round-trips through .circ save/load
+        circ_path = tmp_path / "macro_roundtrip.circ"
+        save_document(
+            circ_path,
+            CircuitDocument(placed=[PlacedComponentSpec(component=it_mac.component, center_px=(40.0, 40.0))]),
+        )
+        loaded_doc = load_document(circ_path)
+        mac_loaded = loaded_doc.placed[0].component
+        assert isinstance(mac_loaded, CustomMacroBlock)
+        assert mac_loaded.macro_def.macro_name == "Divider Macro"
+        assert tuple(mac_loaded.macro_def.pins) == ("IN", "OUT", "GND")
+    finally:
+        win.circuit_scene.undo_stack.setClean()
+        win._switch_modified = False
+        win.close()
