@@ -1567,7 +1567,8 @@ class MainWindow(QMainWindow):
         existing = self._dso_dialogs.get(cname)
         if isinstance(existing, DSOOscilloscopeDialog) and existing.osc_component is item.component:
             existing.refresh_net_labels()
-            existing.capture_from_scene()
+            if self._sim_state != SimulationState.RUNNING:
+                existing.capture_from_scene()
             existing.show()
             existing.raise_()
             existing.activateWindow()
@@ -1581,11 +1582,14 @@ class MainWindow(QMainWindow):
                 name, {}
             ),
             timebase_changed_callback=self._sync_dso_timebase_to_worker,
+            is_simulation_running_provider=lambda: self._sim_state == SimulationState.RUNNING,
+            closed_callback=lambda _d, name=cname: self._dso_dialogs.pop(name, None),
             parent=self,
         )
         self._dso_dialogs[cname] = dlg
         dlg.refresh_net_labels()
-        dlg.capture_from_scene()
+        if self._sim_state != SimulationState.RUNNING:
+            dlg.capture_from_scene()
         dlg.show()
         dlg.raise_()
         dlg.activateWindow()

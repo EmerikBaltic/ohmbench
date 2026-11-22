@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from enum import Enum
 import math
+import time
 from typing import Any
 import numpy as np
 from scipy.linalg import lu_factor, lu_solve
@@ -2943,6 +2944,7 @@ class MNASolver:
         use_be_on_first_step: bool = True,
         use_be_on_switch: bool = True,
         reset_before_run: bool = True,
+        max_wall_time_s: float | None = None,
     ) -> TransientResult:
         """Run a transient simulation from `t = 0` (or current `sim_time`) for `duration` s.
 
@@ -3027,6 +3029,8 @@ class MNASolver:
             (w.code, w.component_names): idx for idx, w in enumerate(all_warnings)
         }
 
+        t_wall_start = time.perf_counter()
+        actual_steps = 0
         for k in range(1, n_steps + 1):
             res = self.step_transient(
                 step_dt,
@@ -3034,6 +3038,7 @@ class MNASolver:
                 use_be_on_first_step=use_be_on_first_step,
                 use_be_on_switch=use_be_on_switch,
             )
+            actual_steps = k
             if res.rebuilt_matrix:
                 rebuild_count += 1
             times[k] = res.sim_time
@@ -3050,6 +3055,19 @@ class MNASolver:
                     all_warnings.append(w)
                 else:
                     all_warnings[existing_idx] = w
+            if (
+                max_wall_time_s is not None
+                and (k & 15) == 0
+                and (time.perf_counter() - t_wall_start) >= max_wall_time_s
+            ):
+                break
+
+        if actual_steps < n_steps:
+            limit = actual_steps + 1
+            times = times[:limit]
+            node_history = {n: arr[:limit] for n, arr in node_history.items()}
+            curr_history = {n: arr[:limit] for n, arr in curr_history.items()}
+            volt_history = {n: arr[:limit] for n, arr in volt_history.items()}
 
         return TransientResult(
             times=times,
@@ -3058,7 +3076,7 @@ class MNASolver:
             component_voltages=volt_history,
             warnings=all_warnings,
             matrix_rebuild_count=rebuild_count,
-            step_count=n_steps,
+            step_count=actual_steps,
         )
 
     def _update_voltmeter_loading(self, comp: Voltmeter) -> None:

@@ -4,13 +4,13 @@ from __future__ import annotations
 
 import csv
 import math
-from collections import deque
 from pathlib import Path
+import time
 from typing import Callable
 
 import numpy as np
-from PySide6.QtCore import QPointF, QRectF, QSize, Qt, Signal
-from PySide6.QtGui import QBrush, QColor, QFont, QImage, QMouseEvent, QPainter, QPen, QPolygonF
+from PySide6.QtCore import QPointF, QRectF, QSize, QTimer, Qt, Signal
+from PySide6.QtGui import QBrush, QCloseEvent, QColor, QFont, QImage, QMouseEvent, QPainter, QPen, QPolygonF
 from PySide6.QtWidgets import (
     QDial,
     QDialog,
@@ -40,9 +40,11 @@ from circuitsim.scope.dso_engine import (
     DSO_VERTICAL_DIVS,
     DSO_VOLTS_PER_DIV,
     DSOFrame,
+    DSORingBuffer,
     DSOState,
     compute_auto_set,
     compute_set_to_50_percent,
+    decimate_xy_minmax,
     process_dso_capture,
     recall_setup_json,
     reset_default_setup,
@@ -97,6 +99,7 @@ class _DSOScreenWidget(QWidget):
         self._dragging_cursor: int | None = None
         self._plot_rect: QRectF = QRectF()
         self.top_timebase_text: str = "M 5ms/div"
+        self.last_rendered_point_counts: dict[str, int] = {"CH1": 0, "CH2": 0, "MATH": 0}
 
     def _format_top_timebase_text(self) -> str:
         eff_sec_div = (
@@ -197,34 +200,37 @@ class _DSOScreenWidget(QWidget):
 
     def paintEvent(self, _event) -> None:
         painter = QPainter(self)
-        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
-        w = float(self.width())
-        h = float(self.height())
+        try:
+            painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+            w = float(self.width())
+            h = float(self.height())
 
-        # Dark high-contrast LCD chassis background
-        painter.fillRect(QRectF(0.0, 0.0, w, h), QColor("#0F172A"))
-        plot = self._compute_plot_rect()
-        self._plot_rect = plot
+            # Dark high-contrast LCD chassis background
+            painter.fillRect(QRectF(0.0, 0.0, w, h), QColor("#0F172A"))
+            plot = self._compute_plot_rect()
+            self._plot_rect = plot
 
-        # Top status bar
-        self._paint_top_bar(painter, w)
-        # Bottom status bar
-        self._paint_bottom_bar(painter, w, h)
-        # 12x8 graticule with sub-division ticks
-        self._paint_graticule(painter, plot)
+            # Top status bar
+            self._paint_top_bar(painter, w)
+            # Bottom status bar
+            self._paint_bottom_bar(painter, w, h)
+            # 12x8 graticule with sub-division ticks
+            self._paint_graticule(painter, plot)
 
-        # Waveforms + markers inside plot area
-        if self.frame is not None:
-            self._paint_waveforms(painter, plot, self.frame)
-            if self.state.auto_measure_enabled:
-                self._paint_auto_measure_strip(painter, plot, self.frame)
-        self._paint_markers_and_cursors(painter, plot)
+            # Waveforms + markers inside plot area
+            if self.frame is not None:
+                self._paint_waveforms(painter, plot, self.frame)
+                if self.state.auto_measure_enabled:
+                    self._paint_auto_measure_strip(painter, plot, self.frame)
+            self._paint_markers_and_cursors(painter, plot)
 
-        # Right-edge blue softkey menu
-        if self.menu_visible:
-            self._paint_softkey_menu(painter, plot, w)
-
-        painter.end()
+            # Right-edge blue softkey menu
+            if self.menu_visible:
+                self._paint_softkey_menu(painter, plot, w)
+        except Exception:
+            pass
+        finally:
+            painter.end()
 
     def _paint_top_bar(self, painter: QPainter, w: float) -> None:
         bar = QRectF(0.0, 0.0, w, 26.0)
@@ -371,14 +377,34 @@ class _DSOScreenWidget(QWidget):
             segments = [seg for seg in pts if seg]  # type: ignore[assignment]
         else:
             segments = [pts]  # type: ignore[list-item]
-        painter.setPen(QPen(color, width))
         is_dots = self.state.display.render_style.upper() == "DOTS"
-        for seg in segments:
-            if is_dots or len(seg) == 1:
-                for pt in seg:
-                    painter.drawPoint(pt)
-            else:
-                painter.drawPolyline(QPolygonF(seg))
+        was_aa = bool(painter.renderHints() & QPainter.RenderHint.Antialiasing)
+        std_pen = QPen(color, width)
+        fast_pen = QPen(color, 0)
+        fast_pen.setCosmetic(True)
+
+        try:
+            for seg in segments:
+                n_seg = len(seg)
+                if is_dots or n_seg == 1:
+                    painter.setPen(std_pen)
+                    for pt in seg:
+                        painter.drawPoint(pt)
+                elif n_seg > 256:
+                    # Bypass Qt's O(V^2) wide-AA stroke tessellation on dense decimated envelopes
+                    if was_aa:
+                        painter.setRenderHint(QPainter.RenderHint.Antialiasing, False)
+                    painter.setPen(fast_pen)
+                    for k in range(0, n_seg - 1, 63):
+                        painter.drawPolyline(QPolygonF(seg[k : k + 64]))
+                else:
+                    if was_aa:
+                        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+                    painter.setPen(std_pen)
+                    painter.drawPolyline(QPolygonF(seg))
+        finally:
+            if bool(painter.renderHints() & QPainter.RenderHint.Antialiasing) != was_aa:
+                painter.setRenderHint(QPainter.RenderHint.Antialiasing, was_aa)
 
     def _map_yt_segments(
         self,
@@ -397,34 +423,50 @@ class _DSOScreenWidget(QWidget):
             else self.state.horizontal.sec_per_div
         )
         t_span = max(eff_sec_div * DSO_HORIZONTAL_DIVS, 1e-12)
-        frame_x = (
-            self.frame.x_norm
-            if (self.frame is not None and len(self.frame.x_norm) == n)
-            else None
-        )
+        t_slice = np.asarray(t_rel[:n], dtype=np.float64)
+        v_slice = np.asarray(vals[:n], dtype=np.float64)
+        if self.frame is not None and len(self.frame.x_norm) == n:
+            x_arr = np.asarray(self.frame.x_norm[:n], dtype=np.float64)
+        else:
+            x_arr = (t_slice + 0.5 * t_span) / t_span
 
-        diffs = np.diff(t_rel[:n])
-        pos_diffs = diffs[diffs > 0.0]
-        med_dt = float(np.median(pos_diffs)) if len(pos_diffs) > 0 else 0.0
+        diffs = np.diff(t_slice)
+        split_idxs = np.flatnonzero(diffs <= 0.0)
+        bounds: list[tuple[int, int]] = []
+        prev_start = 0
+        for sp in split_idxs:
+            end_i = int(sp) + 1
+            if end_i - prev_start >= 1:
+                bounds.append((prev_start, end_i))
+            prev_start = end_i
+        if n - prev_start >= 1:
+            bounds.append((prev_start, n))
 
-        step = max(1, n // 1200)
-        segments: list[list[QPointF]] = [[]]
-        prev_t: float | None = None
-        gap_limit = 10.0 * med_dt * step if med_dt > 0.0 else 0.0
-        for idx in range(0, n, step):
-            cur_t = float(t_rel[idx])
-            if prev_t is not None and (cur_t <= prev_t or (gap_limit > 0.0 and (cur_t - prev_t) > gap_limit)):
-                if segments[-1]:
-                    segments.append([])
-            prev_t = cur_t
-            if frame_x is not None:
-                fx = float(frame_x[idx])
-            else:
-                fx = (cur_t + 0.5 * t_span) / t_span
-            px = plot.left() + fx * plot.width()
-            py = self._y_from_div(float(vals[idx]) / max(v_div, 1e-9) + pos_div, plot)
-            segments[-1].append(QPointF(px, py))
-        return [seg for seg in segments if len(seg) >= 1]
+        max_cols = min(600, max(120, int(round(plot.width()))))
+        safe_vdiv = max(float(v_div), 1e-9)
+        y_center = plot.center().y()
+        y_half = plot.height() / 2.0
+        half_vdivs = DSO_VERTICAL_DIVS / 2.0
+        x_left = plot.left()
+        x_width = plot.width()
+        x_min_px = x_left - 50.0
+        x_max_px = plot.right() + 50.0
+        y_min_px = plot.top() - 200.0
+        y_max_px = plot.bottom() + 200.0
+
+        segments: list[list[QPointF]] = []
+        for s_idx, e_idx in bounds:
+            x_dec, y_dec = decimate_xy_minmax(x_arr[s_idx:e_idx], v_slice[s_idx:e_idx], max_columns=max_cols)
+            if len(x_dec) == 0:
+                continue
+            px_arr = np.clip(x_left + x_dec * x_width, x_min_px, x_max_px)
+            y_divs = y_dec / safe_vdiv + pos_div
+            py_raw = y_center - (y_divs / half_vdivs) * y_half
+            py_arr = np.clip(py_raw, y_min_px, y_max_px)
+            seg = [QPointF(float(px), float(py)) for px, py in zip(px_arr.tolist(), py_arr.tolist())]
+            if seg:
+                segments.append(seg)
+        return segments
 
     def _map_yt_points(
         self,
@@ -439,70 +481,87 @@ class _DSOScreenWidget(QWidget):
     def _paint_waveforms(self, painter: QPainter, plot: QRectF, frame: DSOFrame) -> None:
         painter.save()
         painter.setClipRect(plot)
+        ch1_cnt = 0
+        ch2_cnt = 0
+        math_cnt = 0
+        try:
+            if self.state.horizontal.format_mode.upper() == "XY":
+                n = min(len(frame.ch1_v), len(frame.ch2_v))
+                step = max(1, n // 900)
+                pts: list[QPointF] = []
+                y_min_px = plot.top() - 200.0
+                y_max_px = plot.bottom() + 200.0
+                x_min_px = plot.left() - 200.0
+                x_max_px = plot.right() + 200.0
+                for idx in range(0, n, step):
+                    c1_val = float(frame.ch1_v[idx])
+                    c2_val = float(frame.ch2_v[idx])
+                    if not (math.isfinite(c1_val) and math.isfinite(c2_val)):
+                        continue
+                    x_div = c1_val / max(self.state.ch1.volts_per_div, 1e-9) + self.state.ch1.position_div
+                    y_div = c2_val / max(self.state.ch2.volts_per_div, 1e-9) + self.state.ch2.position_div
+                    px = max(x_min_px, min(x_max_px, plot.center().x() + (x_div / (DSO_HORIZONTAL_DIVS / 2.0)) * (plot.width() / 2.0)))
+                    py = max(y_min_px, min(y_max_px, self._y_from_div(y_div, plot)))
+                    pts.append(QPointF(px, py))
+                self._draw_trace(painter, pts, QColor("#38BDF8"), 1.6)
+                ch1_cnt = len(pts)
+                return
 
-        if self.state.horizontal.format_mode.upper() == "XY":
-            n = min(len(frame.ch1_v), len(frame.ch2_v))
-            step = max(1, n // 900)
-            pts: list[QPointF] = []
-            for idx in range(0, n, step):
-                x_div = float(frame.ch1_v[idx]) / max(self.state.ch1.volts_per_div, 1e-9) + self.state.ch1.position_div
-                y_div = float(frame.ch2_v[idx]) / max(self.state.ch2.volts_per_div, 1e-9) + self.state.ch2.position_div
-                px = plot.center().x() + (x_div / (DSO_HORIZONTAL_DIVS / 2.0)) * (plot.width() / 2.0)
-                py = self._y_from_div(y_div, plot)
-                pts.append(QPointF(px, py))
-            self._draw_trace(painter, pts, QColor("#38BDF8"), 1.6)
-            painter.restore()
-            return
+            # Persistence ghosts
+            for idx_p, (p1, p2) in enumerate(frame.persistence_traces[:-1]):
+                alpha = 40 + idx_p * 25
+                if self.state.ch1.enabled:
+                    segs1 = self._map_yt_segments(frame.times_rel_s, p1, self.state.ch1.volts_per_div, self.state.ch1.position_div, plot)
+                    self._draw_trace(painter, segs1, QColor(250, 204, 21, alpha), 1.2)
+                if self.state.ch2.enabled:
+                    segs2 = self._map_yt_segments(frame.times_rel_s, p2, self.state.ch2.volts_per_div, self.state.ch2.position_div, plot)
+                    self._draw_trace(painter, segs2, QColor(34, 211, 238, alpha), 1.2)
 
-        # Persistence ghosts
-        for idx_p, (p1, p2) in enumerate(frame.persistence_traces[:-1]):
-            alpha = 40 + idx_p * 25
             if self.state.ch1.enabled:
-                segs1 = self._map_yt_segments(frame.times_rel_s, p1, self.state.ch1.volts_per_div, self.state.ch1.position_div, plot)
-                self._draw_trace(painter, segs1, QColor(250, 204, 21, alpha), 1.2)
+                segs1 = self._map_yt_segments(frame.times_rel_s, frame.ch1_v, self.state.ch1.volts_per_div, self.state.ch1.position_div, plot)
+                ch1_cnt = sum(len(s) for s in segs1)
+                self._draw_trace(painter, segs1, QColor("#FACC15"), 1.8)
+
             if self.state.ch2.enabled:
-                segs2 = self._map_yt_segments(frame.times_rel_s, p2, self.state.ch2.volts_per_div, self.state.ch2.position_div, plot)
-                self._draw_trace(painter, segs2, QColor(34, 211, 238, alpha), 1.2)
+                segs2 = self._map_yt_segments(frame.times_rel_s, frame.ch2_v, self.state.ch2.volts_per_div, self.state.ch2.position_div, plot)
+                ch2_cnt = sum(len(s) for s in segs2)
+                self._draw_trace(painter, segs2, QColor("#22D3EE"), 1.8)
 
-        if self.state.ch1.enabled:
-            segs1 = self._map_yt_segments(frame.times_rel_s, frame.ch1_v, self.state.ch1.volts_per_div, self.state.ch1.position_div, plot)
-            self._draw_trace(painter, segs1, QColor("#FACC15"), 1.8)
-
-        if self.state.ch2.enabled:
-            segs2 = self._map_yt_segments(frame.times_rel_s, frame.ch2_v, self.state.ch2.volts_per_div, self.state.ch2.position_div, plot)
-            self._draw_trace(painter, segs2, QColor("#22D3EE"), 1.8)
-
-        if self.state.math.enabled:
-            if self.state.math.operation.upper() == "FFT":
-                freqs = frame.fft_freqs_hz
-                db = frame.fft_mag_db
-                if len(freqs) >= 2:
-                    f_max = max(float(freqs[-1]), 1.0)
-                    # Cap display span neatly so 1kHz tones stay clearly visible
-                    if frame.fft_peak_hz is not None and frame.fft_peak_hz > 0.0:
-                        f_max = min(f_max, max(frame.fft_peak_hz * 5.0, 5000.0))
-                    pts_fft: list[QPointF] = []
-                    for f_val, db_val in zip(freqs, db):
-                        if f_val > f_max:
-                            break
-                        px = plot.left() + (float(f_val) / f_max) * plot.width()
-                        norm_y = (float(db_val) - (-80.0)) / 100.0
-                        py = plot.bottom() - max(0.0, min(1.0, norm_y)) * plot.height()
-                        pts_fft.append(QPointF(px, py))
-                    self._draw_trace(painter, pts_fft, QColor("#E879F9"), 1.6)
-                    if frame.fft_peak_hz is not None:
-                        painter.setPen(QColor("#F0ABFC"))
-                        painter.setFont(QFont("Segoe UI", 8))
-                        painter.drawText(
-                            QRectF(plot.left() + 8.0, plot.top() + 6.0, 220.0, 18.0),
-                            Qt.AlignmentFlag.AlignLeft,
-                            f"FFT Peak: {format_engineering_value(frame.fft_peak_hz, 'Hz')}",
-                        )
-            else:
-                segs_m = self._map_yt_segments(frame.times_rel_s, frame.math_v, self.state.math.scale, self.state.math.position_div, plot)
-                self._draw_trace(painter, segs_m, QColor("#E879F9"), 1.6)
-
-        painter.restore()
+            if self.state.math.enabled:
+                if self.state.math.operation.upper() == "FFT":
+                    freqs = frame.fft_freqs_hz
+                    db = frame.fft_mag_db
+                    if len(freqs) >= 2:
+                        f_max = max(float(freqs[-1]), 1.0)
+                        if frame.fft_peak_hz is not None and frame.fft_peak_hz > 0.0:
+                            f_max = min(f_max, max(frame.fft_peak_hz * 5.0, 5000.0))
+                        pts_fft: list[QPointF] = []
+                        for f_val, db_val in zip(freqs, db):
+                            if f_val > f_max:
+                                break
+                            if not (math.isfinite(float(f_val)) and math.isfinite(float(db_val))):
+                                continue
+                            px = plot.left() + (float(f_val) / f_max) * plot.width()
+                            norm_y = (float(db_val) - (-80.0)) / 100.0
+                            py = plot.bottom() - max(0.0, min(1.0, norm_y)) * plot.height()
+                            pts_fft.append(QPointF(px, py))
+                        math_cnt = len(pts_fft)
+                        self._draw_trace(painter, pts_fft, QColor("#E879F9"), 1.6)
+                        if frame.fft_peak_hz is not None:
+                            painter.setPen(QColor("#F0ABFC"))
+                            painter.setFont(QFont("Segoe UI", 8))
+                            painter.drawText(
+                                QRectF(plot.left() + 8.0, plot.top() + 6.0, 220.0, 18.0),
+                                Qt.AlignmentFlag.AlignLeft,
+                                f"FFT Peak: {format_engineering_value(frame.fft_peak_hz, 'Hz')}",
+                            )
+                else:
+                    segs_m = self._map_yt_segments(frame.times_rel_s, frame.math_v, self.state.math.scale, self.state.math.position_div, plot)
+                    math_cnt = sum(len(s) for s in segs_m)
+                    self._draw_trace(painter, segs_m, QColor("#E879F9"), 1.6)
+        finally:
+            self.last_rendered_point_counts = {"CH1": ch1_cnt, "CH2": ch2_cnt, "MATH": math_cnt}
+            painter.restore()
 
     def _paint_auto_measure_strip(self, painter: QPainter, plot: QRectF, frame: DSOFrame) -> None:
         strip = QRectF(plot.left() + 4.0, plot.bottom() - 20.0, plot.width() - 8.0, 18.0)
@@ -624,6 +683,8 @@ class DSOOscilloscopeDialog(QDialog):
         circuit_provider: Callable[[], Circuit] | None = None,
         nets_provider: Callable[[], dict[str, str]] | None = None,
         timebase_changed_callback: Callable[[], None] | None = None,
+        is_simulation_running_provider: Callable[[], bool] | None = None,
+        closed_callback: Callable[[DSOOscilloscopeDialog], None] | None = None,
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
@@ -637,28 +698,115 @@ class DSOOscilloscopeDialog(QDialog):
         self._circuit_provider = circuit_provider
         self._nets_provider = nets_provider
         self._timebase_changed_callback = timebase_changed_callback
+        self._is_sim_running_provider = is_simulation_running_provider
+        self._closed_callback = closed_callback
         self.state: DSOState = recall_setup_json(self.osc_component.dso_state_json)
-        self.latest_frame: DSOFrame | None = None
+        self._latest_frame: DSOFrame | None = None
         self.active_menu: str = "CH1"
         self.menu_visible: bool = True
         self._saved_setup_slot: str = ""
         self._syncing_dials: bool = False
 
-        self._live_times: deque[float] = deque(maxlen=65536)
-        self._live_ch1: deque[float] = deque(maxlen=65536)
-        self._live_ch2: deque[float] = deque(maxlen=65536)
-        self._live_ext: deque[float] = deque(maxlen=65536)
+        self._ring_buffer: DSORingBuffer = DSORingBuffer(capacity=65536)
         self._last_live_t: float | None = None
         self._live_step_counter: int = 0
         self._received_sample_blocks: bool = False
         self._cached_nets: dict[str, str] = {}
+        self._dirty: bool = False
+        self._is_closed: bool = False
+        self._single_trig_t: float | None = None
+        self._single_hold_locked: bool = False
 
         self.setWindowTitle(f"{self.osc_component.name} — DSO-1062D Benchtop Oscilloscope")
         self.setMinimumSize(980, 620)
         self.resize(1100, 680)
         self._build_ui()
+
+        self._refresh_timer = QTimer(self)
+        self._refresh_timer.setInterval(33)
+        self._refresh_timer.timeout.connect(self._on_refresh_timer)
+        self._refresh_timer.start()
+
+        self._sec_div_debounce_timer = QTimer(self)
+        self._sec_div_debounce_timer.setSingleShot(True)
+        self._sec_div_debounce_timer.setInterval(80)
+        self._sec_div_debounce_timer.timeout.connect(self._on_sec_div_debounced)
+
         self._sync_ui_from_state()
         self.refresh_net_labels()
+
+    @property
+    def latest_frame(self) -> DSOFrame | None:
+        if self._dirty and not self._is_closed:
+            self._flush_dirty_frame()
+        return self._latest_frame
+
+    @latest_frame.setter
+    def latest_frame(self, value: DSOFrame | None) -> None:
+        self._latest_frame = value
+
+    def _is_sim_currently_running(self) -> bool:
+        if self._is_sim_running_provider is not None:
+            try:
+                return bool(self._is_sim_running_provider())
+            except Exception:
+                return False
+        return False
+
+    def load_ring_buffer(
+        self,
+        times: np.ndarray,
+        ch1: np.ndarray,
+        ch2: np.ndarray,
+        ext: np.ndarray | None = None,
+    ) -> None:
+        """Populate the 65k NumPy circular buffer and mark the display dirty."""
+        t_arr = np.asarray(times, dtype=np.float64)
+        c1_arr = np.asarray(ch1, dtype=np.float64)
+        c2_arr = np.asarray(ch2, dtype=np.float64)
+        e_arr = np.asarray(ext, dtype=np.float64) if ext is not None else np.zeros_like(c1_arr)
+        self._ring_buffer.set_arrays(t_arr, c1_arr, c2_arr, e_arr)
+        self._last_live_t = self._ring_buffer.last_time()
+        self._dirty = True
+
+    def _on_refresh_timer(self) -> None:
+        if self._is_closed or not self._dirty:
+            return
+        self._flush_dirty_frame()
+
+    def _flush_dirty_frame(self) -> None:
+        if self._is_closed:
+            return
+        self._dirty = False
+        t_arr, c1, c2, ext = self._raw_arrays_for_processing()
+        if len(t_arr) >= 2:
+            self._latest_frame = process_dso_capture(
+                t_arr,
+                c1,
+                c2,
+                ext,
+                self.state,
+                prev_frame=self._latest_frame,
+                live_streaming=self._received_sample_blocks,
+            )
+            if self.state.trigger.mode.upper() == "SINGLE" and not self.state.trigger.single_armed:
+                self._single_hold_locked = False
+            self._push_mini_preview()
+            self._sync_ui_from_state()
+
+    def closeEvent(self, event: QCloseEvent) -> None:
+        self._is_closed = True
+        self._dirty = False
+        if hasattr(self, "_refresh_timer"):
+            self._refresh_timer.stop()
+        if hasattr(self, "_sec_div_debounce_timer"):
+            self._sec_div_debounce_timer.stop()
+        if self._closed_callback is not None:
+            try:
+                self._closed_callback(self)
+            except Exception:
+                pass
+        super().closeEvent(event)
 
     def _build_ui(self) -> None:
         self.setStyleSheet(
@@ -1101,10 +1249,22 @@ class DSOOscilloscopeDialog(QDialog):
                 s.horizontal.zoom_enabled = not s.horizontal.zoom_enabled
             elif index == 2:
                 s.horizontal.sec_per_div = _step_table(s.horizontal.sec_per_div, DSO_SEC_PER_DIV, -1)
-                self._notify_timebase_changed()
+                self._persist_state_to_component()
+                if len(self._ring_buffer) >= 4:
+                    self._flush_dirty_frame()
+                else:
+                    self._sync_ui_from_state()
+                self._sec_div_debounce_timer.start()
+                return
             elif index == 3:
                 s.horizontal.sec_per_div = _step_table(s.horizontal.sec_per_div, DSO_SEC_PER_DIV, 1)
-                self._notify_timebase_changed()
+                self._persist_state_to_component()
+                if len(self._ring_buffer) >= 4:
+                    self._flush_dirty_frame()
+                else:
+                    self._sync_ui_from_state()
+                self._sec_div_debounce_timer.start()
+                return
             elif index == 4:
                 s.horizontal.position_s = 0.0
         elif m == "TRIG":
@@ -1115,6 +1275,10 @@ class DSOOscilloscopeDialog(QDialog):
             elif index == 2:
                 s.trigger.mode = str(_cycle_choice(s.trigger.mode, ("AUTO", "NORMAL", "SINGLE")))
                 s.trigger.single_armed = s.trigger.mode == "SINGLE"
+                if s.trigger.single_armed:
+                    s.running = True
+                    self._single_trig_t = None
+                    self._single_hold_locked = False
             elif index == 3:
                 s.trigger.coupling = "AC" if s.trigger.coupling == "DC" else "DC"
             elif index == 4:
@@ -1147,7 +1311,11 @@ class DSOOscilloscopeDialog(QDialog):
         else:  # UTILITY
             if index in (0, 1):
                 self.refresh_net_labels()
-                self.capture_from_scene()
+                if not self._is_sim_currently_running():
+                    self.capture_from_scene()
+                else:
+                    self._flush_dirty_frame()
+                return
             elif index == 2:
                 self.knob_status_label.setText("DSO-1062D Self-Test: PASS")
             elif index == 3:
@@ -1224,9 +1392,18 @@ class DSOOscilloscopeDialog(QDialog):
         self.state.horizontal.sec_per_div = float(DSO_SEC_PER_DIV[max(0, min(len(DSO_SEC_PER_DIV) - 1, idx))])
         self.knob_status_label.setText(f"Timebase: {format_engineering_value(self.state.horizontal.sec_per_div, 's/div')}")
         self._persist_state_to_component()
+        if len(self._ring_buffer) >= 4:
+            self._flush_dirty_frame()
+        else:
+            self._sync_ui_from_state()
+        self._sec_div_debounce_timer.start()
+
+    def _on_sec_div_debounced(self) -> None:
+        if self._is_closed:
+            return
         self._notify_timebase_changed()
-        self.capture_from_scene()
-        self._sync_ui_from_state()
+        if not self._is_sim_currently_running() and not self._received_sample_blocks:
+            self.capture_from_scene()
 
     def _on_trig_level_dial(self, val: int) -> None:
         if self._syncing_dials:
@@ -1242,7 +1419,7 @@ class DSOOscilloscopeDialog(QDialog):
         t_arr, c1, c2, _ = self._raw_arrays_for_processing()
         if len(t_arr) >= 4:
             self.state = compute_auto_set(t_arr, c1, c2, self.state)
-        else:
+        elif not self._is_sim_currently_running():
             self.capture_from_scene()
             t_arr, c1, c2, _ = self._raw_arrays_for_processing()
             if len(t_arr) >= 4:
@@ -1250,9 +1427,9 @@ class DSOOscilloscopeDialog(QDialog):
         self.knob_status_label.setText("AUTO SET complete")
         self._persist_state_to_component()
         self._notify_timebase_changed()
-        if len(self._live_times) >= 16:
+        if len(self._ring_buffer) >= 16:
             self._reprocess_or_capture()
-        else:
+        elif not self._is_sim_currently_running():
             self.capture_from_scene()
         self._sync_ui_from_state()
 
@@ -1260,15 +1437,17 @@ class DSOOscilloscopeDialog(QDialog):
         self.state.running = not self.state.running
         if self.state.running and self.state.trigger.mode == "SINGLE":
             self.state.trigger.single_armed = True
+            self._single_trig_t = None
+            self._single_hold_locked = False
         self.knob_status_label.setText("Running" if self.state.running else "Stopped (Hold)")
         self._persist_state_to_component()
         if not self.state.running:
-            if self.latest_frame is not None or len(self._live_times) >= 16:
+            if self._latest_frame is not None or len(self._ring_buffer) >= 16:
                 self._reprocess_or_capture()
         else:
-            if len(self._live_times) >= 16:
+            if len(self._ring_buffer) >= 16:
                 self._reprocess_or_capture()
-            elif self._circuit_provider is not None:
+            elif self._circuit_provider is not None and not self._is_sim_currently_running():
                 self.capture_from_scene()
         self._sync_ui_from_state()
 
@@ -1276,17 +1455,27 @@ class DSOOscilloscopeDialog(QDialog):
         self.state.trigger.mode = "SINGLE"
         self.state.trigger.single_armed = True
         self.state.running = True
+        self._single_trig_t = None
+        self._single_hold_locked = False
         self.knob_status_label.setText("SINGLE SEQ armed")
         self._persist_state_to_component()
-        self.capture_from_scene()
+        if not self._is_sim_currently_running() and not self._received_sample_blocks:
+            self.capture_from_scene()
+        else:
+            self._reprocess_or_capture()
         self._sync_ui_from_state()
 
     def _on_default_setup(self) -> None:
         self.state = reset_default_setup()
+        self._single_trig_t = None
+        self._single_hold_locked = False
         self.knob_status_label.setText("Factory default setup restored")
         self._persist_state_to_component()
         self._notify_timebase_changed()
-        self.capture_from_scene()
+        if not self._is_sim_currently_running() and not self._received_sample_blocks:
+            self.capture_from_scene()
+        else:
+            self._reprocess_or_capture()
         self._sync_ui_from_state()
 
     def _on_set_to_50(self) -> None:
@@ -1339,36 +1528,40 @@ class DSOOscilloscopeDialog(QDialog):
         self.osc_component.dso_state_json = save_setup_json(self.state)
 
     def _raw_arrays_for_processing(self) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-        if len(self._live_times) >= 4:
+        if len(self._ring_buffer) >= 4:
+            return self._ring_buffer.ordered_arrays()
+        if self._latest_frame is not None and len(self._latest_frame.times_rel_s) >= 2:
             return (
-                np.array(self._live_times, dtype=np.float64),
-                np.array(self._live_ch1, dtype=np.float64),
-                np.array(self._live_ch2, dtype=np.float64),
-                np.array(self._live_ext, dtype=np.float64),
-            )
-        if self.latest_frame is not None and len(self.latest_frame.times_rel_s) >= 2:
-            return (
-                self.latest_frame.times_rel_s,
-                self.latest_frame.ch1_v,
-                self.latest_frame.ch2_v,
-                np.zeros_like(self.latest_frame.ch1_v),
+                self._latest_frame.times_rel_s,
+                self._latest_frame.ch1_v,
+                self._latest_frame.ch2_v,
+                np.zeros_like(self._latest_frame.ch1_v),
             )
         return tuple(np.empty(0, dtype=np.float64) for _ in range(4))  # type: ignore[return-value]
 
     def _reprocess_or_capture(self) -> None:
         t_arr, c1, c2, ext = self._raw_arrays_for_processing()
         if len(t_arr) >= 4:
-            self.latest_frame = process_dso_capture(t_arr, c1, c2, ext, self.state, prev_frame=self.latest_frame)
+            self._dirty = False
+            self._latest_frame = process_dso_capture(
+                t_arr,
+                c1,
+                c2,
+                ext,
+                self.state,
+                prev_frame=self._latest_frame,
+                live_streaming=self._received_sample_blocks,
+            )
             self._push_mini_preview()
-        elif self._circuit_provider is not None:
+        elif self._circuit_provider is not None and not self._is_sim_currently_running():
             self.capture_from_scene()
 
     def _push_mini_preview(self) -> None:
-        if self.latest_frame is None:
+        if self._latest_frame is None:
             return
         for attr, arr, vdiv in (
-            ("mini_preview_ch1", self.latest_frame.ch1_v, self.state.ch1.volts_per_div),
-            ("mini_preview_ch2", self.latest_frame.ch2_v, self.state.ch2.volts_per_div),
+            ("mini_preview_ch1", self._latest_frame.ch1_v, self.state.ch1.volts_per_div),
+            ("mini_preview_ch2", self._latest_frame.ch2_v, self.state.ch2.volts_per_div),
         ):
             if len(arr) >= 2:
                 idxs = np.linspace(0, len(arr) - 1, min(48, len(arr)), dtype=int)
@@ -1415,7 +1608,11 @@ class DSOOscilloscopeDialog(QDialog):
     def capture_from_scene(self) -> DSOFrame | None:
         """Run a transient capture on the active schematic over the visible time window."""
         if self._circuit_provider is None:
-            return None
+            return self._latest_frame
+        if self._is_sim_currently_running():
+            if len(self._ring_buffer) >= 4:
+                self._flush_dirty_frame()
+            return self._latest_frame
         try:
             circuit = self._circuit_provider()
             circuit.validate_topology()
@@ -1437,6 +1634,7 @@ class DSOOscilloscopeDialog(QDialog):
 
         sec_div = max(float(self.state.horizontal.sec_per_div), 1e-9)
         span = max(sec_div * DSO_HORIZONTAL_DIVS, 1e-7)
+        max_steps = 2000
         if ac_freqs:
             min_f = min(ac_freqs)
             max_f = max(ac_freqs)
@@ -1445,37 +1643,84 @@ class DSOOscilloscopeDialog(QDialog):
         else:
             duration = min(max(span, 1e-6), 1.0)
             dt_target = sec_div / 50.0
-        dt = max(dt_target, duration / 12000.0, 1e-8)
+        dt = max(dt_target, duration / float(max_steps), 1e-8)
 
-        tr = MNASolver(circuit).solve_transient(duration=duration, dt=dt)
+        tr = MNASolver(circuit).solve_transient(duration=duration, dt=dt, max_wall_time_s=0.15)
         gnd_wired = circuit.is_oscilloscope_gnd_wired(osc_in_circuit)
         vg = tr.node_voltages[osc_in_circuit.node_gnd] if (gnd_wired and osc_in_circuit.node_gnd in tr.node_voltages) else np.zeros_like(tr.times)
         ch1 = tr.node_voltages.get(osc_in_circuit.node_ch1, np.zeros_like(tr.times)) - vg
         ch2 = tr.node_voltages.get(osc_in_circuit.node_ch2, np.zeros_like(tr.times)) - vg
         ext = tr.node_voltages.get(osc_in_circuit.node_ext_trig, np.zeros_like(tr.times)) - vg
 
-        self._live_times.clear()
-        self._live_ch1.clear()
-        self._live_ch2.clear()
-        self._live_ext.clear()
-        self._live_times.extend(float(v) for v in tr.times)
-        self._live_ch1.extend(float(v) for v in ch1)
-        self._live_ch2.extend(float(v) for v in ch2)
-        self._live_ext.extend(float(v) for v in ext)
-        self._last_live_t = float(tr.times[-1]) if len(tr.times) > 0 else None
+        self._ring_buffer.set_arrays(tr.times, ch1, ch2, ext)
+        self._last_live_t = self._ring_buffer.last_time()
+        self._received_sample_blocks = False
+        self._dirty = False
 
-        self.latest_frame = process_dso_capture(tr.times, ch1, ch2, ext, self.state, prev_frame=self.latest_frame)
+        self._latest_frame = process_dso_capture(
+            tr.times,
+            ch1,
+            ch2,
+            ext,
+            self.state,
+            prev_frame=self._latest_frame,
+            live_streaming=False,
+        )
         self._push_mini_preview()
         self._sync_ui_from_state()
-        return self.latest_frame
+        return self._latest_frame
 
     def __call__(self, block: object) -> None:
         """Allow direct registration as a `SimulationSession.attach_scope_sink` callable."""
         self.on_sample_block(block)
 
+    def _detect_single_crossing_in_block(
+        self,
+        t_arr: np.ndarray,
+        v_trig: np.ndarray,
+        prev_sample: tuple[float, float, float, float] | None,
+    ) -> float | None:
+        lvl = float(self.state.trigger.level_v)
+        slope = self.state.trigger.slope.upper()
+        want_rise = slope in ("RISING", "EITHER")
+        want_fall = slope in ("FALLING", "EITHER")
+        if prev_sample is not None and len(t_arr) > 0:
+            t_prev = prev_sample[0]
+            trig_src = self.state.trigger.source.upper()
+            v_prev = prev_sample[2] if trig_src == "CH2" else (prev_sample[3] if trig_src == "EXT" else prev_sample[1])
+            v_cur = float(v_trig[0])
+            if (want_rise and v_prev < lvl <= v_cur) or (want_fall and v_prev > lvl >= v_cur):
+                dv = v_cur - v_prev
+                frac = max(0.0, min(1.0, ((lvl - v_prev) / dv) if abs(dv) > 1e-18 else 0.0))
+                return t_prev + frac * (float(t_arr[0]) - t_prev)
+        if len(v_trig) >= 2:
+            a = v_trig[:-1]
+            b = v_trig[1:]
+            idx = -1
+            if want_rise:
+                r_idx = np.flatnonzero((a < lvl) & (b >= lvl))
+                if len(r_idx) > 0:
+                    idx = int(r_idx[0])
+            if idx < 0 and want_fall:
+                f_idx = np.flatnonzero((a > lvl) & (b <= lvl))
+                if len(f_idx) > 0:
+                    idx = int(f_idx[0])
+            if idx >= 0:
+                av = float(v_trig[idx])
+                bv = float(v_trig[idx + 1])
+                dv = bv - av
+                frac = max(0.0, min(1.0, ((lvl - av) / dv) if abs(dv) > 1e-18 else 0.0))
+                return float(t_arr[idx]) + frac * (float(t_arr[idx + 1]) - float(t_arr[idx]))
+        return None
+
     def on_sample_block(self, block: object) -> None:
-        """Ingest high-rate `SampleBlock` chunks without dropping solver substeps."""
+        """Copy high-rate `SampleBlock` data into the 65k NumPy ring buffer cleanly at zero UI cost."""
+        if self._is_closed:
+            return
         if not self.state.running and not self.state.trigger.single_armed:
+            return
+        is_single = self.state.trigger.mode.upper() == "SINGLE"
+        if is_single and self._single_hold_locked:
             return
         n_steps = int(getattr(block, "n_steps", 0))
         if n_steps <= 0:
@@ -1488,12 +1733,10 @@ class DSOOscilloscopeDialog(QDialog):
         t_last = float(t_arr[-1])
         if self._last_live_t is not None:
             if t_first < self._last_live_t - 1e-12 and t_last < self._last_live_t - 1e-12:
-                # Simulation restarted from an earlier t -> reset live rolling buffer cleanly
-                self._live_times.clear()
-                self._live_ch1.clear()
-                self._live_ch2.clear()
-                self._live_ext.clear()
+                self._ring_buffer.clear()
                 self._last_live_t = None
+                self._single_trig_t = None
+                self._single_hold_locked = False
             elif t_last <= self._last_live_t + 1e-15:
                 return
 
@@ -1523,10 +1766,8 @@ class DSOOscilloscopeDialog(QDialog):
         v2 = _col_or_zero(ch2_n) - vg
         ve = _col_or_zero(ext_n) - vg
 
-        self._live_times.extend(t_arr.tolist())
-        self._live_ch1.extend(v1.tolist())
-        self._live_ch2.extend(v2.tolist())
-        self._live_ext.extend(ve.tolist())
+        prev_sample = self._ring_buffer.last_sample()
+        self._ring_buffer.append_chunk(t_arr, v1, v2, ve)
         self._last_live_t = float(t_arr[-1])
         self._received_sample_blocks = True
         self._live_step_counter += len(t_arr)
@@ -1537,21 +1778,37 @@ class DSOOscilloscopeDialog(QDialog):
             self.osc_component.v_ch2 = float(v2[-1])
             self.osc_component.v_ext = float(ve[-1])
 
-        if len(self._live_times) >= 8 and (n_steps >= 2 or self._live_step_counter % 8 == 0):
-            t_buf, c1_buf, c2_buf, ext_buf = self._raw_arrays_for_processing()
-            self.latest_frame = process_dso_capture(
-                t_buf, c1_buf, c2_buf, ext_buf, self.state, prev_frame=self.latest_frame
-            )
-            self._push_mini_preview()
-            self._sync_ui_from_state()
+        if is_single and self.state.trigger.single_armed:
+            trig_src = self.state.trigger.source.upper()
+            v_trig = v2 if trig_src == "CH2" else (ve if trig_src == "EXT" else v1)
+            if self._single_trig_t is None:
+                self._single_trig_t = self._detect_single_crossing_in_block(t_arr, v_trig, prev_sample)
+            if self._single_trig_t is not None:
+                eff_sd = (
+                    self.state.horizontal.zoom_sec_per_div
+                    if self.state.horizontal.zoom_enabled
+                    else self.state.horizontal.sec_per_div
+                )
+                span_s = max(float(eff_sd) * float(DSO_HORIZONTAL_DIVS), 1e-12)
+                t_right = self._single_trig_t - self.state.horizontal.position_s + 0.5 * span_s
+                if float(t_arr[-1]) >= t_right - 1e-9:
+                    self._single_hold_locked = True
+
+        self._dirty = True
 
     def on_simulation_frame(self, frame: SimulationFrame) -> None:
-        """Ingest live `SimulationFrame` telemetry without blocking the UI thread."""
+        """Ingest live `SimulationFrame` telemetry cleanly without blocking the UI thread."""
+        if self._is_closed:
+            return
         if frame.state == SimulationState.STOPPED:
             self._last_live_t = None
             self._received_sample_blocks = False
+            self._single_trig_t = None
+            self._single_hold_locked = False
             return
         if not self.state.running and not self.state.trigger.single_armed:
+            return
+        if self.state.trigger.mode.upper() == "SINGLE" and self._single_hold_locked:
             return
         if not frame.node_voltages or frame.dt <= 0.0:
             return
@@ -1572,16 +1829,14 @@ class DSOOscilloscopeDialog(QDialog):
         gnd_n = nets.get("GND", self.osc_component.node_gnd)
         vg = float(frame.node_voltages.get(gnd_n, 0.0)) if gnd_n in frame.node_voltages else 0.0
 
-        self._live_times.append(float(frame.sim_time))
-        self._live_ch1.append(float(frame.node_voltages.get(ch1_n, 0.0)) - vg)
-        self._live_ch2.append(float(frame.node_voltages.get(ch2_n, 0.0)) - vg)
-        self._live_ext.append(float(frame.node_voltages.get(ext_n, 0.0)) - vg)
+        self._ring_buffer.append_sample(
+            float(frame.sim_time),
+            float(frame.node_voltages.get(ch1_n, 0.0)) - vg,
+            float(frame.node_voltages.get(ch2_n, 0.0)) - vg,
+            float(frame.node_voltages.get(ext_n, 0.0)) - vg,
+        )
         self._live_step_counter += 1
-        if len(self._live_times) >= 8 and self._live_step_counter % 4 == 0:
-            t_arr, c1, c2, ext = self._raw_arrays_for_processing()
-            self.latest_frame = process_dso_capture(t_arr, c1, c2, ext, self.state, prev_frame=self.latest_frame)
-            self._push_mini_preview()
-            self._sync_ui_from_state()
+        self._dirty = True
 
     def _sync_ui_from_state(self) -> None:
         self._syncing_dials = True
@@ -1619,7 +1874,7 @@ class DSOOscilloscopeDialog(QDialog):
         opts = self._menu_options()
         self.screen_widget.set_view_data(
             state=self.state,
-            frame=self.latest_frame,
+            frame=self._latest_frame,
             menu_title=self.active_menu,
             menu_rows=opts,
             menu_visible=self.menu_visible,

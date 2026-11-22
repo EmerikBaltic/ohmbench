@@ -720,3 +720,163 @@ def test_l4_dso_layout_unclipped_and_timebase_text_complete(qapp) -> None:
     finally:
         dlg.close()
         qapp.processEvents()
+
+
+def test_l2_rc_switch_single_and_normal_trigger_exact_curve(qapp) -> None:
+    """Hotfix L2: Switched RC keeps monotonic time & capacitor charge, and honors SINGLE/NORMAL at 100 ms/div."""
+    from circuitsim.app.dso_panel import DSOOscilloscopeDialog
+    from circuitsim.components import Capacitor, DCVoltageSource, Ground, Oscilloscope, Resistor, Switch
+
+    circuit = Circuit()
+    circuit.add(DCVoltageSource("V1", "n_src", "0", voltage=10.0))
+    circuit.add(Switch("SW1", "n_src", "n_sw", closed=False))
+    circuit.add(Resistor("R1", "n_sw", "n_cap", resistance=10e3))
+    circuit.add(Capacitor("C1", "n_cap", "0", capacitance=10e-6))
+    circuit.add(Ground("G1", "0"))
+    osc = Oscilloscope("OSC1", node_ch1="n_cap", node_gnd="0")
+    circuit.add(osc)
+    circuit.validate_topology()
+
+    dlg = DSOOscilloscopeDialog(osc)
+    try:
+        dlg.state.horizontal.sec_per_div = 100e-3
+        dlg.state.trigger.mode = "SINGLE"
+        dlg.state.trigger.level_v = 2.0
+        dlg.state.trigger.slope = "RISING"
+        dlg.state.trigger.single_armed = True
+        dlg.state.running = True
+
+        session = SimulationSession(circuit=circuit)
+        session.set_timebase(100e-3, points_per_div=100)
+        session.attach_scope_sink(dlg)
+        session.start()
+
+        # Stream 0.3 s open (flat 0 V)
+        session.step_chunk(steps=300, dt=1e-3)
+        f_wait = dlg.latest_frame
+        assert f_wait is not None
+        assert f_wait.roll_mode is False
+        assert f_wait.triggered is False
+        assert float(np.max(np.abs(f_wait.ch1_v))) < 0.05
+
+        # Toggle SW1 closed live & stream 0.8 s (8 * tau, where tau = 100 ms)
+        t_before_toggle = session.solver.sim_time
+        session.toggle_switch("SW1")
+        assert session.solver.sim_time > t_before_toggle
+        session.step_chunk(steps=800, dt=1e-3)
+
+        t_buf, _, _, _ = dlg._ring_buffer.ordered_arrays()
+        assert np.all(np.diff(t_buf) > 0.0)
+
+        frame = dlg.latest_frame
+        assert frame is not None
+        assert frame.roll_mode is False
+        assert frame.triggered is True
+        assert frame.captured_single is True
+        assert frame.hw_freq_counter_hz is None
+        assert frame.ch1_measurements.v_min == pytest.approx(0.0, abs=0.05)
+        assert float(np.max(frame.ch1_v)) > 9.5
+
+        v_at_trig = float(np.interp(0.0, frame.times_rel_s, frame.ch1_v))
+        assert v_at_trig == pytest.approx(2.0, abs=0.15)
+
+        # Analytic RC charge: t_close_rel = -tau * ln(1 - 2/10) relative to t_trig = 0
+        dt_trig_from_close = -0.1 * float(np.log(0.8))
+        post_mask = frame.times_rel_s >= 0.0
+        analytic_post = 10.0 * (1.0 - np.exp(-(frame.times_rel_s[post_mask] + dt_trig_from_close) / 0.1))
+        assert float(np.max(np.abs(frame.ch1_v[post_mask] - analytic_post))) < 0.15
+
+        # Stream another 0.5 s of flat 10 V blocks -> SINGLE holds exact RC curve untouched
+        session.step_chunk(steps=500, dt=1e-3)
+        f_held_single = dlg.latest_frame
+        assert f_held_single is not None
+        assert float(np.min(f_held_single.ch1_v)) < 0.05
+        assert float(np.max(f_held_single.ch1_v)) > 9.5
+
+        # Verify NORMAL mode also honors 100 ms/div trigger (no Roll Mode) and holds waveform
+        dlg.state.trigger.mode = "NORMAL"
+        dlg.state.running = True
+        dlg._reprocess_or_capture()
+        f_norm = dlg.latest_frame
+        assert f_norm is not None
+        assert f_norm.roll_mode is False
+        assert f_norm.triggered is True
+        assert float(np.min(f_norm.ch1_v)) < 0.05
+        assert float(np.max(f_norm.ch1_v)) > 9.5
+
+        session.step_chunk(steps=500, dt=1e-3)
+        f_norm_after = dlg.latest_frame
+        assert f_norm_after is not None
+        assert f_norm_after.triggered is True
+        assert float(np.min(f_norm_after.ch1_v)) < 0.05
+        assert float(np.max(f_norm_after.ch1_v)) > 9.5
+    finally:
+        dlg.close()
+        qapp.processEvents()
+
+
+def test_l2_65k_decimation_no_hang_and_sec_per_div_speed(qapp) -> None:
+    """Hotfix L2: Decimate 65,536-pt frames (with NaN/spikes), cap offline capture, and close safely."""
+    import time
+
+    from circuitsim.app.dso_panel import DSOOscilloscopeDialog
+    from circuitsim.components import Capacitor, DCVoltageSource, Ground, Oscilloscope, Resistor
+    from circuitsim.scope.capture import SampleBlock
+    from circuitsim.scope.dso_engine import process_dso_capture
+
+    circuit = Circuit()
+    circuit.add(DCVoltageSource("V1", "n_src", "0", voltage=10.0))
+    circuit.add(Resistor("R1", "n_src", "n_cap", resistance=10e3))
+    circuit.add(Capacitor("C1", "n_cap", "0", capacitance=10e-6))
+    circuit.add(Ground("G1", "0"))
+    osc = Oscilloscope("OSC1", node_ch1="n_cap", node_gnd="0")
+    circuit.add(osc)
+    circuit.validate_topology()
+
+    dlg = DSOOscilloscopeDialog(osc, circuit_provider=lambda: circuit)
+    dlg.screen_widget.resize(700, 460)
+    try:
+        n_pts = 65536
+        t_65k = np.linspace(0.0, 12.0, n_pts, dtype=np.float64)
+        ch1_65k = 5.0 * np.sin(2.0 * np.pi * 50.0 * t_65k)
+        ch1_65k[100] = np.nan
+        ch1_65k[200] = 1e12
+        zeros_65k = np.zeros_like(t_65k)
+        dlg.load_ring_buffer(t_65k, ch1_65k, zeros_65k, zeros_65k)
+
+        notches = (50e-6, 100e-6, 200e-6, 500e-6, 1e-3, 2e-3, 5e-3, 10e-3, 20e-3, 50e-3, 100e-3, 1.0)
+        for sd in notches:
+            dlg.state.horizontal.sec_per_div = sd
+            dlg._flush_dirty_frame()
+            dlg.screen_widget.grab()
+            assert dlg.screen_widget.last_rendered_point_counts["CH1"] <= 2500
+
+        # Timed 1.0 s/div process + paint across full 65,536-sample window must complete in < 50 ms
+        dlg.state.horizontal.sec_per_div = 1.0
+        t0_wall = time.perf_counter()
+        t_buf, c1_buf, c2_buf, ext_buf = dlg._ring_buffer.ordered_arrays()
+        dlg.latest_frame = process_dso_capture(t_buf, c1_buf, c2_buf, ext_buf, dlg.state, prev_frame=dlg._latest_frame)
+        dlg._sync_ui_from_state()
+        dlg.screen_widget.grab()
+        elapsed_paint = time.perf_counter() - t0_wall
+        assert elapsed_paint < 0.05, f"65k process + paint took {elapsed_paint * 1000:.1f} ms (>= 50 ms)"
+
+        # Offline capture_from_scene at 1 s/div must respect max_steps/budget and complete in < 300 ms
+        dlg.state.horizontal.sec_per_div = 1.0
+        t0_cap = time.perf_counter()
+        cap_frame = dlg.capture_from_scene()
+        elapsed_cap = time.perf_counter() - t0_cap
+        assert cap_frame is not None
+        assert elapsed_cap < 0.30, f"1 s/div capture_from_scene took {elapsed_cap * 1000:.1f} ms (>= 300 ms)"
+    finally:
+        dlg.close()
+        qapp.processEvents()
+
+    # Delivering another SampleBlock after dialog close must not raise deleted-widget errors
+    late_block = SampleBlock(
+        t0=12.1,
+        dt=1e-3,
+        node_names=("n_cap", "0"),
+        data=np.column_stack([np.full(10, 5.0), np.zeros(10)]),
+    )
+    dlg.on_sample_block(late_block)

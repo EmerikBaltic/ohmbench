@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from collections import deque
+import threading
 from typing import Iterable, Sequence
 
 from PySide6.QtCore import (
@@ -36,12 +38,29 @@ class _SessionThreadWorker(QObject):
     def __init__(self) -> None:
         super().__init__()
         self.session: SimulationSession = SimulationSession()
+        self._outbox_lock = threading.Lock()
+        self._outbox_blocks: deque[object] = deque(maxlen=12)
+        self._outbox_in_flight: bool = False
         self.session.attach_scope_sink(self._on_sample_block)
         self._tick_timer: QTimer | None = None
         self.tick_interval_ms: int = 33  # ~30 FPS UI update rate
 
     def _on_sample_block(self, block: object) -> None:
-        self.sample_block_emitted.emit(block)
+        emit_wakeup = False
+        with self._outbox_lock:
+            self._outbox_blocks.append(block)
+            if not self._outbox_in_flight:
+                self._outbox_in_flight = True
+                emit_wakeup = True
+        if emit_wakeup:
+            self.sample_block_emitted.emit(None)
+
+    def drain_outbox_blocks(self) -> list[object]:
+        with self._outbox_lock:
+            blocks = list(self._outbox_blocks)
+            self._outbox_blocks.clear()
+            self._outbox_in_flight = False
+            return blocks
 
     def _ensure_timer(self) -> QTimer:
         if self._tick_timer is None:
@@ -167,7 +186,7 @@ class _SessionThreadWorker(QObject):
         target_sim_advance = wall_dt * self.session.speed.multiplier
         dt = max(1e-9, self.session.dt)
         steps = max(1, min(2500, int(round(target_sim_advance / dt))))
-        frame = self.session.step_chunk(steps=steps, dt=dt)
+        frame = self.session.step_chunk(steps=steps, dt=dt, max_wall_budget_s=0.012)
         if frame.state != SimulationState.RUNNING and self._tick_timer is not None:
             self._tick_timer.stop()
         self.frame_emitted.emit(frame)
@@ -278,9 +297,16 @@ class SimulationWorkerController(QObject):
 
     @Slot(object)
     def _on_worker_sample_block(self, block: object) -> None:
-        """Forward high-rate oscilloscope SampleBlock chunks to main-thread listeners."""
-        if not self._is_shut_down:
+        """Forward coalesced high-rate oscilloscope SampleBlock chunks to main-thread listeners."""
+        if self._is_shut_down:
+            return
+        if block is not None:
             self.sample_block_ready.emit(block)
+            return
+        for blk in self._worker.drain_outbox_blocks():
+            if self._is_shut_down:
+                break
+            self.sample_block_ready.emit(blk)
 
     def load_schematic(
         self,

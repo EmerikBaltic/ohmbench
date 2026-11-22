@@ -716,6 +716,7 @@ When ready to perform Stage 2 (internal/package rename after Stage 1 settles):
 | **L4** | Front-panel UI clipping, high-contrast status badge & mini-screen preview polish (`dso_panel.py`; `26 passed`) | [x] |
 | **L5** | Phase L regression tests (`test_l1`–`test_l4`) in `tests/test_j_dso_and_release.py` (`30 passed`) | [x] |
 | **GATE L** | Final targeted verification (`54 passed in 20.30s`), `PROGRESS.md` completion & `checkpoint/L-done` tag | [x] |
+| **L2 HOTFIX** | Root cause of `0xCFFFFFFF` (`STATUS_APPLICATION_HANG`) resolved: synchronous `capture_from_scene()` capped (`max_steps=2000`, `max_wall_time_s=0.15s`) & skipped while running; `DSORingBuffer(65536)` + coalesced `33 ms` UI timer + coalesced `SampleBlock` worker outbox (`12 ms` tick budget); `decimate_xy_minmax()` + cosmetic pen fast-path (`QRasterPaintEngine` `QStroker`/`QTessellator` `2.97s -> <50ms` fix) + `80 ms` `SEC/DIV` debounce; preserved capacitor initial voltage across `solve_dc()` in `SimulationSession.start()`, monotonic `_latest_contiguous_slice()`, and switched-RC `SINGLE`/`NORMAL` honoring at `>= 100 ms/div` (`50 passed in 23.53s`) | [x] |
 
 
 
