@@ -454,6 +454,9 @@ class ComponentItem(QGraphicsObject):
             lines.append("Voltage: --")
             lines.append("Current: --")
             lines.append("Power: --")
+        if isinstance(self.component, (Voltmeter, Ammeter)):
+            mm = getattr(self.component, "measurement_mode", "DC")
+            lines.append(f"Measurement Mode: {'AC RMS' if mm == 'AC_RMS' else 'DC (Instantaneous)'}")
         if (
             isinstance(self.component, Voltmeter)
             and getattr(self.component, "loading_error_message", None)
@@ -1261,6 +1264,9 @@ class ComponentItem(QGraphicsObject):
                 rect = rect.united(QRectF(ax - 8.0, ay - 6.0, 16.0, 12.0))
                 rect = rect.united(QRectF(kx - 8.0, ky - 6.0, 16.0, 12.0))
 
+            if isinstance(self.component, (Voltmeter, Ammeter)) and getattr(self.component, "measurement_mode", "DC") == "AC_RMS":
+                rect = rect.united(QRectF(8.0, -24.0, 24.0, 11.0))
+
             if (
                 len(self.metadata.terminals) >= 3
                 or self.component.component_type in ("function_generator",)
@@ -1722,6 +1728,15 @@ class ComponentItem(QGraphicsObject):
                         Qt.AlignmentFlag.AlignCenter,
                         pin_name,
                     )
+
+            if isinstance(self.component, (Voltmeter, Ammeter)) and getattr(self.component, "measurement_mode", "DC") == "AC_RMS":
+                rms_rect = QRectF(8.0, -24.0, 24.0, 11.0)
+                painter.setPen(Qt.PenStyle.NoPen)
+                painter.setBrush(QColor("#0284C7"))
+                painter.drawRoundedRect(rms_rect, 2.5, 2.5)
+                painter.setPen(QColor("#F8FAFC"))
+                painter.setFont(QFont("Segoe UI", 6, QFont.Weight.Bold))
+                painter.drawText(rms_rect, Qt.AlignmentFlag.AlignCenter, "RMS")
 
             if (
                 len(self.metadata.terminals) >= 3

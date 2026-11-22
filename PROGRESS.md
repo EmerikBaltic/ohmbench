@@ -725,7 +725,7 @@ When ready to perform Stage 2 (internal/package rename after Stage 1 settles):
 | `M0` | Initialize Phase M queue in `PROGRESS.md` & `tests/test_m_workbench_final.py` | `[x]` | Done |
 | `M1` | DSO-1062D `AUTO SET` startup-ramp fix & softkey formatting polish | `[x]` | Done (`20 passed`) |
 | `M2` | Placeable Benchtop Function Generator (`function_generator`, `FG1`) & modeless panel | `[x]` | Done (`38 passed`; fixed MNA `-= r_internal` sign across solver/AC/Thevenin) |
-| `M3` | DC / AC RMS measurement mode on canvas `Voltmeter` & `Ammeter` | `[ ]` | Pending |
+| `M3` | DC / AC RMS measurement mode on canvas `Voltmeter` & `Ammeter` | `[x]` | Done (`29 passed`) |
 | `M4` | Logic Gates Teaching Pack (`LogicProbe`, Net Logic Coloring & Truth-Table Generator) | `[ ]` | Pending |
 | `M5` | Live Potentiometer keyboard tuning (`[` / `]`) & `Space` Quick-Place search popup | `[ ]` | Pending |
 | `M6` | Persistent User Custom Parts Library (`My Custom Parts` palette + Import/Export) | `[ ]` | Pending |

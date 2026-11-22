@@ -1110,11 +1110,22 @@ class SimulationSession:
                 else ""
             )
 
+            v_out = (
+                comp.reading
+                if (isinstance(comp, Voltmeter) and comp.measurement_mode == "AC_RMS" and comp.has_reading)
+                else comp.voltage
+            )
+            i_out = (
+                comp.reading
+                if (isinstance(comp, Ammeter) and comp.measurement_mode == "AC_RMS" and comp.has_reading)
+                else comp.current
+            )
+
             comp_map[comp.name] = ComponentTelemetry(
                 name=comp.name,
                 component_type=comp.component_type,
-                voltage=comp.voltage,
-                current=comp.current,
+                voltage=v_out,
+                current=i_out,
                 power=comp.power,
                 display_value=format_component_canvas_text(comp),
                 brightness=brightness,

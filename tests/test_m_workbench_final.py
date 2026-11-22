@@ -241,3 +241,83 @@ def test_m2_function_generator_physics_impedances_gui_and_serialization(
     assert fg_loaded.duty_cycle == pytest.approx(0.30)
     assert fg_loaded.output_impedance == pytest.approx(50.0)
     assert fg_loaded.output_enabled is False
+
+
+def test_m3_ac_rms_voltmeter_and_ammeter_telemetry_and_serialization(
+    qapp: QApplication, tmp_path
+) -> None:
+    import math
+    from circuitsim.components.ground import Ground
+    from circuitsim.components.meters import Ammeter, MeterMode, Voltmeter
+    from circuitsim.components.resistor import Resistor
+    from circuitsim.components.sources import ACVoltageSource
+    from circuitsim.dialogs.quick_edit_dialog import QuickValueDialog
+    from circuitsim.engine.netlist import Circuit
+    from circuitsim.engine.simulation_session import SimulationSession
+    from circuitsim.io.circ_serializer import (
+        CircuitDocument,
+        PlacedComponentSpec,
+        load_document,
+        save_document,
+    )
+
+    c = Circuit()
+    src = ACVoltageSource("V1", "vin", "0", amplitude=10.0, frequency=100.0)
+    am = Ammeter("A1", "vin", "vload", is_ideal=True, measurement_mode="AC_RMS", window_duration=0.05)
+    vm = Voltmeter("VM1", "vload", "0", is_ideal=True, measurement_mode="AC_RMS", window_duration=0.05)
+    r_load = Resistor("R1", "vload", "0", resistance=1000.0)
+    gnd = Ground("GND", "0")
+    c.add(src)
+    c.add(am)
+    c.add(vm)
+    c.add(r_load)
+    c.add(gnd)
+
+    sess = SimulationSession(c)
+    sess.start()
+    # Step 5 full 100 Hz cycles (50 ms) at 250 us/step -> 200 steps
+    frame = sess.step_chunk(steps=200, dt=2.5e-4)
+
+    expected_vrms = 10.0 / math.sqrt(2.0)
+    expected_irms = 0.01 / math.sqrt(2.0)
+    assert vm.reading == pytest.approx(expected_vrms, rel=0.03)
+    assert am.reading == pytest.approx(expected_irms, rel=0.03)
+    assert "Vrms" in vm.format_reading()
+    assert "Arms" in am.format_reading()
+    assert frame.components["VM1"].voltage == pytest.approx(expected_vrms, rel=0.03)
+    assert frame.components["A1"].current == pytest.approx(expected_irms, rel=0.03)
+    assert "Vrms" in frame.components["VM1"].display_value
+    assert "Arms" in frame.components["A1"].display_value
+
+    # Toggle via QuickValueDialog
+    dlg = QuickValueDialog(vm)
+    try:
+        idx_dc = dlg.meter_mode_combo.findData("DC")
+        assert idx_dc >= 0
+        dlg.meter_mode_combo.setCurrentIndex(idx_dc)
+        assert dlg._apply_current_inputs() is True
+        assert vm.measurement_mode == "DC"
+        assert vm.mode == MeterMode.INSTANTANEOUS
+
+        idx_rms = dlg.meter_mode_combo.findData("AC_RMS")
+        dlg.meter_mode_combo.setCurrentIndex(idx_rms)
+        assert dlg._apply_current_inputs() is True
+        assert vm.measurement_mode == "AC_RMS"
+        assert vm.mode == MeterMode.RMS
+    finally:
+        dlg.close()
+
+    # Persist through .circ save/load
+    doc = CircuitDocument(
+        placed=[
+            PlacedComponentSpec(component=vm, center_px=(0.0, 0.0)),
+            PlacedComponentSpec(component=am, center_px=(100.0, 0.0)),
+        ]
+    )
+    out_file = tmp_path / "rms_meters.circ"
+    save_document(out_file, doc)
+    reloaded = load_document(out_file)
+    vm_r = reloaded.placed[0].component
+    am_r = reloaded.placed[1].component
+    assert isinstance(vm_r, Voltmeter) and vm_r.measurement_mode == "AC_RMS" and vm_r.mode == MeterMode.RMS
+    assert isinstance(am_r, Ammeter) and am_r.measurement_mode == "AC_RMS" and am_r.mode == MeterMode.RMS

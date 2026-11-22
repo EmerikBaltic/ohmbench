@@ -196,6 +196,14 @@ class QuickValueDialog(QDialog):
 
             self.meter_preset_combo.currentTextChanged.connect(self._on_meter_preset_changed)
 
+            self.meter_mode_combo = QComboBox(self)
+            self.meter_mode_combo.setObjectName("meter_mode_combo")
+            self.meter_mode_combo.addItem("DC (Instantaneous)", "DC")
+            self.meter_mode_combo.addItem("AC RMS", "AC_RMS")
+            mm_idx = self.meter_mode_combo.findData(getattr(component, "measurement_mode", "DC"))
+            self.meter_mode_combo.setCurrentIndex(mm_idx if mm_idx >= 0 else 0)
+            form.addRow("Measurement Mode:", self.meter_mode_combo)
+
         if isinstance(component, LED):
             self.led_color_combo = QComboBox(self)
             self.led_color_combo.setObjectName("led_color_combo")
@@ -1074,6 +1082,11 @@ class QuickValueDialog(QDialog):
                     f"{spec.label} cannot be negative (got {raw_text!r}).",
                 )
             parsed_map[spec.key] = val
+
+        if isinstance(self.component, (Voltmeter, Ammeter)):
+            mode_combo = getattr(self, "meter_mode_combo", None)
+            if mode_combo is not None:
+                parsed_map["measurement_mode"] = str(mode_combo.currentData())
 
         if isinstance(self.component, Lightbulb):
             if self.bulb_burnout_cb is not None:

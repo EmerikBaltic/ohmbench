@@ -30,6 +30,7 @@ class _BaseMeter(Component):
         r_internal: float | str,
         *,
         mode: MeterMode | str = MeterMode.INSTANTANEOUS,
+        measurement_mode: str | None = None,
         window_duration: float = 0.1,
         label: str | None = None,
         show_value: bool = True,
@@ -47,11 +48,43 @@ class _BaseMeter(Component):
             raise ValueError(f"{self.__class__.__name__} {name!r}: r_internal must be > 0 Ω.")
 
         self.r_internal: float = parsed_r
+        self._measurement_mode: str = "DC"
         self.mode: MeterMode = MeterMode(mode) if not isinstance(mode, MeterMode) else mode
+        if measurement_mode is not None:
+            self.measurement_mode = measurement_mode
         self.window_duration: float = max(1e-6, float(window_duration))
         # Buffer of (sim_time, sample_value, dt) tuples for sliding window stats.
         self._samples: deque[tuple[float, float, float]] = deque()
         self.has_reading: bool = False
+
+    @property
+    def measurement_mode(self) -> str:
+        """Canvas display measurement mode: ``'DC'`` (instantaneous) or ``'AC_RMS'``."""
+        return self._measurement_mode
+
+    @measurement_mode.setter
+    def measurement_mode(self, value: str) -> None:
+        norm = str(value).strip().upper()
+        if norm in ("AC_RMS", "RMS", "AC"):
+            self._measurement_mode = "AC_RMS"
+            self.mode = MeterMode.RMS
+        else:
+            self._measurement_mode = "DC"
+            self.mode = MeterMode.INSTANTANEOUS
+
+    def get_parameter_value(self, key: str) -> float:
+        if key == "measurement_mode":
+            return 1.0 if self._measurement_mode == "AC_RMS" else 0.0
+        return super().get_parameter_value(key)
+
+    def set_parameter_value(self, key: str, raw_value: float | str) -> float:
+        if key == "measurement_mode":
+            self.measurement_mode = str(raw_value)
+            return 1.0 if self._measurement_mode == "AC_RMS" else 0.0
+        if key == "mode":
+            self.mode = MeterMode(str(raw_value))
+            return 0.0
+        return super().set_parameter_value(key, raw_value)
 
     @property
     def conductance(self) -> float:
@@ -128,6 +161,7 @@ class Voltmeter(_BaseMeter):
         r_internal: float | str = 10e6,
         is_ideal: bool = False,
         mode: MeterMode | str = MeterMode.INSTANTANEOUS,
+        measurement_mode: str | None = None,
         window_duration: float = 0.1,
         label: str | None = None,
         show_value: bool = True,
@@ -139,6 +173,7 @@ class Voltmeter(_BaseMeter):
             node_neg=node_neg,
             r_internal=r_internal,
             mode=mode,
+            measurement_mode=measurement_mode,
             window_duration=window_duration,
             label=label,
             show_value=show_value,
@@ -170,9 +205,10 @@ class Voltmeter(_BaseMeter):
 
     def format_reading(self, sig_figs: int = 4) -> str:
         """Return polarity-aware, auto-ranged voltage string (or '-- V' before simulation)."""
+        unit = "Vrms" if self._measurement_mode == "AC_RMS" else "V"
         if not self.has_reading:
-            return "-- V"
-        return format_engineering_value(self.reading, unit="V", sig_figs=sig_figs)
+            return f"-- {unit}"
+        return format_engineering_value(self.reading, unit=unit, sig_figs=sig_figs)
 
 
 class Ammeter(_BaseMeter):
@@ -191,6 +227,7 @@ class Ammeter(_BaseMeter):
         r_internal: float | str = 1e-3,
         is_ideal: bool = False,
         mode: MeterMode | str = MeterMode.INSTANTANEOUS,
+        measurement_mode: str | None = None,
         window_duration: float = 0.1,
         label: str | None = None,
         show_value: bool = True,
@@ -202,6 +239,7 @@ class Ammeter(_BaseMeter):
             node_neg=node_neg,
             r_internal=r_internal,
             mode=mode,
+            measurement_mode=measurement_mode,
             window_duration=window_duration,
             label=label,
             show_value=show_value,
@@ -218,6 +256,7 @@ class Ammeter(_BaseMeter):
 
     def format_reading(self, sig_figs: int = 4) -> str:
         """Return polarity-aware, auto-ranged current string (or '-- A' before simulation)."""
+        unit = "Arms" if self._measurement_mode == "AC_RMS" else "A"
         if not self.has_reading:
-            return "-- A"
-        return format_engineering_value(self.reading, unit="A", sig_figs=sig_figs)
+            return f"-- {unit}"
+        return format_engineering_value(self.reading, unit=unit, sig_figs=sig_figs)
