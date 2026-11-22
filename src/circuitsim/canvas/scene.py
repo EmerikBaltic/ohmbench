@@ -48,6 +48,8 @@ from circuitsim.canvas.connectivity import (
 )
 from circuitsim.canvas.symbol_geometry import (
     GRID_PITCH_PX,
+    SymbolMetadata,
+    build_custom_macro_metadata,
     snap_to_grid,
     transform_terminal_position,
 )
@@ -87,6 +89,7 @@ from circuitsim.wiring.overlay import (
     compute_current_dot_velocity,
     estimate_wire_currents,
     format_power_probe_text,
+    map_logic_voltage_to_rgb,
     map_voltage_to_rgb,
 )
 from circuitsim.wiring.router import (
@@ -122,6 +125,7 @@ class CircuitScene(QGraphicsScene):
     switch_toggled_by_user = Signal(str, bool)  # (switch_name, closed)
     fuse_reset_by_user = Signal(str)  # (fuse_name)
     oscilloscope_open_requested = Signal(object)  # (ComponentItem)
+    funcgen_open_requested = Signal(object)  # (ComponentItem)
     component_parameters_edited = Signal(str, object)  # (comp_name, dict[str, float])
     status_notice = Signal(str)  # Non-modal status/feedback note for the user
 
@@ -138,6 +142,7 @@ class CircuitScene(QGraphicsScene):
         self.symbol_library: SymbolLibrary = symbol_library
         self.theme: ThemeMode = theme
         self.settings: AppSettings | None = settings
+        self.user_library: object | None = None
         self.show_grid: bool = True
         self.undo_stack: QUndoStack = QUndoStack(self)
 
@@ -204,6 +209,7 @@ class CircuitScene(QGraphicsScene):
         self.is_simulation_running: bool = False
         self._last_sim_frame: SimulationFrame | None = None
         self.voltage_colors_enabled: bool = False
+        self.net_logic_coloring_enabled: bool = False
         self.current_dots_enabled: bool = False
         self.stress_warnings_enabled: bool = True
         self.pinout_labels_enabled: bool = False
@@ -273,11 +279,45 @@ class CircuitScene(QGraphicsScene):
         self.show_grid = bool(visible)
         self.update()
 
+    def _resolve_component_metadata(self, component_id: str) -> SymbolMetadata:
+        if component_id.startswith("custom:") and self.user_library is not None:
+            part_id = component_id.removeprefix("custom:")
+            entry = self.user_library.get_part(part_id)  # type: ignore[attr-defined]
+            if entry is not None:
+                if entry.kind == "macro":
+                    from circuitsim.io.user_library import deserialize_macro_def
+
+                    mdef = deserialize_macro_def(entry.macro_payload)
+                    return build_custom_macro_metadata(mdef.macro_name, mdef.pins)
+                if entry.base_component_type:
+                    return self.symbol_library.get_metadata(entry.base_component_type)
+        return self.symbol_library.get_metadata(component_id)
+
+    def _create_model_for_id(self, component_id: str, name: str) -> Component:
+        if component_id.startswith("custom:") and self.user_library is not None:
+            part_id = component_id.removeprefix("custom:")
+            entry = self.user_library.get_part(part_id)  # type: ignore[attr-defined]
+            if entry is None:
+                raise ValueError(f"Unknown custom part {part_id!r}.")
+            from circuitsim.io.user_library import instantiate_custom_part
+
+            return instantiate_custom_part(entry, name)
+        return create_default_component_model(component_id, name)
+
     def next_component_name(
         self, component_id: str, extra_taken: set[str] | None = None
     ) -> str:
         """Generate the lowest unused sequential designator for the prefix (e.g. 'R1', 'VM1')."""
-        prefix = COMPONENT_PREFIXES.get(component_id, component_id)
+        canonical_id = component_id
+        if component_id.startswith("custom:") and self.user_library is not None:
+            entry = self.user_library.get_part(component_id.removeprefix("custom:"))  # type: ignore[attr-defined]
+            if entry is not None:
+                canonical_id = (
+                    entry.base_component_type
+                    if entry.base_component_type
+                    else ("custom_macro" if entry.kind == "macro" else component_id)
+                )
+        prefix = COMPONENT_PREFIXES.get(canonical_id, canonical_id)
         existing_names = {it.component.name for it in self._placed_items}
         if extra_taken:
             existing_names.update(extra_taken)
@@ -659,12 +699,11 @@ class CircuitScene(QGraphicsScene):
         self, component_id: str, scene_pos: QPointF, *, rotation_deg: int = 0
     ) -> None:
         """Create or move the snapping ghost preview item for `component_id`."""
-        if (
-            self._ghost_item is None
-            or self._ghost_item.component.component_type != component_id
-        ):
+        ghost_key = getattr(self, "_ghost_component_id", None)
+        if self._ghost_item is None or ghost_key != component_id:
             self.hide_ghost_preview()
-            temp_model = create_default_component_model(component_id, "PREVIEW")
+            temp_model = self._create_model_for_id(component_id, "PREVIEW")
+            self._ghost_component_id = component_id
             self._ghost_item = ComponentItem(
                 temp_model,
                 self.symbol_library,
@@ -682,6 +721,7 @@ class CircuitScene(QGraphicsScene):
         if self._ghost_item is not None:
             self.removeItem(self._ghost_item)
             self._ghost_item = None
+        self._ghost_component_id = None
 
     def _component_footprint_rect_at(
         self,
@@ -691,7 +731,7 @@ class CircuitScene(QGraphicsScene):
         rotation_deg: int = 0,
     ) -> QRectF:
         """Full terminal-to-terminal collision footprint (inset 2 px at tips, >=36 px thick)."""
-        meta = self.symbol_library.get_metadata(component_id)
+        meta = self._resolve_component_metadata(component_id)
         raw_w, raw_h = meta.pixel_size
         rw = max(36.0, float(raw_w) - 4.0)
         rh = max(36.0, float(raw_h) - 4.0)
@@ -721,7 +761,7 @@ class CircuitScene(QGraphicsScene):
         """Return True if candidate footprint or its terminals overlap any non-excluded component."""
         cand = self._component_footprint_rect_at(component_id, cx, cy, rotation_deg)
         excl = exclude or set()
-        meta = self.symbol_library.get_metadata(component_id)
+        meta = self._resolve_component_metadata(component_id)
         cand_terms = [
             normalize_point_px(
                 transform_terminal_position(
@@ -834,8 +874,8 @@ class CircuitScene(QGraphicsScene):
         sx, sy = snap_to_grid(px, py, GRID_PITCH_PX)
 
         name = self.next_component_name(component_id)
-        model = create_default_component_model(component_id, name)
-        if component_id in ("voltmeter", "ammeter"):
+        model = self._create_model_for_id(component_id, name)
+        if model.component_type in ("voltmeter", "ammeter"):
             meter_mode = (
                 self.settings.get_new_meters_mode()
                 if self.settings is not None
@@ -3658,6 +3698,10 @@ class CircuitScene(QGraphicsScene):
                     comp.power = float(comp.voltage * comp.current)
                 if hasattr(comp, "step_sequential"):
                     comp.step_sequential(self.latest_node_voltages)
+                elif hasattr(comp, "evaluate_voltage"):
+                    comp.evaluate_voltage(
+                        float(self.latest_node_voltages.get(comp.nodes[0], 0.0))
+                    )
                 elif hasattr(comp, "evaluate_latch"):
                     comp.evaluate_latch(self.latest_node_voltages)
                 elif hasattr(comp, "evaluate_coil"):
@@ -3762,6 +3806,14 @@ class CircuitScene(QGraphicsScene):
             self._refresh_wire_overlays()
             self.update()
 
+    def set_net_logic_coloring_enabled(self, enabled: bool) -> None:
+        """Enable or disable digital logic-state (High/Low/Undef) coloring on wires."""
+        val = bool(enabled)
+        if val != self.net_logic_coloring_enabled:
+            self.net_logic_coloring_enabled = val
+            self._refresh_wire_overlays()
+            self.update()
+
     def set_current_dots_enabled(self, enabled: bool) -> None:
         """Enable or disable animated current flow dots on wires."""
         val = bool(enabled)
@@ -3854,13 +3906,15 @@ class CircuitScene(QGraphicsScene):
 
     def _refresh_wire_overlays(self) -> None:
         self.probe_wire_ids.intersection_update(self._wire_items_by_id.keys())
-        has_live = self.is_simulation_running and bool(
-            self._last_sim_frame is not None or self.latest_node_voltages
+        has_colors = self.voltage_colors_enabled or self.net_logic_coloring_enabled
+        has_live = bool(
+            (self.is_simulation_running and (self._last_sim_frame is not None or self.latest_node_voltages))
+            or (self.net_logic_coloring_enabled and bool(self.latest_node_voltages))
         )
         if not has_live:
             for wire in self._wire_items:
                 wire.set_overlay_state(
-                    voltage_color_enabled=self.voltage_colors_enabled,
+                    voltage_color_enabled=has_colors,
                     current_dots_enabled=self.current_dots_enabled,
                     clear_overlay=True,
                 )
@@ -3869,7 +3923,7 @@ class CircuitScene(QGraphicsScene):
             return
 
         if (
-            not self.voltage_colors_enabled
+            not has_colors
             and not self.current_dots_enabled
             and not self.probe_wire_ids
         ):
@@ -3903,18 +3957,23 @@ class CircuitScene(QGraphicsScene):
             net_name = conn.wire_to_node.get(wire.wire_id)
             rgb = None
             if (
-                self.voltage_colors_enabled
+                has_colors
                 and net_name is not None
                 and net_name in self.latest_node_voltages
             ):
-                rgb = map_voltage_to_rgb(self.latest_node_voltages[net_name])
+                v_net = float(self.latest_node_voltages[net_name])
+                rgb = (
+                    map_logic_voltage_to_rgb(v_net)
+                    if self.net_logic_coloring_enabled
+                    else map_voltage_to_rgb(v_net)
+                )
             vel = (
                 compute_current_dot_velocity(wire_currents.get(wire.wire_id, 0.0))
                 if self.current_dots_enabled
                 else 0.0
             )
             wire.set_overlay_state(
-                voltage_color_enabled=self.voltage_colors_enabled,
+                voltage_color_enabled=has_colors,
                 current_dots_enabled=self.current_dots_enabled,
                 overlay_rgb=rgb,
                 dot_velocity=vel,
@@ -3934,7 +3993,7 @@ class CircuitScene(QGraphicsScene):
     def get_alt_power_probe_text(self, item: ComponentItem) -> str:
         """Compute and format instantaneous `P = V_drop * I_branch` power reading for Alt-hover."""
         comp = item.component
-        is_src = comp.component_type in ("dc_voltage", "ac_voltage", "dc_current", "wav_voltage")
+        is_src = comp.component_type in ("dc_voltage", "ac_voltage", "function_generator", "dc_current", "wav_voltage")
         p_w = float(getattr(comp, "power", comp.voltage * comp.current))
         text = format_power_probe_text(
             comp.name,

@@ -36,6 +36,7 @@ from circuitsim.canvas.connectivity import (
 from circuitsim.canvas.symbol_geometry import (
     GRID_PITCH_PX,
     SymbolMetadata,
+    build_custom_macro_metadata,
     led_marks,
     snap_to_grid,
     transform_terminal_position,
@@ -49,17 +50,20 @@ from circuitsim.components import (
     Comparator,
     Component,
     Counter4Bit,
+    CustomMacroBlock,
     DCCurrentSource,
     DCVoltageSource,
     DFlipFlop,
     DigitalSequentialBlock,
     Diode,
+    FunctionGenerator,
     Fuse,
     Ground,
     Inductor,
     JKFlipFlop,
     LED,
     Lightbulb,
+    LogicProbe,
     MOSFETBase,
     NE555,
     OpAmp,
@@ -114,6 +118,9 @@ COMPONENT_PREFIXES: dict[str, str] = {
     "ammeter": "A",
     "mcu": "U",
     "oscilloscope": "OSC",
+    "function_generator": "FG",
+    "logic_probe": "LP",
+    "custom_macro": "X",
 }
 
 
@@ -133,6 +140,8 @@ def format_component_value_summary(comp: Component) -> str:
         return format_engineering_value(comp.inductance, "H")
     if isinstance(comp, DCVoltageSource):
         return format_engineering_value(comp.dc_voltage, "V")
+    if isinstance(comp, FunctionGenerator):
+        return comp.display_value
     if isinstance(comp, ACVoltageSource):
         v_str = format_engineering_value(comp.amplitude, "V")
         f_str = format_engineering_value(comp.frequency, "Hz")
@@ -170,6 +179,10 @@ def format_component_value_summary(comp: Component) -> str:
     if isinstance(comp, DigitalSequentialBlock):
         return comp.display_value
     if isinstance(comp, Oscilloscope):
+        return comp.display_value
+    if isinstance(comp, LogicProbe):
+        return comp.display_value
+    if isinstance(comp, CustomMacroBlock):
         return comp.display_value
     if isinstance(comp, (Voltmeter, Ammeter)):
         return comp.format_reading()
@@ -258,9 +271,13 @@ class ComponentItem(QGraphicsObject):
         super().__init__()
         self.component: Component = component
         self.symbol_library: SymbolLibrary = symbol_library
-        self.metadata: SymbolMetadata = symbol_library.get_metadata(
-            component.component_type
-        )
+        if isinstance(component, CustomMacroBlock):
+            self.metadata: SymbolMetadata = build_custom_macro_metadata(
+                component.macro_def.macro_name,
+                component.macro_def.pins,
+            )
+        else:
+            self.metadata = symbol_library.get_metadata(component.component_type)
         self.theme: ThemeMode = theme
         self.is_ghost: bool = is_ghost
         self._rotation_deg: int = 0
@@ -366,6 +383,16 @@ class ComponentItem(QGraphicsObject):
 
     def get_live_tooltip(self, is_running: bool = False) -> str:
         """Return formatted live tooltip text for this component."""
+        if isinstance(self.component, FunctionGenerator):
+            fg = self.component
+            z_txt = "Hi-Z" if fg.output_impedance < 1e-6 else format_engineering_value(fg.output_impedance, "Ω")
+            lines = [
+                f"{fg.name} (Function Generator)",
+                "Double-click to open Function Generator",
+                f"Waveform: {fg.waveform.value.title()} | {'ON' if fg.output_enabled else 'OFF'}",
+                f"Freq: {format_engineering_value(fg.frequency, 'Hz')} | Amp: {format_engineering_value(fg.amplitude, 'V')} | Zout: {z_txt}",
+            ]
+            return "\n".join(lines)
         if isinstance(self.component, Oscilloscope):
             osc = self.component
             lines = [
@@ -440,6 +467,9 @@ class ComponentItem(QGraphicsObject):
             lines.append("Voltage: --")
             lines.append("Current: --")
             lines.append("Power: --")
+        if isinstance(self.component, (Voltmeter, Ammeter)):
+            mm = getattr(self.component, "measurement_mode", "DC")
+            lines.append(f"Measurement Mode: {'AC RMS' if mm == 'AC_RMS' else 'DC (Instantaneous)'}")
         if (
             isinstance(self.component, Voltmeter)
             and getattr(self.component, "loading_error_message", None)
@@ -512,6 +542,9 @@ class ComponentItem(QGraphicsObject):
             self.logic_level = telemetry.logic_level
             if telemetry.logic_level in ("H", "L"):
                 self.component._output_level = telemetry.logic_level == "H"
+        elif isinstance(self.component, LogicProbe):
+            self.component.evaluate_voltage(telemetry.voltage)
+            self.logic_level = self.component.logic_state
         elif isinstance(self.component, SevenSegDisplay):
             self.component.decoded_hex_char = telemetry.decoded_hex_char
             self.component.active_segments = telemetry.active_segments
@@ -954,13 +987,20 @@ class ComponentItem(QGraphicsObject):
             return {"p1": "P1", "p2": "P2", "s1": "S1", "s2": "S2"}
         if ctype == "oscilloscope":
             return {"CH1": "CH1", "CH2": "CH2", "EXT_TRIG": "EXT_TRIG", "GND": "GND"}
+        if ctype == "function_generator":
+            return {"out": "OUT", "gnd": "GND"}
+        if ctype == "custom_macro" and isinstance(comp, CustomMacroBlock):
+            return {p: p for p in comp.macro_def.pins}
         if ctype.startswith("gate_") and ctype != "gate_not":
             return {"a": "A", "b": "B", "out": "Y", "in0": "A", "in1": "B"}
         return {}
 
     def default_pin_label_rects(self) -> list[tuple[str, str, QRectF]]:
         """Return `[(terminal_name, label_text, tight_upright_rect)]` clear of all 5 px terminal dots."""
-        if len(self.metadata.terminals) < 3:
+        if len(self.metadata.terminals) < 3 and self.component.component_type not in (
+            "function_generator",
+            "custom_macro",
+        ):
             return []
         pin_map = self.default_pin_labels(self.component)
         if not pin_map:
@@ -997,6 +1037,12 @@ class ComponentItem(QGraphicsObject):
                 ly = ly0 * 0.9
             elif ctype == "oscilloscope":
                 lx = -44.0 if lx0 < 0 else 44.0
+                ly = ly0
+            elif ctype == "function_generator":
+                lx = 32.0
+                ly = ly0
+            elif ctype == "custom_macro":
+                lx = -26.0 if lx0 < 0 else 26.0
                 ly = ly0
             elif ctype == "spdt_relay":
                 if lx0 < 0:
@@ -1143,6 +1189,8 @@ class ComponentItem(QGraphicsObject):
             return ("RELAY-5P", {"coil_pos": "+COIL", "coil_neg": "-COIL", "com": "COM", "no": "NO", "nc": "NC"})
         if ctype == "oscilloscope":
             return ("DSO-1062D", {"CH1": "CH1", "CH2": "CH2", "EXT_TRIG": "TRIG", "GND": "GND"})
+        if ctype == "function_generator":
+            return ("FG-BENCH", {"out": "OUT", "gnd": "GND"})
         if ctype == "lightbulb":
             return ("LAMP", {"a": "1", "b": "2"})
         if ctype == "ground":
@@ -1238,7 +1286,13 @@ class ComponentItem(QGraphicsObject):
                 rect = rect.united(QRectF(ax - 8.0, ay - 6.0, 16.0, 12.0))
                 rect = rect.united(QRectF(kx - 8.0, ky - 6.0, 16.0, 12.0))
 
-            if len(self.metadata.terminals) >= 3 and not self._pinout_overlay_enabled:
+            if isinstance(self.component, (Voltmeter, Ammeter)) and getattr(self.component, "measurement_mode", "DC") == "AC_RMS":
+                rect = rect.united(QRectF(8.0, -24.0, 24.0, 11.0))
+
+            if (
+                len(self.metadata.terminals) >= 3
+                or self.component.component_type in ("function_generator", "custom_macro")
+            ) and not self._pinout_overlay_enabled:
                 for _tname, _tag, pin_rect in self.default_pin_label_rects():
                     rect = rect.united(pin_rect.adjusted(-1.0, -1.0, 1.0, 1.0))
 
@@ -1526,6 +1580,7 @@ class ComponentItem(QGraphicsObject):
             wiper_alpha=wiper_arg,
             rotation_deg=self.rotation_deg,
             flipped_h=self.flipped_h,
+            metadata_override=self.metadata if isinstance(self.component, CustomMacroBlock) else None,
         )
         if isinstance(self.component, SevenSegDisplay) and not self.is_ghost:
             self._paint_seven_seg_leds(painter, self.component)
@@ -1697,7 +1752,31 @@ class ComponentItem(QGraphicsObject):
                         pin_name,
                     )
 
-            if len(self.metadata.terminals) >= 3 and not self._pinout_overlay_enabled:
+            if isinstance(self.component, (Voltmeter, Ammeter)) and getattr(self.component, "measurement_mode", "DC") == "AC_RMS":
+                rms_rect = QRectF(8.0, -24.0, 24.0, 11.0)
+                painter.setPen(Qt.PenStyle.NoPen)
+                painter.setBrush(QColor("#0284C7"))
+                painter.drawRoundedRect(rms_rect, 2.5, 2.5)
+                painter.setPen(QColor("#F8FAFC"))
+                painter.setFont(QFont("Segoe UI", 6, QFont.Weight.Bold))
+                painter.drawText(rms_rect, Qt.AlignmentFlag.AlignCenter, "RMS")
+
+            if isinstance(self.component, LogicProbe):
+                lp = self.component
+                st = lp.logic_state if lp.logic_state in ("H", "L", "?") else "?"
+                pill_hex = "#22C55E" if st == "H" else ("#38BDF8" if st == "L" else "#F59E0B")
+                pill_rect = QRectF(-14.0, -9.0, 40.0, 18.0)
+                painter.setPen(Qt.PenStyle.NoPen)
+                painter.setBrush(QColor(pill_hex))
+                painter.drawRoundedRect(pill_rect, 7.0, 7.0)
+                painter.setPen(QColor("#0F172A"))
+                painter.setFont(QFont("Segoe UI", 9, QFont.Weight.Bold))
+                painter.drawText(pill_rect, Qt.AlignmentFlag.AlignCenter, st)
+
+            if (
+                len(self.metadata.terminals) >= 3
+                or self.component.component_type in ("function_generator", "custom_macro")
+            ) and not self._pinout_overlay_enabled:
                 pin_rects = self.default_pin_label_rects()
                 if pin_rects:
                     pin_font = QFont("Segoe UI", 7)

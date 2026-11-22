@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from enum import Enum
 import math
+import time
 from typing import Any
 import numpy as np
 from scipy.linalg import lu_factor, lu_solve
@@ -12,11 +13,13 @@ from scipy.linalg import lu_factor, lu_solve
 from circuitsim.components.bjt import BJTBase
 from circuitsim.components.capacitor import Capacitor
 from circuitsim.components.diode import Diode
+from circuitsim.components.function_generator import FunctionGenerator
 from circuitsim.components.ground import Ground
 from circuitsim.components.inductor import Inductor
 from circuitsim.components.led import LED
 from circuitsim.components.lightbulb import Lightbulb
 from circuitsim.components.logic_gate import LogicGate
+from circuitsim.components.logic_probe import LogicProbe
 from circuitsim.components.mcu import MCUBlock
 from circuitsim.components.meters import Ammeter, Voltmeter
 from circuitsim.components.mosfet import MOSFETBase
@@ -64,6 +67,7 @@ _TAG_TRANSFORMER = 22
 _TAG_RELAY = 23
 _TAG_SEQUENTIAL = 24
 _TAG_OSCILLOSCOPE = 25
+_TAG_LOGIC_PROBE = 26
 
 
 class IntegrationMethod(str, Enum):
@@ -323,6 +327,8 @@ class MNASolver:
             elif isinstance(comp, Oscilloscope):
                 tagged.append((comp, _TAG_OSCILLOSCOPE))
                 oscilloscopes.append(comp)
+            elif isinstance(comp, LogicProbe):
+                tagged.append((comp, _TAG_LOGIC_PROBE))
             elif isinstance(comp, Potentiometer):
                 tagged.append((comp, _TAG_POTENTIOMETER))
             elif isinstance(comp, DCVoltageSource):
@@ -546,6 +552,8 @@ class MNASolver:
                 sig.extend((1.0 if comp.energized else 0.0, comp.coil_resistance_ohm))
             elif isinstance(comp, Oscilloscope):
                 sig.extend((comp.r_in, 1.0 if self.circuit.is_oscilloscope_gnd_wired(comp) else 0.0))
+            elif isinstance(comp, LogicProbe):
+                sig.append(comp.r_in)
             elif isinstance(comp, Potentiometer):
                 sig.extend((comp.g_aw, comp.g_wb))
             elif isinstance(comp, (DCVoltageSource, ACVoltageSource)):
@@ -611,6 +619,8 @@ class MNASolver:
                 sig.extend((1.0 if comp.energized else 0.0, comp.coil_resistance_ohm))
             elif tag == _TAG_OSCILLOSCOPE:
                 sig.extend((comp.r_in, 1.0 if self.circuit.is_oscilloscope_gnd_wired(comp) else 0.0))
+            elif tag == _TAG_LOGIC_PROBE:
+                sig.append(comp.r_in)
             elif tag == _TAG_POTENTIOMETER:
                 sig.extend((comp.g_aw, comp.g_wb))
             elif tag <= _TAG_AC_VS:
@@ -676,6 +686,10 @@ class MNASolver:
                     gnd_wired=self.circuit.is_oscilloscope_gnd_wired(comp)
                 )
                 self._stamp_small_matrix(matrix_a, self._node_to_idx, comp.nodes, g_mat)
+            elif isinstance(comp, LogicProbe):
+                ip = self._node_to_idx.get(comp.nodes[0])
+                if ip is not None:
+                    matrix_a[ip, ip] += comp.conductance
             elif isinstance(comp, Switch):
                 if mode == "dc":
                     g_sw = comp.conductance
@@ -733,9 +747,9 @@ class MNASolver:
             else:
                 r_int = getattr(comp, "r_internal", 0.0)
             if r_int > 0.0:
-                matrix_a[row_k, row_k] += r_int
+                matrix_a[row_k, row_k] -= r_int
             elif effective_loop_reg_r > 0.0:
-                matrix_a[row_k, row_k] += effective_loop_reg_r
+                matrix_a[row_k, row_k] -= effective_loop_reg_r
 
         return matrix_a
 
@@ -852,6 +866,9 @@ class MNASolver:
             elif isinstance(comp, DCVoltageSource):
                 row_k = self._vs_to_idx[comp.name]
                 rhs_b[row_k] = comp.dc_voltage * source_scale
+            elif isinstance(comp, FunctionGenerator):
+                row_k = self._vs_to_idx[comp.name]
+                rhs_b[row_k] = (comp.dc_offset if comp.output_enabled else 0.0) * source_scale
             elif isinstance(comp, ACVoltageSource):
                 row_k = self._vs_to_idx[comp.name]
                 rhs_b[row_k] = comp.voltage_at(0.0) * source_scale
@@ -1252,6 +1269,10 @@ class MNASolver:
                     gnd_wired=self.circuit.is_oscilloscope_gnd_wired(comp)
                 )
                 self._stamp_small_matrix(mat, node_to_idx, comp.nodes, g_mat)
+            elif isinstance(comp, LogicProbe):
+                ip = node_to_idx.get(comp.nodes[0])
+                if ip is not None:
+                    mat[ip, ip] += comp.conductance
             elif isinstance(comp, DCCurrentSource):
                 ia = node_to_idx.get(comp.nodes[0])
                 ib = node_to_idx.get(comp.nodes[1])
@@ -1282,8 +1303,11 @@ class MNASolver:
             else:
                 r_int = getattr(vs, "r_internal", 0.0)
             if r_int > 0.0:
-                mat[row_k, row_k] += r_int
-            base_rhs[row_k] = vs.voltage_at(0.0) if hasattr(vs, "voltage_at") else 0.0
+                mat[row_k, row_k] -= r_int
+            if isinstance(vs, FunctionGenerator):
+                base_rhs[row_k] = vs.dc_offset if vs.output_enabled else 0.0
+            else:
+                base_rhs[row_k] = vs.voltage_at(0.0) if hasattr(vs, "voltage_at") else 0.0
 
         for k, cap in enumerate(capacitors):
             row_k = n_nodes + n_vs + k
@@ -2148,6 +2172,11 @@ class MNASolver:
                 )
                 continue
 
+            if isinstance(comp, LogicProbe):
+                comp.evaluate_voltage(float(node_voltages.get(comp.nodes[0], 0.0)))
+                branch_currents[comp.name] = comp.current
+                continue
+
             v_a = node_voltages.get(comp.nodes[0], 0.0)
             v_b = node_voltages.get(comp.nodes[1], 0.0)
             v_ab = v_a - v_b
@@ -2369,6 +2398,10 @@ class MNASolver:
                     gnd_wired=self.circuit.is_oscilloscope_gnd_wired(comp)
                 )
                 self._stamp_small_matrix(mat, node_to_idx, comp.nodes, g_mat)
+            elif isinstance(comp, LogicProbe):
+                ip = node_to_idx.get(comp.nodes[0])
+                if ip is not None:
+                    mat[ip, ip] += comp.conductance
 
         for k, vs in enumerate(voltage_sources):
             row_k = n_nodes + k
@@ -2381,9 +2414,9 @@ class MNASolver:
                 mat[ib, row_k] -= 1.0
                 mat[row_k, ib] -= 1.0
             if vs.r_internal > 0.0:
-                mat[row_k, row_k] += vs.r_internal
+                mat[row_k, row_k] -= vs.r_internal
             elif self.regularize_ideal_loops:
-                mat[row_k, row_k] += 1e-6
+                mat[row_k, row_k] -= 1e-6
             rhs[row_k] = vs.voltage_at(0.0)
 
         for k, cap in enumerate(capacitors):
@@ -2800,6 +2833,11 @@ class MNASolver:
                 )
                 continue
 
+            if tag == _TAG_LOGIC_PROBE:
+                comp.evaluate_voltage(float(node_voltages.get(comp.nodes[0], 0.0)))
+                branch_currents[comp.name] = comp.current
+                continue
+
             v_a = node_voltages.get(comp.nodes[0], 0.0)
             v_b = node_voltages.get(comp.nodes[1], 0.0)
             v_ab = v_a - v_b
@@ -2943,6 +2981,7 @@ class MNASolver:
         use_be_on_first_step: bool = True,
         use_be_on_switch: bool = True,
         reset_before_run: bool = True,
+        max_wall_time_s: float | None = None,
     ) -> TransientResult:
         """Run a transient simulation from `t = 0` (or current `sim_time`) for `duration` s.
 
@@ -3027,6 +3066,8 @@ class MNASolver:
             (w.code, w.component_names): idx for idx, w in enumerate(all_warnings)
         }
 
+        t_wall_start = time.perf_counter()
+        actual_steps = 0
         for k in range(1, n_steps + 1):
             res = self.step_transient(
                 step_dt,
@@ -3034,6 +3075,7 @@ class MNASolver:
                 use_be_on_first_step=use_be_on_first_step,
                 use_be_on_switch=use_be_on_switch,
             )
+            actual_steps = k
             if res.rebuilt_matrix:
                 rebuild_count += 1
             times[k] = res.sim_time
@@ -3050,6 +3092,19 @@ class MNASolver:
                     all_warnings.append(w)
                 else:
                     all_warnings[existing_idx] = w
+            if (
+                max_wall_time_s is not None
+                and (k & 15) == 0
+                and (time.perf_counter() - t_wall_start) >= max_wall_time_s
+            ):
+                break
+
+        if actual_steps < n_steps:
+            limit = actual_steps + 1
+            times = times[:limit]
+            node_history = {n: arr[:limit] for n, arr in node_history.items()}
+            curr_history = {n: arr[:limit] for n, arr in curr_history.items()}
+            volt_history = {n: arr[:limit] for n, arr in volt_history.items()}
 
         return TransientResult(
             times=times,
@@ -3058,7 +3113,7 @@ class MNASolver:
             component_voltages=volt_history,
             warnings=all_warnings,
             matrix_rebuild_count=rebuild_count,
-            step_count=n_steps,
+            step_count=actual_steps,
         )
 
     def _update_voltmeter_loading(self, comp: Voltmeter) -> None:

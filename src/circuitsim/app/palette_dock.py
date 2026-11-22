@@ -35,7 +35,7 @@ CATEGORY_ORDER: tuple[str, ...] = (
 
 # Explicit component ordering within each category (matching Section 3.1 of spec)
 COMPONENT_ORDER_IN_CATEGORY: dict[str, tuple[str, ...]] = {
-    "Sources": ("dc_voltage", "ac_voltage", "wav_voltage", "dc_current", "ground"),
+    "Sources": ("dc_voltage", "ac_voltage", "function_generator", "wav_voltage", "dc_current", "ground"),
     "Passive": ("resistor", "capacitor", "inductor", "potentiometer", "transformer"),
     "Switches": ("switch", "spdt_relay", "fuse"),
     "Semiconductors": ("diode", "zener_diode", "led", "npn_bjt", "pnp_bjt", "nmos", "pmos", "opamp"),
@@ -48,11 +48,12 @@ COMPONENT_ORDER_IN_CATEGORY: dict[str, tuple[str, ...]] = {
         "gate_nor",
         "gate_xor",
         "gate_xnor",
+        "logic_probe",
     ),
-    "Digital": ("d_flipflop", "jk_flipflop", "counter_4bit", "seven_seg_display"),
+    "Digital": ("d_flipflop", "jk_flipflop", "counter_4bit", "seven_seg_display", "logic_probe"),
     "Mixed-Signal": ("ne555", "comparator", "mcu"),
     "Loads": ("lightbulb",),
-    "Instruments": ("voltmeter", "ammeter", "oscilloscope"),
+    "Instruments": ("voltmeter", "ammeter", "oscilloscope", "function_generator", "logic_probe"),
 }
 
 
@@ -91,8 +92,17 @@ class _PaletteTreeWidget(QTreeWidget):
 
         drag = QDrag(self)
         drag.setMimeData(mime)
+        icon_id = str(comp_id)
+        if icon_id.startswith("custom:"):
+            parent_pal = self.parent()
+            user_lib = getattr(parent_pal, "user_library", None)
+            icon_id = "custom_macro"
+            if user_lib is not None:
+                entry = user_lib.get_part(str(comp_id).removeprefix("custom:"))
+                if entry is not None and entry.kind == "preset" and entry.base_component_type:
+                    icon_id = entry.base_component_type
         icon = self.symbol_library.create_palette_icon(
-            str(comp_id), theme=self.theme, size=(80, 40)
+            icon_id, theme=self.theme, size=(80, 40)
         )
         pixmap = icon.pixmap(80, 40)
         drag.setPixmap(pixmap)
@@ -110,11 +120,13 @@ class ComponentPaletteWidget(QWidget):
         symbol_library: SymbolLibrary,
         *,
         theme: ThemeMode = ThemeMode.DARK,
+        user_library: object | None = None,
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
         self.symbol_library: SymbolLibrary = symbol_library
         self.theme: ThemeMode = theme
+        self.user_library: object | None = user_library
         self._saved_expanded_states: dict[str, bool] | None = None
         self.setMinimumHeight(0)
 
@@ -163,13 +175,57 @@ class ComponentPaletteWidget(QWidget):
         self._populate_tree()
         self._apply_search_filter(self.search_input.text())
 
+    def set_user_library(self, user_library: object | None) -> None:
+        """Attach a `UserLibraryStore` and refresh the `My Custom Parts` section."""
+        self.user_library = user_library
+        self.refresh_custom_parts()
+
+    def refresh_custom_parts(self) -> None:
+        """Rebuild the tree so `My Custom Parts` reflects saved presets and macros."""
+        self._populate_tree()
+        self._apply_search_filter(self.search_input.text())
+
     def _populate_tree(self) -> None:
         self.tree.clear()
         catalog = self.symbol_library.metadata_catalog
 
+        if self.user_library is not None and hasattr(self.user_library, "list_parts"):
+            custom_entries = list(self.user_library.list_parts())  # type: ignore[attr-defined]
+            cat_item = QTreeWidgetItem(self.tree, ["My Custom Parts"])
+            cat_item.setFlags(Qt.ItemFlag.ItemIsEnabled)
+            cat_item.setExpanded(True)
+            for entry in custom_entries:
+                comp_role = f"custom:{entry.part_id}"
+                part_item = QTreeWidgetItem(cat_item, [entry.name])
+                part_item.setData(0, Qt.ItemDataRole.UserRole, comp_role)
+                part_item.setSizeHint(0, QSize(180, 26))
+                kind_lbl = "Macro" if entry.kind == "macro" else f"Preset ({entry.base_component_type})"
+                tip = f"{entry.name} [{kind_lbl}]"
+                if entry.description:
+                    tip += f"\n{entry.description}"
+                tip += "\nDrag onto the canvas or double-click to place at center."
+                part_item.setToolTip(0, tip)
+                icon_id = (
+                    entry.base_component_type
+                    if (entry.kind == "preset" and entry.base_component_type in catalog)
+                    else "custom_macro"
+                )
+                part_item.setIcon(
+                    0,
+                    self.symbol_library.create_palette_icon(
+                        icon_id, theme=self.theme, size=(48, 22)
+                    ),
+                )
+
         grouped: dict[str, list[str]] = {cat: [] for cat in CATEGORY_ORDER}
         for comp_id, meta in catalog.items():
             grouped.setdefault(meta.category, []).append(comp_id)
+        if "function_generator" in catalog and "function_generator" not in grouped.get("Sources", []):
+            grouped.setdefault("Sources", []).append("function_generator")
+        if "logic_probe" in catalog:
+            for extra_cat in ("Logic Gates", "Instruments"):
+                if "logic_probe" not in grouped.get(extra_cat, []):
+                    grouped.setdefault(extra_cat, []).append("logic_probe")
 
         for category, comp_ids in grouped.items():
             if not comp_ids:

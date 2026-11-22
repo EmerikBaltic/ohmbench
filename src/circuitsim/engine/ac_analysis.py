@@ -15,6 +15,7 @@ from circuitsim.components.inductor import Inductor
 from circuitsim.components.led import LED
 from circuitsim.components.lightbulb import Lightbulb
 from circuitsim.components.logic_gate import LogicGate
+from circuitsim.components.logic_probe import LogicProbe
 from circuitsim.components.mcu import MCUBlock
 from circuitsim.components.meters import Ammeter, Voltmeter
 from circuitsim.components.mosfet import MOSFETBase
@@ -338,6 +339,10 @@ def run_ac_sweep(
                     for c_j, col_idx in enumerate(idxs):
                         if col_idx is not None and g_mat[r_i][c_j] != 0.0:
                             mat_y[row_idx, col_idx] += complex(g_mat[r_i][c_j])
+            elif isinstance(comp, LogicProbe):
+                ip = node_to_idx.get(comp.nodes[0])
+                if ip is not None:
+                    mat_y[ip, ip] += comp.conductance
 
         for comp in vs_list:
             row_k = vs_to_idx[comp.name]
@@ -355,9 +360,9 @@ def run_ac_sweep(
             else:
                 r_int = getattr(comp, "r_internal", 0.0)
             if r_int > 0.0:
-                mat_y[row_k, row_k] += r_int
+                mat_y[row_k, row_k] -= r_int
             elif regularize_ideal_loops:
-                mat_y[row_k, row_k] += 1e-6
+                mat_y[row_k, row_k] -= 1e-6
 
             if comp.name == stim_src.name:
                 rhs_c[row_k] = phasor_stim

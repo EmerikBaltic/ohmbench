@@ -705,6 +705,33 @@ When ready to perform Stage 2 (internal/package rename after Stage 1 settles):
 | `J6` | Student docs (`LEARNING_NOTES.md`, `SUGGESTIONS.md`) & Windows packaging (`packaging/ohmbench.spec`, `packaging/installer.iss`, `.gitignore`, `README.md`) | `[x]` | Done |
 | `GATE J` | Targeted Gate Verification (`test_j_dso_and_release.py`, `test_k_ui_and_transformer.py`, `test_g_qol_fixes.py`: `19 passed in 4.92s`; post-sweep fixes: pure `#FFFFFF` publication export & perpendicular corner-shared collision exemption, `45 passed in 11.96s`) & `checkpoint/J-done` tag | `[x]` | Done (`45 passed`) |
 
+## PHASE L QUEUE (DSO-1062D REAL-TIME STREAMING, WINDOWING & POLISH)
+
+| Item | Description | Status |
+| :--- | :--- | :--- |
+| **L0** | Initialize Phase L queue in `PROGRESS.md` (`L0`–`L5`, `GATE L`) | [x] |
+| **L1** | High-rate `SampleBlock` streaming into DSO-1062D & coupled simulation `dt` (`sim_worker.py`, `main_window.py`, `dso_panel.py`; `26 passed`) | [x] |
+| **L2** | Exact `SEC/DIV` X-axis scaling, triggered windowing & Roll Mode (`>= 100 ms/div`) (`dso_engine.py`, `dso_panel.py`; `26 passed`) | [x] |
+| **L3** | `RUN/STOP` freeze & discontinuity guard, unified hardware frequency counter & `AUTO SET` (`dso_engine.py`, `dso_panel.py`; `26 passed`) | [x] |
+| **L4** | Front-panel UI clipping, high-contrast status badge & mini-screen preview polish (`dso_panel.py`; `26 passed`) | [x] |
+| **L5** | Phase L regression tests (`test_l1`–`test_l4`) in `tests/test_j_dso_and_release.py` (`30 passed`) | [x] |
+| **GATE L** | Final targeted verification (`54 passed in 20.30s`), `PROGRESS.md` completion & `checkpoint/L-done` tag | [x] |
+| **L2 HOTFIX** | Root cause of `0xCFFFFFFF` (`STATUS_APPLICATION_HANG`) resolved: synchronous `capture_from_scene()` capped (`max_steps=2000`, `max_wall_time_s=0.15s`) & skipped while running; `DSORingBuffer(65536)` + coalesced `33 ms` UI timer + coalesced `SampleBlock` worker outbox (`12 ms` tick budget); `decimate_xy_minmax()` + cosmetic pen fast-path (`QRasterPaintEngine` `QStroker`/`QTessellator` `2.97s -> <50ms` fix) + `80 ms` `SEC/DIV` debounce; preserved capacitor initial voltage across `solve_dc()` in `SimulationSession.start()`, monotonic `_latest_contiguous_slice()`, and switched-RC `SINGLE`/`NORMAL` honoring at `>= 100 ms/div` (`50 passed in 23.53s`) | [x] |
+
+## PHASE M QUEUE (DSO POLISH, FUNCTION GENERATOR, AC RMS METERS, LOGIC PACK, QUICK-PLACE & CUSTOM PARTS LIBRARY)
+
+| Item | Description | Status | Notes |
+| :--- | :--- | :--- | :--- |
+| `M0` | Initialize Phase M queue in `PROGRESS.md` & `tests/test_m_workbench_final.py` | `[x]` | Done |
+| `M1` | DSO-1062D `AUTO SET` startup-ramp fix & softkey formatting polish | `[x]` | Done (`20 passed`) |
+| `M2` | Placeable Benchtop Function Generator (`function_generator`, `FG1`) & modeless panel | `[x]` | Done (`38 passed`; fixed MNA `-= r_internal` sign across solver/AC/Thevenin) |
+| `M3` | DC / AC RMS measurement mode on canvas `Voltmeter` & `Ammeter` | `[x]` | Done (`29 passed`) |
+| `M4` | Logic Gates Teaching Pack (`LogicProbe`, Net Logic Coloring & Truth-Table Generator) | `[x]` | Done (`46 passed`) |
+| `M5` | Live Potentiometer keyboard tuning (`[` / `]`) & `Space` Quick-Place search popup | `[x]` | Done (`12 passed in 2.91s`) |
+| `M6` | Persistent User Custom Parts Library (`My Custom Parts` palette + Import/Export) | `[x]` | Done (`13 passed in 3.06s`) |
+| `GATE M` | Phase M regression verification & `checkpoint/M-done` tag | `[x]` | Done (`43 passed in 8.06s`; zero Qt imports in Qt-free layers; post-sweep fixes: synced `Voltmeter`/`Ammeter` `mode` & `measurement_mode` in `meters.py`/`circ_serializer.py`, updated `tests/test_logic_gates_ui_and_io.py:94,145` for intentional `M4` `logic_probe` catalog addition to `"Logic Gates"`) |
+
+
 
 
 

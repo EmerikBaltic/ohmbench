@@ -62,6 +62,11 @@ _EXTRA_SETTINGS: dict[str, dict[str, str]] = {
         "momentary": "bool",
     },
     "ac_voltage": {"waveform": "str", "phase_deg": "float", "duty_cycle": "float"},
+    "function_generator": {
+        "waveform": "str",
+        "phase_deg": "float",
+        "output_enabled": "bool",
+    },
     "wav_voltage": {"wav_path": "str", "sample_rate_hz": "float", "loop": "bool"},
     "lightbulb": {"use_filament_model": "bool", "burnout_enabled": "bool"},
     "led": {
@@ -136,8 +141,8 @@ _EXTRA_SETTINGS: dict[str, dict[str, str]] = {
         "initial_state": "bool",
         "supply_mode": "str",
     },
-    "voltmeter": {"mode": "str", "is_ideal": "bool"},
-    "ammeter": {"mode": "str", "is_ideal": "bool"},
+    "voltmeter": {"mode": "str", "measurement_mode": "str", "is_ideal": "bool"},
+    "ammeter": {"mode": "str", "measurement_mode": "str", "is_ideal": "bool"},
     "mcu": {"v_low": "float", "r_dig_in": "float", "update_period": "float", "code": "str"},
     "transformer": {"is_ideal": "bool"},
     "spdt_relay": {"r_on": "float", "r_off": "float", "energized": "bool"},
@@ -147,6 +152,7 @@ _EXTRA_SETTINGS: dict[str, dict[str, str]] = {
     "counter_4bit": {"initial_count": "int"},
     "seven_seg_display": {"v_high": "float", "v_low": "float"},
     "oscilloscope": {"dso_state_json": "str"},
+    "logic_probe": {"family": "str"},
 }
 
 # Editable parameters that may legitimately be "none" (feature switched off).
@@ -235,6 +241,10 @@ def _component_to_dict(spec: PlacedComponentSpec) -> dict[str, Any]:
             settings[key] = str(getattr(raw, "value", raw))
         else:
             settings[key] = None if raw is None else float(raw)
+    if ctype == "custom_macro" and hasattr(comp, "macro_def"):
+        from circuitsim.io.user_library import serialize_macro_def
+
+        settings["macro_payload"] = serialize_macro_def(comp.macro_def)  # type: ignore[arg-type]
     # Note: for a switch "closed" is the position shown on the canvas (what the
     # user sees), so that is what gets saved.
 
@@ -335,7 +345,9 @@ def _apply_setting(comp: Component, ctype: str, key: str, kind: str, value: Any,
 def _component_from_dict(entry: object, index: int) -> PlacedComponentSpec:
     d = _require_dict(entry, f"Component #{index + 1}")
     ctype = d.get("type")
-    if not isinstance(ctype, str) or ctype not in KNOWN_COMPONENT_TYPES:
+    if not isinstance(ctype, str) or (
+        ctype != "custom_macro" and ctype not in KNOWN_COMPONENT_TYPES
+    ):
         raise CircuitFileError(
             f"Component #{index + 1} has an unknown type {ctype!r}. "
             "The file may come from a different program or version."
@@ -345,7 +357,18 @@ def _component_from_dict(entry: object, index: int) -> PlacedComponentSpec:
         raise CircuitFileError(f"Component #{index + 1} has no name.")
     who = f"Component {name}"
 
-    comp = create_default_component_model(ctype, name.strip())
+    if ctype == "custom_macro":
+        settings_dict = _require_dict(d.get("settings", {}), f"{who}: its settings")
+        macro_payload = settings_dict.get("macro_payload")
+        if isinstance(macro_payload, dict):
+            from circuitsim.components.custom_macro import CustomMacroBlock
+            from circuitsim.io.user_library import deserialize_macro_def
+
+            comp = CustomMacroBlock(name.strip(), deserialize_macro_def(macro_payload))
+        else:
+            comp = create_default_component_model(ctype, name.strip())
+    else:
+        comp = create_default_component_model(ctype, name.strip())
 
     label = d.get("label", name)
     if not isinstance(label, str):
@@ -388,6 +411,8 @@ def _component_from_dict(entry: object, index: int) -> PlacedComponentSpec:
     settings = _require_dict(d.get("settings", {}), f"{who}: its settings")
     allowed_extra = _EXTRA_SETTINGS.get(ctype, {})
     for key, value in settings.items():
+        if ctype == "custom_macro" and key == "macro_payload":
+            continue
         if key not in allowed_extra:
             raise CircuitFileError(f"{who} has an unknown setting '{key}'.")
         _apply_setting(comp, ctype, key, allowed_extra[key], value, who)

@@ -14,6 +14,7 @@ from circuitsim.components.inductor import Inductor
 from circuitsim.components.led import LED
 from circuitsim.components.lightbulb import Lightbulb
 from circuitsim.components.logic_gate import LogicGate
+from circuitsim.components.logic_probe import LogicProbe
 from circuitsim.components.mcu import MCUBlock
 from circuitsim.components.meters import Ammeter, Voltmeter
 from circuitsim.components.mosfet import MOSFETBase
@@ -243,6 +244,11 @@ class Circuit:
                                 if cj is not None and g_mat[r_i][c_j] != 0.0:
                                     mat[ri, cj] += g_mat[r_i][c_j]
                     continue
+                if isinstance(comp, LogicProbe):
+                    ip = node_to_idx.get(comp.nodes[0])
+                    if ip is not None:
+                        mat[ip, ip] += comp.conductance
+                    continue
                 if isinstance(comp, (NE555, Transformer, SPDTRelay)):
                     g_mat, _ = comp.companion_stamp()
                     idxs = [node_to_idx.get(n) for n in comp.nodes]
@@ -297,7 +303,7 @@ class Circuit:
                     mat[ib, row_k] -= 1.0
                     mat[row_k, ib] -= 1.0
                 if r_int > 0.0:
-                    mat[row_k, row_k] += r_int
+                    mat[row_k, row_k] -= r_int
 
             return mat
 
@@ -420,6 +426,13 @@ class Circuit:
                     terminal_degree[p_node] += 2
                     adjacency[c_pin].add(CANONICAL_GND)
                     adjacency[CANONICAL_GND].add(c_pin)
+                continue
+            if isinstance(comp, LogicProbe):
+                p_node = comp.nodes[0]
+                c_pin = canonical(p_node)
+                terminal_degree[p_node] += 2
+                adjacency[c_pin].add(CANONICAL_GND)
+                adjacency[CANONICAL_GND].add(c_pin)
                 continue
             if isinstance(comp, NE555):
                 cgnd = canonical(comp.node_gnd)
@@ -620,7 +633,7 @@ class Circuit:
                     if comp.is_output_pin(pin):
                         driven_seeds.add(canonical(p_node))
                 continue
-            if isinstance(comp, Oscilloscope):
+            if isinstance(comp, (Oscilloscope, LogicProbe)):
                 continue
             if isinstance(comp, NE555):
                 cgnd = canonical(comp.node_gnd)

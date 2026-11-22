@@ -31,9 +31,12 @@ if TYPE_CHECKING:
         WireSpec,
     )
 from circuitsim.components.base import Component
+from circuitsim.components.capacitor import Capacitor
+from circuitsim.components.function_generator import FunctionGenerator
 from circuitsim.components.led import LED
 from circuitsim.components.lightbulb import Lightbulb
 from circuitsim.components.logic_gate import LogicGate
+from circuitsim.components.logic_probe import LogicProbe
 from circuitsim.components.meters import Ammeter, Voltmeter
 from circuitsim.components.potentiometer import Potentiometer
 from circuitsim.components.power import Fuse
@@ -280,6 +283,8 @@ def format_component_canvas_text(comp: Component) -> str:
         return f"{format_engineering_value(comp.resistance, 'Ω')} ({comp.alpha * 100.0:.0f}%)"
     if isinstance(comp, DCVoltageSource):
         return format_engineering_value(comp.dc_voltage, "V")
+    if isinstance(comp, FunctionGenerator):
+        return comp.display_value
     if isinstance(comp, ACVoltageSource):
         v_str = format_engineering_value(comp.amplitude, "V")
         f_str = format_engineering_value(comp.frequency, "Hz")
@@ -296,6 +301,8 @@ def format_component_canvas_text(comp: Component) -> str:
         return f"{comp.rated_power:g}W / {comp.rated_voltage:g}V"
     if isinstance(comp, LogicGate):
         return "H" if comp.output_level else "L"
+    if isinstance(comp, LogicProbe):
+        return comp.display_value
     if isinstance(comp, (Voltmeter, Ammeter)):
         return comp.format_reading()
     # Capacitor / Inductor fallback via attribute check to avoid circular import
@@ -813,7 +820,16 @@ class SimulationSession:
 
         try:
             if self.solver.sim_time == 0.0:
+                saved_caps = [
+                    (c, c.cap_voltage, c.voltage, c.cap_current)
+                    for c in self.circuit.flat_components()
+                    if isinstance(c, Capacitor)
+                ]
                 res = self.solver.solve_dc()
+                for c, cap_v, term_v, cap_i in saved_caps:
+                    c.cap_voltage = cap_v
+                    c.voltage = term_v
+                    c.cap_current = cap_i
                 # Also advance one tiny step if reactive/AC components exist so meters have samples
                 res_step = self.solver.step_transient(self._dt)
                 self._active_diagnostics = self._collect_warnings_diagnostics(
@@ -1091,17 +1107,29 @@ class SimulationSession:
             loading_err = (
                 comp.loading_error_message if isinstance(comp, Voltmeter) else None
             )
-            gate_lvl = (
-                ("H" if comp.output_level else "L")
-                if isinstance(comp, LogicGate)
-                else ""
+            if isinstance(comp, LogicGate):
+                gate_lvl = "H" if comp.output_level else "L"
+            elif isinstance(comp, LogicProbe):
+                gate_lvl = comp.logic_state
+            else:
+                gate_lvl = ""
+
+            v_out = (
+                comp.reading
+                if (isinstance(comp, Voltmeter) and comp.measurement_mode == "AC_RMS" and comp.has_reading)
+                else comp.voltage
+            )
+            i_out = (
+                comp.reading
+                if (isinstance(comp, Ammeter) and comp.measurement_mode == "AC_RMS" and comp.has_reading)
+                else comp.current
             )
 
             comp_map[comp.name] = ComponentTelemetry(
                 name=comp.name,
                 component_type=comp.component_type,
-                voltage=comp.voltage,
-                current=comp.current,
+                voltage=v_out,
+                current=i_out,
                 power=comp.power,
                 display_value=format_component_canvas_text(comp),
                 brightness=brightness,

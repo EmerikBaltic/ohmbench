@@ -10,12 +10,15 @@ from circuitsim.components.base import Component
 from circuitsim.components.bjt import NPNBJT, PNPBJT
 from circuitsim.components.capacitor import Capacitor
 from circuitsim.components.comparator import Comparator
+from circuitsim.components.custom_macro import CustomMacroBlock, package_subcircuit_macro
 from circuitsim.components.ground import Ground
 from circuitsim.components.inductor import Inductor
 from circuitsim.components.diode import Diode, ZenerDiode
+from circuitsim.components.function_generator import FunctionGenerator
 from circuitsim.components.led import LED
 from circuitsim.components.lightbulb import Lightbulb
 from circuitsim.components.logic_gate import GATE_COMPONENT_TYPES, GATE_OPERATIONS, LogicGate
+from circuitsim.components.logic_probe import LogicProbe
 from circuitsim.components.mcu import MCUBlock
 from circuitsim.components.meters import Ammeter, Voltmeter
 from circuitsim.components.mosfet import NMOS, PMOS
@@ -41,6 +44,7 @@ KNOWN_COMPONENT_TYPES: tuple[str, ...] = (
     "potentiometer",
     "dc_voltage",
     "ac_voltage",
+    "function_generator",
     "wav_voltage",
     "dc_current",
     "ground",
@@ -67,6 +71,7 @@ KNOWN_COMPONENT_TYPES: tuple[str, ...] = (
     "counter_4bit",
     "seven_seg_display",
     "oscilloscope",
+    "logic_probe",
     *GATE_COMPONENT_TYPES,
 )
 
@@ -86,6 +91,8 @@ def create_default_component_model(component_id: str, name: str) -> Component:
         return DCVoltageSource(name, n0, n1, voltage=12.0)
     if component_id == "ac_voltage":
         return ACVoltageSource(name, n0, n1, amplitude=10.0, frequency=1000.0)
+    if component_id == "function_generator":
+        return FunctionGenerator(name, f"{name}_out", f"{name}_gnd", amplitude=5.0, frequency=100.0)
     if component_id == "wav_voltage":
         return WavVoltageSource(name, n0, n1)
     if component_id == "dc_current":
@@ -145,6 +152,13 @@ def create_default_component_model(component_id: str, name: str) -> Component:
         return SevenSegDisplay(name)
     if component_id == "oscilloscope":
         return Oscilloscope(name)
+    if component_id == "logic_probe":
+        return LogicProbe(name, f"{name}_in")
+    if component_id == "custom_macro":
+        return CustomMacroBlock(
+            name,
+            package_subcircuit_macro("CustomMacro", ("IN", "OUT"), ()),
+        )
     if component_id.startswith("gate_"):
         op = component_id.removeprefix("gate_")
         if op in GATE_OPERATIONS:

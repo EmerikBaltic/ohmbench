@@ -104,6 +104,61 @@ class SymbolMetadata:
         return (w_px / 2.0 + lx, h_px / 2.0 + ly)
 
 
+def build_custom_macro_metadata(
+    macro_name: str,
+    pins: tuple[str, ...] | list[str],
+    *,
+    component_id: str = "custom_macro",
+) -> SymbolMetadata:
+    """Build dynamic grid metadata & terminal coordinates for a `CustomMacroBlock`."""
+    clean_pins = [str(p).strip() for p in pins if str(p).strip()] or ["IN", "OUT"]
+    n_pins = len(clean_pins)
+    n_left = (n_pins + 1) // 2 if n_pins > 1 else 1
+    n_right = n_pins - n_left
+
+    def _side_ys(count: int) -> list[int]:
+        if count <= 0:
+            return []
+        if count == 1:
+            return [0]
+        if count == 2:
+            return [-1, 1]
+        start = -(count // 2)
+        ys: list[int] = []
+        val = start
+        while len(ys) < count:
+            if count % 2 == 0 and val == 0:
+                val += 1
+                continue
+            ys.append(val)
+            val += 1
+        return ys
+
+    left_ys = _side_ys(n_left)
+    right_ys = _side_ys(n_right)
+    specs: list[TerminalSpec] = []
+    for idx, pname in enumerate(clean_pins[:n_left]):
+        specs.append(TerminalSpec(name=pname, grid_pos=(-3.0, float(left_ys[idx]))))
+    for idx, pname in enumerate(clean_pins[n_left:]):
+        specs.append(TerminalSpec(name=pname, grid_pos=(3.0, float(right_ys[idx]))))
+
+    max_rows = max(len(left_ys), len(right_ys), 1)
+    grid_h = max(4, max_rows * 2)
+    if any(abs(t.grid_pos[1]) >= grid_h / 2.0 for t in specs):
+        grid_h += 2
+    half_h = grid_h / 2.0
+    return SymbolMetadata(
+        component_id=component_id,
+        display_name=macro_name or "Custom Macro",
+        category="My Custom Parts",
+        style="iec",
+        grid_size=(6, grid_h),
+        terminals=tuple(specs),
+        label_offset=(0.0, -(half_h + 0.5)),
+        value_offset=(0.0, half_h + 0.5),
+    )
+
+
 @dataclass(frozen=True)
 class PreparedSvg:
     """Result of validating, cleaning, and recolouring an SVG file for a theme."""

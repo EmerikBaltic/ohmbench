@@ -18,12 +18,14 @@ from circuitsim.components import (
     DCVoltageSource,
     DigitalSequentialBlock,
     Diode,
+    FunctionGenerator,
     Fuse,
     Ground,
     Inductor,
     LED,
     Lightbulb,
     LogicGate,
+    LogicProbe,
     MCUBlock,
     MOSFETBase,
     NE555,
@@ -201,6 +203,16 @@ def export_to_spice_netlist(
         elif isinstance(comp, DCVoltageSource):
             cname = _spice_card_name("V", comp.name)
             lines.append(f"{cname} {n_str(comp.nodes[0])} {n_str(comp.nodes[1])} DC {format_spice_value(comp.dc_voltage)}")
+        elif isinstance(comp, FunctionGenerator):
+            cname = _spice_card_name("V", comp.name)
+            if not comp.output_enabled:
+                lines.append(f"{cname} {n_str(comp.nodes[0])} {n_str(comp.nodes[1])} DC 0 ; {comp.name} OUTPUT OFF")
+            else:
+                lines.append(
+                    f"{cname} {n_str(comp.nodes[0])} {n_str(comp.nodes[1])} "
+                    f"SIN({format_spice_value(comp.dc_offset)} {format_spice_value(comp.amplitude)} {format_spice_value(comp.frequency)}) "
+                    f"; {comp.name} {comp.waveform.value} Zout={format_spice_value(comp.output_impedance)}Ohm"
+                )
         elif isinstance(comp, ACVoltageSource):
             cname = _spice_card_name("V", comp.name)
             lines.append(
@@ -279,6 +291,10 @@ def export_to_spice_netlist(
             lines.append(
                 f"* Oscilloscope {comp.name} CH1={n_str(comp.nodes[0])} CH2={n_str(comp.nodes[1])} "
                 f"EXT_TRIG={n_str(comp.nodes[2])} GND={n_str(comp.nodes[3])} RIN={format_spice_value(comp.r_in)}"
+            )
+        elif isinstance(comp, LogicProbe):
+            lines.append(
+                f"* LogicProbe {comp.name} IN={n_str(comp.nodes[0])} family={comp.family} RIN={format_spice_value(comp.r_in)}"
             )
         elif isinstance(comp, (Voltmeter, Ammeter)):
             lines.append(

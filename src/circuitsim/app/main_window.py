@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 from typing import Mapping, Sequence
 
@@ -165,6 +166,7 @@ class MainWindow(QMainWindow):
         *,
         initial_theme: ThemeMode = ThemeMode.DARK,
         settings: AppSettings | None = None,
+        user_library: object | None = None,
     ) -> None:
         super().__init__()
         self.setWindowTitle(f"{APP_NAME} — {APP_SUBTITLE}")
@@ -175,10 +177,24 @@ class MainWindow(QMainWindow):
         )
         set_global_number_format(self.settings.get_number_format())
         self.theme: ThemeMode = initial_theme
+        from circuitsim.io.user_library import UserLibraryStore
+
+        if isinstance(user_library, UserLibraryStore):
+            self.user_library: UserLibraryStore = user_library
+        elif os.environ.get("OHMBENCH_USER_LIBRARY_PATH", "").strip():
+            self.user_library = UserLibraryStore()
+        elif settings is not None:
+            self.user_library = UserLibraryStore(
+                self.settings.data_dir / "user_library.json"
+            )
+        else:
+            self.user_library = UserLibraryStore()
+
         self.symbol_library = SymbolLibrary()
         self.circuit_scene = CircuitScene(
             self.symbol_library, theme=self.theme, settings=self.settings, parent=self
         )
+        self.circuit_scene.user_library = self.user_library
         self.circuit_view = CircuitView(self.circuit_scene, settings=self.settings)
         self.setCentralWidget(self.circuit_view)
 
@@ -193,7 +209,9 @@ class MainWindow(QMainWindow):
         self._prev_error_count: int = 0
         self.instruments_dialog: object | None = None
         self.sweep_dialog: object | None = None
+        self.truth_table_dialog: object | None = None
         self._dso_dialogs: dict[str, object] = {}
+        self._funcgen_dialogs: dict[str, object] = {}
 
         self._build_menus_and_toolbars()
         self._build_docks()
@@ -445,6 +463,13 @@ class MainWindow(QMainWindow):
         self.act_create_macro.triggered.connect(self.create_custom_macro_from_scene)
         edit_menu.addAction(self.act_create_macro)
 
+        self.act_manage_custom_parts = QAction("Manage &Custom Parts...", self)
+        self.act_manage_custom_parts.setToolTip(
+            "View, rename, delete, export, or import parts in My Custom Parts"
+        )
+        self.act_manage_custom_parts.triggered.connect(self.show_manage_custom_parts_dialog)
+        edit_menu.addAction(self.act_manage_custom_parts)
+
         # View menu
         self.view_menu = menu_bar.addMenu("&View")
         self.act_toggle_grid = QAction(
@@ -469,6 +494,16 @@ class MainWindow(QMainWindow):
             self.circuit_scene.set_voltage_colors_enabled
         )
         self.view_menu.addAction(self.act_voltage_colors)
+
+        self.act_net_logic_colors = QAction("Net &Logic Coloring", self, checkable=True)
+        self.act_net_logic_colors.setChecked(False)
+        self.act_net_logic_colors.setToolTip(
+            "Color wires by digital logic state (Green = High, Blue = Low, Amber = Undefined)"
+        )
+        self.act_net_logic_colors.toggled.connect(
+            self.circuit_scene.set_net_logic_coloring_enabled
+        )
+        self.view_menu.addAction(self.act_net_logic_colors)
 
         self.act_current_dots = QAction("Current &Dots", self, checkable=True)
         self.act_current_dots.setChecked(False)
@@ -598,6 +633,13 @@ class MainWindow(QMainWindow):
         self.act_curve_tracer.triggered.connect(self.show_curve_tracer_panel)
         sim_menu.addAction(self.act_curve_tracer)
 
+        self.act_truth_table = QAction("&Truth-Table Generator...", self)
+        self.act_truth_table.setToolTip(
+            "Exhaustively simulate all binary input combinations and export Truth Table CSV/Markdown"
+        )
+        self.act_truth_table.triggered.connect(self.show_truth_table_dialog)
+        sim_menu.addAction(self.act_truth_table)
+
         # Help menu
         help_menu = menu_bar.addMenu("&Help")
         act_reload_svg = QAction("&Reload Custom SVGs", self)
@@ -672,7 +714,10 @@ class MainWindow(QMainWindow):
         # 1. Left Dock: Component Palette
         self.palette_dock = QDockWidget("Component Palette", self)
         self.palette_widget = ComponentPaletteWidget(
-            self.symbol_library, theme=self.theme, parent=self.palette_dock
+            self.symbol_library,
+            theme=self.theme,
+            user_library=self.user_library,
+            parent=self.palette_dock,
         )
         self.palette_dock.setWidget(self.palette_widget)
         self.palette_dock.setFixedWidth(240)
@@ -774,11 +819,15 @@ class MainWindow(QMainWindow):
         self.circuit_scene.oscilloscope_open_requested.connect(
             self.open_dso_dialog_for_item
         )
+        self.circuit_scene.funcgen_open_requested.connect(
+            self.open_funcgen_dialog_for_item
+        )
         self.circuit_scene.component_parameters_edited.connect(
             self._on_user_parameters_edited
         )
         self.circuit_scene.status_notice.connect(self._on_scene_status_notice)
         self.sim_controller.frame_ready.connect(self._on_simulation_frame)
+        self.sim_controller.sample_block_ready.connect(self._on_sample_block)
 
     # ------------------------------------------------------------------
     # Simulation Controls (Run / Pause / Stop / Speed / Live Edits)
@@ -795,6 +844,7 @@ class MainWindow(QMainWindow):
             self._user_closed_problems_panel = False
             self._prev_error_count = 0
             self._sync_schematic_to_worker()
+        self._sync_dso_timebase_to_worker()
         self.sim_controller.start()
 
     def pause_simulation(self) -> None:
@@ -1525,6 +1575,38 @@ class MainWindow(QMainWindow):
             except RuntimeError:
                 pass
 
+    def _on_sample_block(self, block: object) -> None:
+        """Forward high-rate SampleBlock chunks to all open DSO-1062D dialogs."""
+        for dlg in list(self._dso_dialogs.values()):
+            try:
+                dlg.on_sample_block(block)  # type: ignore[attr-defined]
+            except RuntimeError:
+                pass
+
+    def _sync_dso_timebase_to_worker(self) -> None:
+        """Couple background worker dt to the finest active DSO window timebase."""
+        active_sec_divs: list[float] = []
+        for dlg in list(self._dso_dialogs.values()):
+            try:
+                if dlg.isVisible():  # type: ignore[attr-defined]
+                    active_sec_divs.append(float(dlg.state.horizontal.sec_per_div))  # type: ignore[attr-defined]
+            except RuntimeError:
+                pass
+        if active_sec_divs:
+            self.sim_controller.set_timebase(min(active_sec_divs), points_per_div=100)
+        elif self._dso_dialogs:
+            # Keep last open DSO timebase if any dialog exists
+            first_dlg = next(iter(self._dso_dialogs.values()))
+            try:
+                self.sim_controller.set_timebase(
+                    float(first_dlg.state.horizontal.sec_per_div),  # type: ignore[attr-defined]
+                    points_per_div=100,
+                )
+            except RuntimeError:
+                self.sim_controller.set_timebase(None, points_per_div=100)
+        else:
+            self.sim_controller.set_timebase(None, points_per_div=100)
+
     def open_dso_dialog_for_item(self, item: ComponentItem):
         """Open (or focus) the multi-instance DSO-1062D window bound to `item`."""
         from circuitsim.app.dso_panel import DSOOscilloscopeDialog
@@ -1533,10 +1615,12 @@ class MainWindow(QMainWindow):
         existing = self._dso_dialogs.get(cname)
         if isinstance(existing, DSOOscilloscopeDialog) and existing.osc_component is item.component:
             existing.refresh_net_labels()
-            existing.capture_from_scene()
+            if self._sim_state != SimulationState.RUNNING:
+                existing.capture_from_scene()
             existing.show()
             existing.raise_()
             existing.activateWindow()
+            self._sync_dso_timebase_to_worker()
             return existing
 
         dlg = DSOOscilloscopeDialog(
@@ -1545,11 +1629,46 @@ class MainWindow(QMainWindow):
             nets_provider=lambda name=cname: self.circuit_scene.extract_connectivity_result().component_nodes.get(
                 name, {}
             ),
+            timebase_changed_callback=self._sync_dso_timebase_to_worker,
+            is_simulation_running_provider=lambda: self._sim_state == SimulationState.RUNNING,
+            closed_callback=lambda _d, name=cname: self._dso_dialogs.pop(name, None),
             parent=self,
         )
         self._dso_dialogs[cname] = dlg
         dlg.refresh_net_labels()
-        dlg.capture_from_scene()
+        if self._sim_state != SimulationState.RUNNING:
+            dlg.capture_from_scene()
+        dlg.show()
+        dlg.raise_()
+        dlg.activateWindow()
+        self._sync_dso_timebase_to_worker()
+        return dlg
+
+    def open_funcgen_dialog_for_item(self, item: ComponentItem):
+        """Open (or focus) the modeless Benchtop Function Generator dialog bound to `item`."""
+        from circuitsim.app.funcgen_panel import FunctionGeneratorDialog
+
+        cname = item.component.name
+        existing = self._funcgen_dialogs.get(cname)
+        if isinstance(existing, FunctionGeneratorDialog) and existing.fg is item.component:
+            existing.sync_from_component()
+            existing.show()
+            existing.raise_()
+            existing.activateWindow()
+            return existing
+
+        def _on_fg_changed(comp_name: str, changes: dict[str, object]) -> None:
+            self.circuit_scene.circuit_modified.emit()
+            self._on_user_parameters_edited(comp_name, changes)
+            self._update_info_panel(item)
+
+        dlg = FunctionGeneratorDialog(
+            item,
+            parameter_changed_callback=_on_fg_changed,
+            closed_callback=lambda _d, name=cname: self._funcgen_dialogs.pop(name, None),
+            parent=self,
+        )
+        self._funcgen_dialogs[cname] = dlg
         dlg.show()
         dlg.raise_()
         dlg.activateWindow()
@@ -1566,6 +1685,22 @@ class MainWindow(QMainWindow):
             )
         dlg: BenchtopInstrumentsDialog = self.instruments_dialog  # type: ignore[assignment]
         dlg.refresh_nodes()
+        dlg.show()
+        dlg.raise_()
+        dlg.activateWindow()
+        return dlg
+
+    def show_truth_table_dialog(self):
+        """Open (or focus) the Simulation > Truth-Table Generator dialog."""
+        from circuitsim.dialogs.truth_table_dialog import TruthTableDialog
+
+        if self.truth_table_dialog is None:
+            self.truth_table_dialog = TruthTableDialog(
+                circuit_provider=lambda: self.circuit_scene.extract_connectivity_result().circuit,
+                parent=self,
+            )
+        dlg: TruthTableDialog = self.truth_table_dialog  # type: ignore[assignment]
+        dlg.refresh_candidates()
         dlg.show()
         dlg.raise_()
         dlg.activateWindow()
@@ -1651,9 +1786,15 @@ class MainWindow(QMainWindow):
         dlg.show()
         return report
 
-    def create_custom_macro_from_scene(self, macro_name: str | None = None):
+    def create_custom_macro_from_scene(
+        self,
+        macro_name: str | None = None,
+        *,
+        save_to_library: bool = True,
+    ):
         """Package current schematic components + labeled nets into a reusable SubcircuitMacroDef."""
         from circuitsim.components.custom_macro import package_subcircuit_macro
+        from circuitsim.io.user_library import create_macro_part_entry
 
         conn = self.circuit_scene.extract_connectivity_result()
         pins: list[str] = []
@@ -1673,8 +1814,39 @@ class MainWindow(QMainWindow):
         if not hasattr(self, "custom_macros"):
             self.custom_macros = {}
         self.custom_macros[name] = macro_def
+        if save_to_library and hasattr(self, "user_library"):
+            entry = create_macro_part_entry(macro_def)
+            self.user_library.add_or_update_part(entry)
+            if hasattr(self, "palette_widget"):
+                self.palette_widget.refresh_custom_parts()
         self.statusBar().showMessage(f"Created macro '{name}' with pins {pins}", 4000)
         return macro_def
+
+    def save_component_to_custom_parts(self, item: ComponentItem):
+        """Open `SaveCustomPartDialog` to save `item`'s component into `My Custom Parts`."""
+        from circuitsim.dialogs.custom_parts_dialog import SaveCustomPartDialog
+
+        dlg = SaveCustomPartDialog(item.component, self.user_library, parent=self)
+        if dlg.exec():
+            self.palette_widget.refresh_custom_parts()
+            return dlg.saved_entry
+        return None
+
+    def show_manage_custom_parts_dialog(self):
+        """Open `ManageCustomPartsDialog` for `My Custom Parts` management & import/export."""
+        from circuitsim.dialogs.custom_parts_dialog import ManageCustomPartsDialog
+
+        dlg = ManageCustomPartsDialog(
+            self.user_library,
+            on_library_changed=self.palette_widget.refresh_custom_parts,
+            on_place_part=self._place_component_at_view_center,
+            parent=self,
+        )
+        dlg.show()
+        dlg.raise_()
+        dlg.activateWindow()
+        self._manage_custom_parts_dialog = dlg
+        return dlg
 
     def _toggle_problems_panel(self, checked: bool | None = None) -> None:
         if checked is None:
@@ -1946,9 +2118,11 @@ class MainWindow(QMainWindow):
             (self.circuit_scene.switch_toggled_by_user, self._on_user_switch_toggled),
             (self.circuit_scene.fuse_reset_by_user, self._on_user_fuse_reset),
             (self.circuit_scene.oscilloscope_open_requested, self.open_dso_dialog_for_item),
+            (self.circuit_scene.funcgen_open_requested, self.open_funcgen_dialog_for_item),
             (self.circuit_scene.component_parameters_edited, self._on_user_parameters_edited),
             (self.circuit_scene.status_notice, self._on_scene_status_notice),
             (self.sim_controller.frame_ready, self._on_simulation_frame),
+            (self.sim_controller.sample_block_ready, self._on_sample_block),
         ):
             try:
                 sig.disconnect(slot)
@@ -1966,6 +2140,12 @@ class MainWindow(QMainWindow):
             except RuntimeError:
                 pass
         self._dso_dialogs.clear()
+        for dlg in list(self._funcgen_dialogs.values()):
+            try:
+                dlg.close()  # type: ignore[attr-defined]
+            except RuntimeError:
+                pass
+        self._funcgen_dialogs.clear()
         if hasattr(self, "circuit_view") and self.circuit_view is not None:
             try:
                 self.circuit_view.set_minimap_visible(False)
@@ -1974,6 +2154,16 @@ class MainWindow(QMainWindow):
         if getattr(self, "curve_tracer_dialog", None) is not None:
             try:
                 self.curve_tracer_dialog.close()
+            except RuntimeError:
+                pass
+        if getattr(self, "truth_table_dialog", None) is not None:
+            try:
+                self.truth_table_dialog.close()  # type: ignore[attr-defined]
+            except RuntimeError:
+                pass
+        if getattr(self, "_manage_custom_parts_dialog", None) is not None:
+            try:
+                self._manage_custom_parts_dialog.close()  # type: ignore[attr-defined]
             except RuntimeError:
                 pass
         self.circuit_scene.shutdown_scene()
