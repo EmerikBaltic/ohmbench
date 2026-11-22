@@ -48,8 +48,8 @@ class _BaseMeter(Component):
             raise ValueError(f"{self.__class__.__name__} {name!r}: r_internal must be > 0 Ω.")
 
         self.r_internal: float = parsed_r
-        self._measurement_mode: str = "DC"
-        self.mode: MeterMode = MeterMode(mode) if not isinstance(mode, MeterMode) else mode
+        self._mode: MeterMode = MeterMode(mode) if not isinstance(mode, MeterMode) else mode
+        self._explicit_rms_unit: bool = False
         if measurement_mode is not None:
             self.measurement_mode = measurement_mode
         self.window_duration: float = max(1e-6, float(window_duration))
@@ -58,31 +58,41 @@ class _BaseMeter(Component):
         self.has_reading: bool = False
 
     @property
+    def mode(self) -> MeterMode:
+        """Underlying sliding-window `MeterMode` (`instantaneous`, `dc`, `rms`, `peak`)."""
+        return self._mode
+
+    @mode.setter
+    def mode(self, value: MeterMode | str) -> None:
+        self._mode = MeterMode(value) if not isinstance(value, MeterMode) else value
+
+    @property
     def measurement_mode(self) -> str:
-        """Canvas display measurement mode: ``'DC'`` (instantaneous) or ``'AC_RMS'``."""
-        return self._measurement_mode
+        """Canvas display measurement mode: ``'AC_RMS'`` when RMS, else ``'DC'``."""
+        return "AC_RMS" if self._mode == MeterMode.RMS else "DC"
 
     @measurement_mode.setter
     def measurement_mode(self, value: str) -> None:
         norm = str(value).strip().upper()
         if norm in ("AC_RMS", "RMS", "AC"):
-            self._measurement_mode = "AC_RMS"
-            self.mode = MeterMode.RMS
+            self._mode = MeterMode.RMS
+            self._explicit_rms_unit = True
         else:
-            self._measurement_mode = "DC"
-            self.mode = MeterMode.INSTANTANEOUS
+            self._explicit_rms_unit = False
+            if self._mode == MeterMode.RMS:
+                self._mode = MeterMode.INSTANTANEOUS
 
     def get_parameter_value(self, key: str) -> float:
         if key == "measurement_mode":
-            return 1.0 if self._measurement_mode == "AC_RMS" else 0.0
+            return 1.0 if self.measurement_mode == "AC_RMS" else 0.0
         return super().get_parameter_value(key)
 
     def set_parameter_value(self, key: str, raw_value: float | str) -> float:
         if key == "measurement_mode":
             self.measurement_mode = str(raw_value)
-            return 1.0 if self._measurement_mode == "AC_RMS" else 0.0
+            return 1.0 if self.measurement_mode == "AC_RMS" else 0.0
         if key == "mode":
-            self.mode = MeterMode(str(raw_value))
+            self.mode = raw_value
             return 0.0
         return super().set_parameter_value(key, raw_value)
 
@@ -205,7 +215,7 @@ class Voltmeter(_BaseMeter):
 
     def format_reading(self, sig_figs: int = 4) -> str:
         """Return polarity-aware, auto-ranged voltage string (or '-- V' before simulation)."""
-        unit = "Vrms" if self._measurement_mode == "AC_RMS" else "V"
+        unit = "Vrms" if (self.measurement_mode == "AC_RMS" and self._explicit_rms_unit) else "V"
         if not self.has_reading:
             return f"-- {unit}"
         return format_engineering_value(self.reading, unit=unit, sig_figs=sig_figs)
@@ -256,7 +266,7 @@ class Ammeter(_BaseMeter):
 
     def format_reading(self, sig_figs: int = 4) -> str:
         """Return polarity-aware, auto-ranged current string (or '-- A' before simulation)."""
-        unit = "Arms" if self._measurement_mode == "AC_RMS" else "A"
+        unit = "Arms" if (self.measurement_mode == "AC_RMS" and self._explicit_rms_unit) else "A"
         if not self.has_reading:
             return f"-- {unit}"
         return format_engineering_value(self.reading, unit=unit, sig_figs=sig_figs)

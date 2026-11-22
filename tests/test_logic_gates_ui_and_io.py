@@ -91,7 +91,10 @@ def _render_component_to_rgba(
 def test_logic_gates_metadata_svgs_and_palette(qapp) -> None:
     """Verify palette registration, extension metadata loading, grid-aligned pins, and SVG validity."""
     assert "Logic Gates" in CATEGORY_ORDER
-    assert COMPONENT_ORDER_IN_CATEGORY["Logic Gates"] == GATE_COMPONENT_TYPES
+    assert COMPONENT_ORDER_IN_CATEGORY["Logic Gates"] == (
+        *GATE_COMPONENT_TYPES,
+        "logic_probe",
+    )
 
     core_catalog = load_all_iec_metadata(
         DEFAULT_IEC_SYMBOLS_DIR, include_extensions=False
@@ -139,11 +142,13 @@ def test_logic_gates_metadata_svgs_and_palette(qapp) -> None:
     assert "Logic Gates" in found_categories
     logic_idx = found_categories.index("Logic Gates")
     logic_cat_item = tree.topLevelItem(logic_idx)
-    assert logic_cat_item.childCount() == len(GATE_COMPONENT_TYPES)
+    assert logic_cat_item.childCount() == len(GATE_COMPONENT_TYPES) + 1
     for i, gid in enumerate(GATE_COMPONENT_TYPES):
         child = logic_cat_item.child(i)
         assert child.data(0, 0x0100) == gid  # Qt.ItemDataRole.UserRole == 0x0100
         assert not child.icon(0).isNull()
+    probe_child = logic_cat_item.child(len(GATE_COMPONENT_TYPES))
+    assert probe_child.data(0, 0x0100) == "logic_probe"
 
     dock.search_input.setText("NAND")
     assert not logic_cat_item.isHidden()
