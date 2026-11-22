@@ -41,6 +41,7 @@ from circuitsim.scope.dso_engine import (
     DSOTriggerState,
     compute_auto_set,
     compute_set_to_50_percent,
+    format_dso_scale_value,
     process_dso_capture,
     recall_setup_json,
     reset_default_setup,

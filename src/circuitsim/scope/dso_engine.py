@@ -755,13 +755,47 @@ def _auto_scale_channel(raw: np.ndarray, cfg: DSOChannelState) -> DSOChannelStat
     return updated
 
 
+def format_dso_scale_value(value: float, unit: str = "") -> str:
+    """Format a DSO scale/step value in clean engineering units with zero scientific notation."""
+    if not np.isfinite(value):
+        return f"{value} {unit}".strip()
+    if abs(value) < 1e-18:
+        return f"0 {unit}".strip() if unit else "0"
+    sign = "-" if value < 0 else ""
+    mag = abs(float(value))
+    prefixes: tuple[tuple[float, str], ...] = (
+        (1e9, "G"),
+        (1e6, "M"),
+        (1e3, "k"),
+        (1.0, ""),
+        (1e-3, "m"),
+        (1e-6, "u"),
+        (1e-9, "n"),
+        (1e-12, "p"),
+    )
+    chosen_scale = 1e-12
+    chosen_prefix = "p"
+    for scale, prefix in prefixes:
+        if mag >= scale * (1.0 - 1e-9):
+            chosen_scale = scale
+            chosen_prefix = prefix
+            break
+    scaled = mag / chosen_scale
+    if abs(scaled - round(scaled)) < 1e-6:
+        num_str = str(int(round(scaled)))
+    else:
+        num_str = f"{scaled:.3f}".rstrip("0").rstrip(".")
+    unit_str = f"{chosen_prefix}{unit}".strip()
+    return f"{sign}{num_str} {unit_str}" if unit_str else f"{sign}{num_str}"
+
+
 def compute_auto_set(
     times: np.ndarray,
     ch1_raw: np.ndarray,
     ch2_raw: np.ndarray,
     state: DSOState,
 ) -> DSOState:
-    """Compute ideal V/div, vertical centering, sec/div (~2-3 cycles), and 50% trigger."""
+    """Compute ideal V/div, vertical centering, sec/div (~3 cycles), and 50% trigger."""
     t_arr = np.asarray(times, dtype=np.float64)
     c1 = np.asarray(ch1_raw, dtype=np.float64)
     c2 = np.asarray(ch2_raw, dtype=np.float64)
@@ -788,10 +822,8 @@ def compute_auto_set(
             target_sec_div = (3.0 * period_s) / float(DSO_HORIZONTAL_DIVS)
             new_state.horizontal.sec_per_div = snap_dso_step(target_sec_div, DSO_SEC_PER_DIV)
         else:
-            span = max(float(t_arr[-1] - t_arr[0]), 1e-9)
-            new_state.horizontal.sec_per_div = snap_dso_step(
-                span / float(DSO_HORIZONTAL_DIVS), DSO_SEC_PER_DIV
-            )
+            # Never shrink into microseconds on an unmeasured startup ramp
+            new_state.horizontal.sec_per_div = max(float(state.horizontal.sec_per_div), 5e-3)
     new_state.horizontal.position_s = 0.0
     new_state.running = True
     return new_state

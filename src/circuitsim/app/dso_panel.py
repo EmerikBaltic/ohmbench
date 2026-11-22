@@ -42,15 +42,27 @@ from circuitsim.scope.dso_engine import (
     DSOFrame,
     DSORingBuffer,
     DSOState,
+    _measure_dso_channel,
     compute_auto_set,
     compute_set_to_50_percent,
     decimate_xy_minmax,
+    format_dso_scale_value,
     process_dso_capture,
     recall_setup_json,
     reset_default_setup,
     save_setup_json,
     snap_dso_step,
 )
+
+
+def format_vdiv(volts_per_div: float) -> str:
+    """Format DSO V/div label in clean engineering units."""
+    return format_dso_scale_value(volts_per_div, "V")
+
+
+def format_sdiv(sec_per_div: float) -> str:
+    """Format DSO s/div label in clean engineering units."""
+    return format_dso_scale_value(sec_per_div, "s")
 
 DSO_MENU_NAMES: tuple[str, ...] = (
     "CH1",
@@ -107,7 +119,7 @@ class _DSOScreenWidget(QWidget):
             if self.state.horizontal.zoom_enabled
             else self.state.horizontal.sec_per_div
         )
-        m_str = format_engineering_value(eff_sec_div, "s", sig_figs=3).replace(" ", "")
+        m_str = format_sdiv(eff_sec_div).replace(" ", "")
         return f"M {m_str}/div"
 
     def set_view_data(
@@ -277,14 +289,14 @@ class _DSOScreenWidget(QWidget):
 
         # Window zoom & trigger horizontal delay
         w_str = (
-            f"W {format_engineering_value(self.state.horizontal.zoom_sec_per_div, 's', sig_figs=3)}"
+            f"W {format_sdiv(self.state.horizontal.zoom_sec_per_div)}"
             if self.state.horizontal.zoom_enabled
             else f"Acq {self.state.acquire.acq_mode[:4]}"
         )
         painter.setPen(QColor("#94A3B8"))
         painter.drawText(QRectF(300.0, 2.0, 100.0, 22.0), Qt.AlignmentFlag.AlignVCenter, w_str)
 
-        delay_str = format_engineering_value(self.state.horizontal.position_s, "s", sig_figs=3)
+        delay_str = format_sdiv(self.state.horizontal.position_s)
         painter.setPen(QColor("#CBD5E1"))
         painter.drawText(QRectF(max(406.0, w - 190.0), 2.0, 180.0, 22.0), Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter, f"Delay: {delay_str}")
 
@@ -299,14 +311,14 @@ class _DSOScreenWidget(QWidget):
         painter.setFont(f_bold)
 
         # CH1 badge
-        c1_str = f"CH1 {'OFF' if not self.state.ch1.enabled else self.state.ch1.coupling + ' ' + format_engineering_value(self.state.ch1.volts_per_div, 'V', sig_figs=3)}"
+        c1_str = f"CH1 {'OFF' if not self.state.ch1.enabled else self.state.ch1.coupling + ' ' + format_vdiv(self.state.ch1.volts_per_div)}"
         c1_box = QRectF(8.0, y0 + 4.0, 118.0, 18.0)
         painter.fillRect(c1_box, QColor("#FACC15") if self.state.ch1.enabled else QColor("#334155"))
         painter.setPen(QColor("#0F172A") if self.state.ch1.enabled else QColor("#94A3B8"))
         painter.drawText(c1_box, Qt.AlignmentFlag.AlignCenter, c1_str)
 
         # CH2 badge
-        c2_str = f"CH2 {'OFF' if not self.state.ch2.enabled else self.state.ch2.coupling + ' ' + format_engineering_value(self.state.ch2.volts_per_div, 'V', sig_figs=3)}"
+        c2_str = f"CH2 {'OFF' if not self.state.ch2.enabled else self.state.ch2.coupling + ' ' + format_vdiv(self.state.ch2.volts_per_div)}"
         c2_box = QRectF(132.0, y0 + 4.0, 118.0, 18.0)
         painter.fillRect(c2_box, QColor("#22D3EE") if self.state.ch2.enabled else QColor("#334155"))
         painter.setPen(QColor("#0F172A") if self.state.ch2.enabled else QColor("#94A3B8"))
@@ -314,7 +326,7 @@ class _DSOScreenWidget(QWidget):
 
         # Trigger badge
         slope_icon = "↗" if self.state.trigger.slope == "RISING" else ("↘" if self.state.trigger.slope == "FALLING" else "⇅")
-        lvl_str = format_engineering_value(self.state.trigger.level_v, "V", sig_figs=3)
+        lvl_str = format_vdiv(self.state.trigger.level_v)
         trig_txt = f"{self.state.trigger.source} {slope_icon} {lvl_str}"
         painter.setPen(QColor("#F8FAFC"))
         painter.drawText(QRectF(258.0, y0 + 2.0, 165.0, 22.0), Qt.AlignmentFlag.AlignVCenter, trig_txt)
@@ -1081,8 +1093,8 @@ class DSOOscilloscopeDialog(QDialog):
                 ("BW Limit", "20 MHz" if ch.bw_limit else "OFF"),
                 ("Probe", f"{int(ch.probe_atten)}X"),
                 ("Invert", "ON" if ch.invert else "OFF"),
-                ("V/div +", format_engineering_value(_step_table(ch.volts_per_div, DSO_VOLTS_PER_DIV, 1), "V", 2)),
-                ("V/div -", format_engineering_value(_step_table(ch.volts_per_div, DSO_VOLTS_PER_DIV, -1), "V", 2)),
+                ("V/div +", format_vdiv(_step_table(ch.volts_per_div, DSO_VOLTS_PER_DIV, 1))),
+                ("V/div -", format_vdiv(_step_table(ch.volts_per_div, DSO_VOLTS_PER_DIV, -1))),
             ]
         if m == "MATH":
             return [
@@ -1090,8 +1102,8 @@ class DSOOscilloscopeDialog(QDialog):
                 ("Operator", s.math.operation),
                 ("FFT Src", s.math.fft_source),
                 ("Window", s.math.fft_window),
-                ("Scale +", format_engineering_value(s.math.scale, "V", 2)),
-                ("Scale -", format_engineering_value(max(0.01, s.math.scale * 0.5), "V", 2)),
+                ("Scale +", format_vdiv(_step_table(s.math.scale, DSO_VOLTS_PER_DIV, 1))),
+                ("Scale -", format_vdiv(_step_table(s.math.scale, DSO_VOLTS_PER_DIV, -1))),
                 ("Zero Pos", f"{s.math.position_div:+.1f} div"),
             ]
         if m == "ACQUIRE":
@@ -1132,9 +1144,9 @@ class DSOOscilloscopeDialog(QDialog):
             return [
                 ("Format", s.horizontal.format_mode),
                 ("Window", "ZOOM ON" if s.horizontal.zoom_enabled else "MAIN"),
-                ("Sec/div -", "Faster"),
-                ("Sec/div +", "Slower"),
-                ("Delay 0", f"{s.horizontal.position_s:.3g}s"),
+                ("Sec/div -", format_sdiv(_step_table(s.horizontal.sec_per_div, DSO_SEC_PER_DIV, -1))),
+                ("Sec/div +", format_sdiv(_step_table(s.horizontal.sec_per_div, DSO_SEC_PER_DIV, 1))),
+                ("Delay 0", format_sdiv(s.horizontal.position_s)),
             ]
         if m == "TRIG":
             return [
@@ -1142,9 +1154,9 @@ class DSOOscilloscopeDialog(QDialog):
                 ("Slope", s.trigger.slope),
                 ("Mode", s.trigger.mode),
                 ("Coupling", s.trigger.coupling),
-                ("Set 50%", format_engineering_value(s.trigger.level_v, "V", 3)),
+                ("Set 50%", format_vdiv(s.trigger.level_v)),
                 ("Force", "Trigger Now"),
-                ("Holdoff", format_engineering_value(s.trigger.holdoff_s, "s", 2)),
+                ("Holdoff", format_sdiv(s.trigger.holdoff_s)),
             ]
         if m == "SAVE/RECALL":
             return [
@@ -1358,7 +1370,7 @@ class DSOOscilloscopeDialog(QDialog):
         if self._syncing_dials:
             return
         self.state.ch1.volts_per_div = float(DSO_VOLTS_PER_DIV[max(0, min(len(DSO_VOLTS_PER_DIV) - 1, idx))])
-        self.knob_status_label.setText(f"CH1 Scale: {format_engineering_value(self.state.ch1.volts_per_div, 'V/div')}")
+        self.knob_status_label.setText(f"CH1 Scale: {format_vdiv(self.state.ch1.volts_per_div)}/div")
         self._persist_state_to_component()
         self._sync_ui_from_state()
 
@@ -1366,7 +1378,7 @@ class DSOOscilloscopeDialog(QDialog):
         if self._syncing_dials:
             return
         self.state.ch2.volts_per_div = float(DSO_VOLTS_PER_DIV[max(0, min(len(DSO_VOLTS_PER_DIV) - 1, idx))])
-        self.knob_status_label.setText(f"CH2 Scale: {format_engineering_value(self.state.ch2.volts_per_div, 'V/div')}")
+        self.knob_status_label.setText(f"CH2 Scale: {format_vdiv(self.state.ch2.volts_per_div)}/div")
         self._persist_state_to_component()
         self._sync_ui_from_state()
 
@@ -1374,7 +1386,7 @@ class DSOOscilloscopeDialog(QDialog):
         if self._syncing_dials:
             return
         self.state.horizontal.position_s = (val / 10.0) * self.state.horizontal.sec_per_div
-        self.knob_status_label.setText(f"Horiz Pos: {format_engineering_value(self.state.horizontal.position_s, 's')}")
+        self.knob_status_label.setText(f"Horiz Pos: {format_sdiv(self.state.horizontal.position_s)}")
         self._persist_state_to_component()
         self._reprocess_or_capture()
         self._sync_ui_from_state()
@@ -1390,7 +1402,7 @@ class DSOOscilloscopeDialog(QDialog):
         if self._syncing_dials:
             return
         self.state.horizontal.sec_per_div = float(DSO_SEC_PER_DIV[max(0, min(len(DSO_SEC_PER_DIV) - 1, idx))])
-        self.knob_status_label.setText(f"Timebase: {format_engineering_value(self.state.horizontal.sec_per_div, 's/div')}")
+        self.knob_status_label.setText(f"Timebase: {format_sdiv(self.state.horizontal.sec_per_div)}/div")
         self._persist_state_to_component()
         if len(self._ring_buffer) >= 4:
             self._flush_dirty_frame()
@@ -1416,18 +1428,89 @@ class DSOOscilloscopeDialog(QDialog):
         self._sync_ui_from_state()
 
     def _on_auto_set(self) -> None:
-        t_arr, c1, c2, _ = self._raw_arrays_for_processing()
+        t_arr, c1, c2, ext_arr = self._raw_arrays_for_processing()
+        min_f: float | None = None
+        probe_arrays: tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray] | None = None
+
+        circuit = None
+        osc_in_circuit: Oscilloscope | None = None
+        ac_freqs: list[float] = []
+        if self._circuit_provider is not None:
+            try:
+                circuit = self._circuit_provider()
+                circuit.validate_topology()
+                for comp in circuit.flat_components():
+                    if isinstance(comp, Oscilloscope) and comp.name == self.osc_component.name:
+                        osc_in_circuit = comp
+                    if not getattr(comp, "output_enabled", True):
+                        continue
+                    freq_val = getattr(comp, "frequency", None)
+                    if isinstance(freq_val, (int, float)) and float(freq_val) > 0.0:
+                        ac_freqs.append(float(freq_val))
+                if ac_freqs:
+                    min_f = min(ac_freqs)
+            except Exception:
+                circuit = None
+                osc_in_circuit = None
+
+        active = c1 if (self.state.ch1.enabled and len(c1) > 0 and np.ptp(c1) > 1e-6) else c2
+        has_enough_cycles = False
+        if len(t_arr) >= 16 and len(active) == len(t_arr):
+            span = float(t_arr[-1] - t_arr[0])
+            meas = _measure_dso_channel(t_arr, active)
+            if min_f is not None:
+                has_enough_cycles = (
+                    meas.freq_hz is not None
+                    and meas.freq_hz > 0.0
+                    and span >= (2.0 / min_f)
+                )
+            else:
+                has_enough_cycles = meas.freq_hz is not None or span >= 0.02
+
+        if not has_enough_cycles and circuit is not None and osc_in_circuit is not None:
+            probe_dur = min(max((3.0 / min_f) if min_f is not None else 0.06, 0.06), 0.5)
+            max_f = max(ac_freqs) if ac_freqs else 100.0
+            dt = max(min(probe_dur / 2000.0, 1.0 / (64.0 * max(max_f, 50.0))), probe_dur / 2500.0, 1e-7)
+            tr = MNASolver(circuit).solve_transient(duration=probe_dur, dt=dt, max_wall_time_s=0.15)
+            gnd_wired = circuit.is_oscilloscope_gnd_wired(osc_in_circuit)
+            vg = (
+                tr.node_voltages[osc_in_circuit.node_gnd]
+                if (gnd_wired and osc_in_circuit.node_gnd in tr.node_voltages)
+                else np.zeros_like(tr.times)
+            )
+            p_c1 = tr.node_voltages.get(osc_in_circuit.node_ch1, np.zeros_like(tr.times)) - vg
+            p_c2 = tr.node_voltages.get(osc_in_circuit.node_ch2, np.zeros_like(tr.times)) - vg
+            p_ext = tr.node_voltages.get(osc_in_circuit.node_ext_trig, np.zeros_like(tr.times)) - vg
+            probe_arrays = (tr.times, p_c1, p_c2, p_ext)
+            if not self._is_sim_currently_running():
+                self._ring_buffer.set_arrays(tr.times, p_c1, p_c2, p_ext)
+                t_arr, c1, c2, ext_arr = tr.times, p_c1, p_c2, p_ext
+            else:
+                t_arr, c1, c2, ext_arr = tr.times, p_c1, p_c2, p_ext
+
         if len(t_arr) >= 4:
             self.state = compute_auto_set(t_arr, c1, c2, self.state)
         elif not self._is_sim_currently_running():
             self.capture_from_scene()
-            t_arr, c1, c2, _ = self._raw_arrays_for_processing()
+            t_arr, c1, c2, ext_arr = self._raw_arrays_for_processing()
             if len(t_arr) >= 4:
                 self.state = compute_auto_set(t_arr, c1, c2, self.state)
+
         self.knob_status_label.setText("AUTO SET complete")
         self._persist_state_to_component()
         self._notify_timebase_changed()
-        if len(self._ring_buffer) >= 16:
+        if probe_arrays is not None and len(probe_arrays[0]) >= 4:
+            self._latest_frame = process_dso_capture(
+                probe_arrays[0],
+                probe_arrays[1],
+                probe_arrays[2],
+                probe_arrays[3],
+                self.state,
+                prev_frame=self._latest_frame,
+                live_streaming=False,
+            )
+            self._push_mini_preview()
+        elif len(self._ring_buffer) >= 16:
             self._reprocess_or_capture()
         elif not self._is_sim_currently_running():
             self.capture_from_scene()
@@ -1848,12 +1931,12 @@ class DSOOscilloscopeDialog(QDialog):
             c2_idx = DSO_VOLTS_PER_DIV.index(snap_dso_step(s.ch2.volts_per_div, DSO_VOLTS_PER_DIV))
             self.ch1_vdiv_dial.setValue(c1_idx)
             self.ch2_vdiv_dial.setValue(c2_idx)
-            self.ch1_vdiv_readout.setText(format_engineering_value(s.ch1.volts_per_div, "V/div", 3))
-            self.ch2_vdiv_readout.setText(format_engineering_value(s.ch2.volts_per_div, "V/div", 3))
+            self.ch1_vdiv_readout.setText(f"{format_vdiv(s.ch1.volts_per_div)}/div")
+            self.ch2_vdiv_readout.setText(f"{format_vdiv(s.ch2.volts_per_div)}/div")
 
             sd_idx = DSO_SEC_PER_DIV.index(snap_dso_step(s.horizontal.sec_per_div, DSO_SEC_PER_DIV))
             self.sec_div_dial.setValue(sd_idx)
-            self.sec_div_readout.setText(format_engineering_value(s.horizontal.sec_per_div, "s/div", 3))
+            self.sec_div_readout.setText(f"{format_sdiv(s.horizontal.sec_per_div)}/div")
             self.horiz_pos_dial.setValue(
                 max(-50, min(50, int(round((s.horizontal.position_s / max(s.horizontal.sec_per_div, 1e-12)) * 10.0))))
             )
@@ -1862,7 +1945,7 @@ class DSOOscilloscopeDialog(QDialog):
             self.trig_level_dial.setValue(
                 max(-100, min(100, int(round((s.trigger.level_v / max(ref_ch.volts_per_div, 1e-9)) * 20.0))))
             )
-            self.trig_lvl_readout.setText(format_engineering_value(s.trigger.level_v, "V", 3))
+            self.trig_lvl_readout.setText(format_vdiv(s.trigger.level_v))
 
             if s.running:
                 self.btn_run_stop.setStyleSheet("background-color: #22C55E; color: #0F172A; font-weight: bold;")
