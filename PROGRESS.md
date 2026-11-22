@@ -718,6 +718,19 @@ When ready to perform Stage 2 (internal/package rename after Stage 1 settles):
 | **GATE L** | Final targeted verification (`54 passed in 20.30s`), `PROGRESS.md` completion & `checkpoint/L-done` tag | [x] |
 | **L2 HOTFIX** | Root cause of `0xCFFFFFFF` (`STATUS_APPLICATION_HANG`) resolved: synchronous `capture_from_scene()` capped (`max_steps=2000`, `max_wall_time_s=0.15s`) & skipped while running; `DSORingBuffer(65536)` + coalesced `33 ms` UI timer + coalesced `SampleBlock` worker outbox (`12 ms` tick budget); `decimate_xy_minmax()` + cosmetic pen fast-path (`QRasterPaintEngine` `QStroker`/`QTessellator` `2.97s -> <50ms` fix) + `80 ms` `SEC/DIV` debounce; preserved capacitor initial voltage across `solve_dc()` in `SimulationSession.start()`, monotonic `_latest_contiguous_slice()`, and switched-RC `SINGLE`/`NORMAL` honoring at `>= 100 ms/div` (`50 passed in 23.53s`) | [x] |
 
+## PHASE M QUEUE (DSO POLISH, FUNCTION GENERATOR, AC RMS METERS, LOGIC PACK, QUICK-PLACE & CUSTOM PARTS LIBRARY)
+
+| Item | Description | Status | Notes |
+| :--- | :--- | :--- | :--- |
+| `M0` | Initialize Phase M queue in `PROGRESS.md` & `tests/test_m_workbench_final.py` | `[x]` | Done |
+| `M1` | DSO-1062D `AUTO SET` startup-ramp fix & softkey formatting polish | `[ ]` | Pending |
+| `M2` | Placeable Benchtop Function Generator (`function_generator`, `FG1`) & modeless panel | `[ ]` | Pending |
+| `M3` | DC / AC RMS measurement mode on canvas `Voltmeter` & `Ammeter` | `[ ]` | Pending |
+| `M4` | Logic Gates Teaching Pack (`LogicProbe`, Net Logic Coloring & Truth-Table Generator) | `[ ]` | Pending |
+| `M5` | Live Potentiometer keyboard tuning (`[` / `]`) & `Space` Quick-Place search popup | `[ ]` | Pending |
+| `M6` | Persistent User Custom Parts Library (`My Custom Parts` palette + Import/Export) | `[ ]` | Pending |
+| `GATE M` | Phase M regression verification & `checkpoint/M-done` tag | `[ ]` | Pending |
+
 
 
 
