@@ -1,0 +1,15 @@
+{
+  "id": "function_generator",
+  "display_name": "Function Generator",
+  "category": "Instruments",
+  "style": "iec",
+  "grid_size": [6, 4],
+  "terminals": [
+    {"name": "out", "grid_pos": [3, -1]},
+    {"name": "gnd", "grid_pos": [3, 1]}
+  ],
+  "label_offset": [0, -2.5],
+  "value_offset": [0, 2.5],
+  "default_svg": "function_generator.svg",
+  "states": {}
+}

@@ -27,6 +27,7 @@ from circuitsim.canvas.scene import CircuitScene
 from circuitsim.canvas.symbol_geometry import GRID_PITCH_PX, snap_to_grid
 from circuitsim.canvas.wire_item import JunctionItem, WireItem
 from circuitsim.components.mcu import MCUBlock
+from circuitsim.components.function_generator import FunctionGenerator
 from circuitsim.components.oscilloscope import Oscilloscope
 from circuitsim.components.power import Fuse
 from circuitsim.components.switch import Switch
@@ -439,13 +440,40 @@ class CircuitView(QGraphicsView):
             holder.append(dlg)
         return True
 
+    def open_function_generator_dialog(self, item: ComponentItem) -> bool:
+        """Open the modeless Benchtop Function Generator dialog for a `FunctionGenerator` item."""
+        if not isinstance(item.component, FunctionGenerator):
+            return False
+        self.circuit_scene.funcgen_open_requested.emit(item)
+        win = self.window()
+        if win is None or not hasattr(win, "open_funcgen_dialog_for_item"):
+            from circuitsim.app.funcgen_panel import FunctionGeneratorDialog
+
+            dlg = FunctionGeneratorDialog(
+                item,
+                parameter_changed_callback=lambda cname, pmap: (
+                    self.circuit_scene.circuit_modified.emit(),
+                    self.circuit_scene.component_parameters_edited.emit(cname, pmap),
+                ),
+                parent=win,
+            )
+            dlg.show()
+            holder = getattr(self, "_standalone_funcgen_dialogs", None)
+            if holder is None:
+                holder = []
+                setattr(self, "_standalone_funcgen_dialogs", holder)
+            holder.append(dlg)
+        return True
+
     def open_quick_edit_for_item(self, item: ComponentItem) -> bool:
-        """Open the double-click `QuickValueDialog` (or `MCUFirmwareDialog` / DSO panel) and apply changes live."""
+        """Open the double-click `QuickValueDialog` (or `MCUFirmwareDialog` / DSO / FG panel) and apply changes live."""
         comp = item.component
         if isinstance(comp, MCUBlock):
             return self.open_mcu_firmware_dialog(item)
         if isinstance(comp, Oscilloscope):
             return self.open_oscilloscope_dialog(item)
+        if isinstance(comp, FunctionGenerator):
+            return self.open_function_generator_dialog(item)
         if not comp.get_editable_parameters() and not isinstance(comp, Switch):
             return False
 
@@ -861,6 +889,12 @@ class CircuitView(QGraphicsView):
                     lambda: self.open_oscilloscope_dialog(target_comp)
                 )
                 menu.addAction(act_dso)
+            if isinstance(target_comp.component, FunctionGenerator):
+                act_fg = QAction("Open Function Generator...\tDouble-Click", menu)
+                act_fg.triggered.connect(
+                    lambda: self.open_function_generator_dialog(target_comp)
+                )
+                menu.addAction(act_fg)
             if isinstance(target_comp.component, Switch):
                 act_toggle_sw = QAction("Toggle Switch (ON/OFF)\tClick", menu)
                 act_toggle_sw.triggered.connect(

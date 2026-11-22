@@ -297,7 +297,7 @@ class Circuit:
                     mat[ib, row_k] -= 1.0
                     mat[row_k, ib] -= 1.0
                 if r_int > 0.0:
-                    mat[row_k, row_k] += r_int
+                    mat[row_k, row_k] -= r_int
 
             return mat
 

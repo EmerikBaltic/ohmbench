@@ -32,6 +32,7 @@ if TYPE_CHECKING:
     )
 from circuitsim.components.base import Component
 from circuitsim.components.capacitor import Capacitor
+from circuitsim.components.function_generator import FunctionGenerator
 from circuitsim.components.led import LED
 from circuitsim.components.lightbulb import Lightbulb
 from circuitsim.components.logic_gate import LogicGate
@@ -281,6 +282,8 @@ def format_component_canvas_text(comp: Component) -> str:
         return f"{format_engineering_value(comp.resistance, 'Ω')} ({comp.alpha * 100.0:.0f}%)"
     if isinstance(comp, DCVoltageSource):
         return format_engineering_value(comp.dc_voltage, "V")
+    if isinstance(comp, FunctionGenerator):
+        return comp.display_value
     if isinstance(comp, ACVoltageSource):
         v_str = format_engineering_value(comp.amplitude, "V")
         f_str = format_engineering_value(comp.frequency, "Hz")

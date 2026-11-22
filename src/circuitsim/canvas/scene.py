@@ -122,6 +122,7 @@ class CircuitScene(QGraphicsScene):
     switch_toggled_by_user = Signal(str, bool)  # (switch_name, closed)
     fuse_reset_by_user = Signal(str)  # (fuse_name)
     oscilloscope_open_requested = Signal(object)  # (ComponentItem)
+    funcgen_open_requested = Signal(object)  # (ComponentItem)
     component_parameters_edited = Signal(str, object)  # (comp_name, dict[str, float])
     status_notice = Signal(str)  # Non-modal status/feedback note for the user
 
@@ -3934,7 +3935,7 @@ class CircuitScene(QGraphicsScene):
     def get_alt_power_probe_text(self, item: ComponentItem) -> str:
         """Compute and format instantaneous `P = V_drop * I_branch` power reading for Alt-hover."""
         comp = item.component
-        is_src = comp.component_type in ("dc_voltage", "ac_voltage", "dc_current", "wav_voltage")
+        is_src = comp.component_type in ("dc_voltage", "ac_voltage", "function_generator", "dc_current", "wav_voltage")
         p_w = float(getattr(comp, "power", comp.voltage * comp.current))
         text = format_power_probe_text(
             comp.name,

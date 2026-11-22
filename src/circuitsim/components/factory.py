@@ -13,6 +13,7 @@ from circuitsim.components.comparator import Comparator
 from circuitsim.components.ground import Ground
 from circuitsim.components.inductor import Inductor
 from circuitsim.components.diode import Diode, ZenerDiode
+from circuitsim.components.function_generator import FunctionGenerator
 from circuitsim.components.led import LED
 from circuitsim.components.lightbulb import Lightbulb
 from circuitsim.components.logic_gate import GATE_COMPONENT_TYPES, GATE_OPERATIONS, LogicGate
@@ -41,6 +42,7 @@ KNOWN_COMPONENT_TYPES: tuple[str, ...] = (
     "potentiometer",
     "dc_voltage",
     "ac_voltage",
+    "function_generator",
     "wav_voltage",
     "dc_current",
     "ground",
@@ -86,6 +88,8 @@ def create_default_component_model(component_id: str, name: str) -> Component:
         return DCVoltageSource(name, n0, n1, voltage=12.0)
     if component_id == "ac_voltage":
         return ACVoltageSource(name, n0, n1, amplitude=10.0, frequency=1000.0)
+    if component_id == "function_generator":
+        return FunctionGenerator(name, f"{name}_out", f"{name}_gnd", amplitude=5.0, frequency=100.0)
     if component_id == "wav_voltage":
         return WavVoltageSource(name, n0, n1)
     if component_id == "dc_current":

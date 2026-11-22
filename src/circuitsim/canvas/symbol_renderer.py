@@ -765,6 +765,30 @@ class SymbolLibrary:
             # Unpowered bezel outline; live glowing LED bars painted by ComponentItem
             painter.drawRect(QRectF(-18.0, -34.0, 44.0, 68.0))
 
+        elif component_id == "function_generator":
+            # Benchtop chassis + right-side OUT / GND leads clear of pin labels
+            painter.drawLine(QPointF(48.0, -20.0), QPointF(60.0, -20.0))
+            painter.drawLine(QPointF(48.0, 20.0), QPointF(60.0, 20.0))
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            painter.drawRoundedRect(QRectF(-56.0, -34.0, 104.0, 68.0), 5.0, 5.0)
+            painter.save()
+            painter.setPen(QPen(QColor("#334155"), 1.2))
+            painter.setBrush(QColor("#0F172A"))
+            lcd_rect = QRectF(-48.0, -22.0, 56.0, 44.0)
+            painter.drawRoundedRect(lcd_rect, 3.0, 3.0)
+            # Mini green sine wave icon inside LCD
+            painter.setPen(QPen(QColor("#4ADE80"), 1.6))
+            painter.drawLine(QPointF(-41.0, 0.0), QPointF(-35.0, -10.0))
+            painter.drawLine(QPointF(-35.0, -10.0), QPointF(-27.0, 10.0))
+            painter.drawLine(QPointF(-27.0, 10.0), QPointF(-21.0, 0.0))
+            painter.setPen(QColor("#22D3EE"))
+            painter.setFont(QFont("Segoe UI", 8, QFont.Weight.Bold))
+            painter.drawText(QRectF(-19.0, -12.0, 24.0, 24.0), Qt.AlignmentFlag.AlignCenter, "FG")
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.setBrush(QColor("#22C55E"))
+            painter.drawEllipse(QPointF(16.0, 0.0), 3.0, 3.0)
+            painter.restore()
+
         elif component_id == "oscilloscope":
             bnc_colors = {
                 -40.0: "#FACC15",

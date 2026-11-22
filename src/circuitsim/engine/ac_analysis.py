@@ -355,9 +355,9 @@ def run_ac_sweep(
             else:
                 r_int = getattr(comp, "r_internal", 0.0)
             if r_int > 0.0:
-                mat_y[row_k, row_k] += r_int
+                mat_y[row_k, row_k] -= r_int
             elif regularize_ideal_loops:
-                mat_y[row_k, row_k] += 1e-6
+                mat_y[row_k, row_k] -= 1e-6
 
             if comp.name == stim_src.name:
                 rhs_c[row_k] = phasor_stim

@@ -194,6 +194,7 @@ class MainWindow(QMainWindow):
         self.instruments_dialog: object | None = None
         self.sweep_dialog: object | None = None
         self._dso_dialogs: dict[str, object] = {}
+        self._funcgen_dialogs: dict[str, object] = {}
 
         self._build_menus_and_toolbars()
         self._build_docks()
@@ -773,6 +774,9 @@ class MainWindow(QMainWindow):
         )
         self.circuit_scene.oscilloscope_open_requested.connect(
             self.open_dso_dialog_for_item
+        )
+        self.circuit_scene.funcgen_open_requested.connect(
+            self.open_funcgen_dialog_for_item
         )
         self.circuit_scene.component_parameters_edited.connect(
             self._on_user_parameters_edited
@@ -1596,6 +1600,36 @@ class MainWindow(QMainWindow):
         self._sync_dso_timebase_to_worker()
         return dlg
 
+    def open_funcgen_dialog_for_item(self, item: ComponentItem):
+        """Open (or focus) the modeless Benchtop Function Generator dialog bound to `item`."""
+        from circuitsim.app.funcgen_panel import FunctionGeneratorDialog
+
+        cname = item.component.name
+        existing = self._funcgen_dialogs.get(cname)
+        if isinstance(existing, FunctionGeneratorDialog) and existing.fg is item.component:
+            existing.sync_from_component()
+            existing.show()
+            existing.raise_()
+            existing.activateWindow()
+            return existing
+
+        def _on_fg_changed(comp_name: str, changes: dict[str, object]) -> None:
+            self.circuit_scene.circuit_modified.emit()
+            self._on_user_parameters_edited(comp_name, changes)
+            self._update_info_panel(item)
+
+        dlg = FunctionGeneratorDialog(
+            item,
+            parameter_changed_callback=_on_fg_changed,
+            closed_callback=lambda _d, name=cname: self._funcgen_dialogs.pop(name, None),
+            parent=self,
+        )
+        self._funcgen_dialogs[cname] = dlg
+        dlg.show()
+        dlg.raise_()
+        dlg.activateWindow()
+        return dlg
+
     def show_instruments_panel(self):
         """Open (or focus) the Benchtop Virtual Instruments panel."""
         from circuitsim.app.instruments_panel import BenchtopInstrumentsDialog
@@ -1987,6 +2021,7 @@ class MainWindow(QMainWindow):
             (self.circuit_scene.switch_toggled_by_user, self._on_user_switch_toggled),
             (self.circuit_scene.fuse_reset_by_user, self._on_user_fuse_reset),
             (self.circuit_scene.oscilloscope_open_requested, self.open_dso_dialog_for_item),
+            (self.circuit_scene.funcgen_open_requested, self.open_funcgen_dialog_for_item),
             (self.circuit_scene.component_parameters_edited, self._on_user_parameters_edited),
             (self.circuit_scene.status_notice, self._on_scene_status_notice),
             (self.sim_controller.frame_ready, self._on_simulation_frame),
@@ -2008,6 +2043,12 @@ class MainWindow(QMainWindow):
             except RuntimeError:
                 pass
         self._dso_dialogs.clear()
+        for dlg in list(self._funcgen_dialogs.values()):
+            try:
+                dlg.close()  # type: ignore[attr-defined]
+            except RuntimeError:
+                pass
+        self._funcgen_dialogs.clear()
         if hasattr(self, "circuit_view") and self.circuit_view is not None:
             try:
                 self.circuit_view.set_minimap_visible(False)

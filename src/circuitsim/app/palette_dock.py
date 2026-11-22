@@ -35,7 +35,7 @@ CATEGORY_ORDER: tuple[str, ...] = (
 
 # Explicit component ordering within each category (matching Section 3.1 of spec)
 COMPONENT_ORDER_IN_CATEGORY: dict[str, tuple[str, ...]] = {
-    "Sources": ("dc_voltage", "ac_voltage", "wav_voltage", "dc_current", "ground"),
+    "Sources": ("dc_voltage", "ac_voltage", "function_generator", "wav_voltage", "dc_current", "ground"),
     "Passive": ("resistor", "capacitor", "inductor", "potentiometer", "transformer"),
     "Switches": ("switch", "spdt_relay", "fuse"),
     "Semiconductors": ("diode", "zener_diode", "led", "npn_bjt", "pnp_bjt", "nmos", "pmos", "opamp"),
@@ -52,7 +52,7 @@ COMPONENT_ORDER_IN_CATEGORY: dict[str, tuple[str, ...]] = {
     "Digital": ("d_flipflop", "jk_flipflop", "counter_4bit", "seven_seg_display"),
     "Mixed-Signal": ("ne555", "comparator", "mcu"),
     "Loads": ("lightbulb",),
-    "Instruments": ("voltmeter", "ammeter", "oscilloscope"),
+    "Instruments": ("voltmeter", "ammeter", "oscilloscope", "function_generator"),
 }
 
 
@@ -170,6 +170,8 @@ class ComponentPaletteWidget(QWidget):
         grouped: dict[str, list[str]] = {cat: [] for cat in CATEGORY_ORDER}
         for comp_id, meta in catalog.items():
             grouped.setdefault(meta.category, []).append(comp_id)
+        if "function_generator" in catalog and "function_generator" not in grouped.get("Sources", []):
+            grouped.setdefault("Sources", []).append("function_generator")
 
         for category, comp_ids in grouped.items():
             if not comp_ids:

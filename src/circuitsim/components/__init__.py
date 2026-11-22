@@ -14,6 +14,7 @@ from circuitsim.components.factory import (
     KNOWN_COMPONENT_TYPES,
     create_default_component_model,
 )
+from circuitsim.components.function_generator import FunctionGenerator
 from circuitsim.components.ground import Ground
 from circuitsim.components.inductor import Inductor
 from circuitsim.components.led import LED, LED_COLOUR_PRESETS
@@ -66,6 +67,7 @@ __all__ = [
     "DFlipFlop",
     "DigitalSequentialBlock",
     "Diode",
+    "FunctionGenerator",
     "Fuse",
     "GATE_COMPONENT_TYPES",
     "GATE_OPERATIONS",

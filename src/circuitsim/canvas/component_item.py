@@ -54,6 +54,7 @@ from circuitsim.components import (
     DFlipFlop,
     DigitalSequentialBlock,
     Diode,
+    FunctionGenerator,
     Fuse,
     Ground,
     Inductor,
@@ -114,6 +115,7 @@ COMPONENT_PREFIXES: dict[str, str] = {
     "ammeter": "A",
     "mcu": "U",
     "oscilloscope": "OSC",
+    "function_generator": "FG",
 }
 
 
@@ -133,6 +135,8 @@ def format_component_value_summary(comp: Component) -> str:
         return format_engineering_value(comp.inductance, "H")
     if isinstance(comp, DCVoltageSource):
         return format_engineering_value(comp.dc_voltage, "V")
+    if isinstance(comp, FunctionGenerator):
+        return comp.display_value
     if isinstance(comp, ACVoltageSource):
         v_str = format_engineering_value(comp.amplitude, "V")
         f_str = format_engineering_value(comp.frequency, "Hz")
@@ -366,6 +370,16 @@ class ComponentItem(QGraphicsObject):
 
     def get_live_tooltip(self, is_running: bool = False) -> str:
         """Return formatted live tooltip text for this component."""
+        if isinstance(self.component, FunctionGenerator):
+            fg = self.component
+            z_txt = "Hi-Z" if fg.output_impedance < 1e-6 else format_engineering_value(fg.output_impedance, "Ω")
+            lines = [
+                f"{fg.name} (Function Generator)",
+                "Double-click to open Function Generator",
+                f"Waveform: {fg.waveform.value.title()} | {'ON' if fg.output_enabled else 'OFF'}",
+                f"Freq: {format_engineering_value(fg.frequency, 'Hz')} | Amp: {format_engineering_value(fg.amplitude, 'V')} | Zout: {z_txt}",
+            ]
+            return "\n".join(lines)
         if isinstance(self.component, Oscilloscope):
             osc = self.component
             lines = [
@@ -954,13 +968,17 @@ class ComponentItem(QGraphicsObject):
             return {"p1": "P1", "p2": "P2", "s1": "S1", "s2": "S2"}
         if ctype == "oscilloscope":
             return {"CH1": "CH1", "CH2": "CH2", "EXT_TRIG": "EXT_TRIG", "GND": "GND"}
+        if ctype == "function_generator":
+            return {"out": "OUT", "gnd": "GND"}
         if ctype.startswith("gate_") and ctype != "gate_not":
             return {"a": "A", "b": "B", "out": "Y", "in0": "A", "in1": "B"}
         return {}
 
     def default_pin_label_rects(self) -> list[tuple[str, str, QRectF]]:
         """Return `[(terminal_name, label_text, tight_upright_rect)]` clear of all 5 px terminal dots."""
-        if len(self.metadata.terminals) < 3:
+        if len(self.metadata.terminals) < 3 and self.component.component_type not in (
+            "function_generator",
+        ):
             return []
         pin_map = self.default_pin_labels(self.component)
         if not pin_map:
@@ -997,6 +1015,9 @@ class ComponentItem(QGraphicsObject):
                 ly = ly0 * 0.9
             elif ctype == "oscilloscope":
                 lx = -44.0 if lx0 < 0 else 44.0
+                ly = ly0
+            elif ctype == "function_generator":
+                lx = 32.0
                 ly = ly0
             elif ctype == "spdt_relay":
                 if lx0 < 0:
@@ -1143,6 +1164,8 @@ class ComponentItem(QGraphicsObject):
             return ("RELAY-5P", {"coil_pos": "+COIL", "coil_neg": "-COIL", "com": "COM", "no": "NO", "nc": "NC"})
         if ctype == "oscilloscope":
             return ("DSO-1062D", {"CH1": "CH1", "CH2": "CH2", "EXT_TRIG": "TRIG", "GND": "GND"})
+        if ctype == "function_generator":
+            return ("FG-BENCH", {"out": "OUT", "gnd": "GND"})
         if ctype == "lightbulb":
             return ("LAMP", {"a": "1", "b": "2"})
         if ctype == "ground":
@@ -1238,7 +1261,10 @@ class ComponentItem(QGraphicsObject):
                 rect = rect.united(QRectF(ax - 8.0, ay - 6.0, 16.0, 12.0))
                 rect = rect.united(QRectF(kx - 8.0, ky - 6.0, 16.0, 12.0))
 
-            if len(self.metadata.terminals) >= 3 and not self._pinout_overlay_enabled:
+            if (
+                len(self.metadata.terminals) >= 3
+                or self.component.component_type in ("function_generator",)
+            ) and not self._pinout_overlay_enabled:
                 for _tname, _tag, pin_rect in self.default_pin_label_rects():
                     rect = rect.united(pin_rect.adjusted(-1.0, -1.0, 1.0, 1.0))
 
@@ -1697,7 +1723,10 @@ class ComponentItem(QGraphicsObject):
                         pin_name,
                     )
 
-            if len(self.metadata.terminals) >= 3 and not self._pinout_overlay_enabled:
+            if (
+                len(self.metadata.terminals) >= 3
+                or self.component.component_type in ("function_generator",)
+            ) and not self._pinout_overlay_enabled:
                 pin_rects = self.default_pin_label_rects()
                 if pin_rects:
                     pin_font = QFont("Segoe UI", 7)

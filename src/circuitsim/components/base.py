@@ -72,6 +72,31 @@ _DEFAULT_PARAMETERS_BY_TYPE: dict[str, tuple[ComponentParameter, ...]] = {
             allow_negative=True,
         ),
     ),
+    "function_generator": (
+        ComponentParameter("amplitude", "Amplitude (Peak)", "V", allow_zero=True),
+        ComponentParameter("frequency", "Frequency", "Hz"),
+        ComponentParameter(
+            "dc_offset",
+            "DC Offset",
+            "V",
+            allow_zero=True,
+            allow_negative=True,
+        ),
+        ComponentParameter(
+            "duty_cycle",
+            "Duty Cycle",
+            "",
+            allow_zero=False,
+            min_value=0.05,
+            max_value=0.95,
+        ),
+        ComponentParameter(
+            "output_impedance",
+            "Output Impedance",
+            "Ω",
+            allow_zero=True,
+        ),
+    ),
     "wav_voltage": (
         ComponentParameter("gain_v", "Gain", "V/FS", allow_negative=True, allow_zero=True),
         ComponentParameter(

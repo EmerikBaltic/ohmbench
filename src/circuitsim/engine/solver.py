@@ -13,6 +13,7 @@ from scipy.linalg import lu_factor, lu_solve
 from circuitsim.components.bjt import BJTBase
 from circuitsim.components.capacitor import Capacitor
 from circuitsim.components.diode import Diode
+from circuitsim.components.function_generator import FunctionGenerator
 from circuitsim.components.ground import Ground
 from circuitsim.components.inductor import Inductor
 from circuitsim.components.led import LED
@@ -734,9 +735,9 @@ class MNASolver:
             else:
                 r_int = getattr(comp, "r_internal", 0.0)
             if r_int > 0.0:
-                matrix_a[row_k, row_k] += r_int
+                matrix_a[row_k, row_k] -= r_int
             elif effective_loop_reg_r > 0.0:
-                matrix_a[row_k, row_k] += effective_loop_reg_r
+                matrix_a[row_k, row_k] -= effective_loop_reg_r
 
         return matrix_a
 
@@ -853,6 +854,9 @@ class MNASolver:
             elif isinstance(comp, DCVoltageSource):
                 row_k = self._vs_to_idx[comp.name]
                 rhs_b[row_k] = comp.dc_voltage * source_scale
+            elif isinstance(comp, FunctionGenerator):
+                row_k = self._vs_to_idx[comp.name]
+                rhs_b[row_k] = (comp.dc_offset if comp.output_enabled else 0.0) * source_scale
             elif isinstance(comp, ACVoltageSource):
                 row_k = self._vs_to_idx[comp.name]
                 rhs_b[row_k] = comp.voltage_at(0.0) * source_scale
@@ -1283,8 +1287,11 @@ class MNASolver:
             else:
                 r_int = getattr(vs, "r_internal", 0.0)
             if r_int > 0.0:
-                mat[row_k, row_k] += r_int
-            base_rhs[row_k] = vs.voltage_at(0.0) if hasattr(vs, "voltage_at") else 0.0
+                mat[row_k, row_k] -= r_int
+            if isinstance(vs, FunctionGenerator):
+                base_rhs[row_k] = vs.dc_offset if vs.output_enabled else 0.0
+            else:
+                base_rhs[row_k] = vs.voltage_at(0.0) if hasattr(vs, "voltage_at") else 0.0
 
         for k, cap in enumerate(capacitors):
             row_k = n_nodes + n_vs + k
@@ -2382,9 +2389,9 @@ class MNASolver:
                 mat[ib, row_k] -= 1.0
                 mat[row_k, ib] -= 1.0
             if vs.r_internal > 0.0:
-                mat[row_k, row_k] += vs.r_internal
+                mat[row_k, row_k] -= vs.r_internal
             elif self.regularize_ideal_loops:
-                mat[row_k, row_k] += 1e-6
+                mat[row_k, row_k] -= 1e-6
             rhs[row_k] = vs.voltage_at(0.0)
 
         for k, cap in enumerate(capacitors):
